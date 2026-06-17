@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Python dependencies for the MLTP framework (port of FullModel_4EM_Suspension_FullTyre)
+# Install with:   pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+
+casadi>=3.6        # symbolic modelling, ca.Function, nlpsol('ipopt'), collocation helpers
+numpy>=1.24
+scipy>=1.10        # scipy.io  (loadmat / savemat),  scipy.signal.lfilter (moving average)
+plotly>=5.18       # interactive HTML figures (replaces Simulink Data Inspector)
+kaleido>=0.2.1     # OPTIONAL: static PNG/PDF export of Plotly figures (figure.write_image)
+
+# ---------------------------------------------------------------------------
+# HSL (MA57) linear solver for IPOPT  -- requested for speed
+# ---------------------------------------------------------------------------
+# IPOPT ships *inside* the casadi wheel and defaults to the MUMPS linear solver.
+# To make IPOPT use the (much faster) HSL MA57 solver you must point it at your
+# HSL shared library. No extra pip package is required; the solver is selected
+# in userOpts.py via:
+#
+#     opts["ipopt"]["linear_solver"] = "ma57"
+#     opts["ipopt"]["hsllib"]        = "/path/to/libcoinhsl.so"   # or libhsl.so
+#
+# Alternatively (if you do not want to set 'hsllib') make the library findable
+# on the loader path before launching Python:
+#
+#     Linux:   export LD_LIBRARY_PATH=/path/to/hsl/lib:$LD_LIBRARY_PATH
+#     macOS:   export DYLD_LIBRARY_PATH=/path/to/hsl/lib:$DYLD_LIBRARY_PATH
+#     Windows: add the HSL bin folder to PATH
+#
+# The library file is commonly named libcoinhsl.so (CoinHSL bundle) or libhsl.so.
+# If casadi's bundled IPOPT was not built with the HSL loader, install a
+# coinhsl-linked IPOPT/casadi build. The framework falls back to 'mumps' with a
+# warning if 'ma57' cannot be loaded, so it always runs.
