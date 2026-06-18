@@ -39,3 +39,15 @@ def importfile(file_to_read):
     raw = sio.loadmat(file_to_read, squeeze_me=True, struct_as_record=False)
     return {k: mat_to_namespace(v) for k, v in raw.items()
             if not k.startswith("__")}
+
+
+def load_solution(path):
+    """Reload a saved MLTP/MLTP_initial solution .mat and return the ``data``
+    struct as a namespace (data.track.xopt, data.vehicle.fx_fl, data.x_full, ...).
+    Works for both full-solve files ({'data': {...}}) and warm-start files
+    ({'data': {'init': {...}}})."""
+    loaded = importfile(path)
+    data = loaded["data"]
+    if hasattr(data, "init") and not hasattr(data, "x_opt"):
+        return data.init
+    return data

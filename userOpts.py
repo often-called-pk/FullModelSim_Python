@@ -8,10 +8,8 @@ Configuration is exposed as function arguments with the same defaults as the
 MATLAB file (AeroConfig='Static', ATD='On', Electric_4Motors='Off', circuit='BCN',
 vi=60, ni=nan). Edit the call (or the defaults) the way you would edit userOpts.m.
 
-HSL/MA57: the IPOPT options request the MA57 linear solver. Provide the HSL
-library path via the environment variable ``MLTP_HSLLIB`` (or pass ``hsllib=...``)
-so IPOPT can load it. MLTP.py falls back to MUMPS with a warning if MA57 cannot
-be loaded, so a run never hard-fails.
+Linear solver: IPOPT uses MUMPS, which is bundled inside the casadi wheel and
+needs no external library, so a solve runs out of the box on any platform.
 """
 
 import os
@@ -188,8 +186,7 @@ def userOpts(ctx,
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
              circuits_dir="Circuits",
-             data_dir="Data",
-             hsllib=None):                 # path to HSL shared library (or env MLTP_HSLLIB)
+             data_dir="Data"):
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)
@@ -245,6 +242,9 @@ def userOpts(ctx,
     ctx.OPT_e = 1e-2       # slack for path constraints / initial guesses
 
     # ---- solver options (IPOPT) -------------------------------------------
+    # MUMPS is the linear solver: it ships inside the casadi wheel and needs no
+    # external library. (HSL/MA57 would be faster but requires a licensed HSL
+    # DLL that IPOPT loads at solve time; not used here.)
     ipopt = {
         "max_iter": 6000,
         "fixed_variable_treatment": "make_constraint",
@@ -256,12 +256,8 @@ def userOpts(ctx,
         "constr_viol_tol": 1e-4,
         "dual_inf_tol": 1e-4,
         "compl_inf_tol": 1e-4,
-        # HSL MA57 for speed (requested). MLTP.py retries with 'mumps' on failure.
-        "linear_solver": "ma57",
+        "linear_solver": "mumps",
     }
-    hsllib = hsllib or os.environ.get("MLTP_HSLLIB")
-    if hsllib:
-        ipopt["hsllib"] = hsllib
     ctx.opts = {"ipopt": ipopt}
 
     # ---- rate limits and regularisation -----------------------------------

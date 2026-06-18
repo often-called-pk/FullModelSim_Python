@@ -10,24 +10,11 @@ plotly>=5.18       # interactive HTML figures (replaces Simulink Data Inspector)
 kaleido>=0.2.1     # OPTIONAL: static PNG/PDF export of Plotly figures (figure.write_image)
 
 # ---------------------------------------------------------------------------
-# HSL (MA57) linear solver for IPOPT  -- requested for speed
+# Linear solver
 # ---------------------------------------------------------------------------
-# IPOPT ships *inside* the casadi wheel and defaults to the MUMPS linear solver.
-# To make IPOPT use the (much faster) HSL MA57 solver you must point it at your
-# HSL shared library. No extra pip package is required; the solver is selected
-# in userOpts.py via:
-#
-#     opts["ipopt"]["linear_solver"] = "ma57"
-#     opts["ipopt"]["hsllib"]        = "/path/to/libcoinhsl.so"   # or libhsl.so
-#
-# Alternatively (if you do not want to set 'hsllib') make the library findable
-# on the loader path before launching Python:
-#
-#     Linux:   export LD_LIBRARY_PATH=/path/to/hsl/lib:$LD_LIBRARY_PATH
-#     macOS:   export DYLD_LIBRARY_PATH=/path/to/hsl/lib:$DYLD_LIBRARY_PATH
-#     Windows: add the HSL bin folder to PATH
-#
-# The library file is commonly named libcoinhsl.so (CoinHSL bundle) or libhsl.so.
-# If casadi's bundled IPOPT was not built with the HSL loader, install a
-# coinhsl-linked IPOPT/casadi build. The framework falls back to 'mumps' with a
-# warning if 'ma57' cannot be loaded, so it always runs.
+# IPOPT ships *inside* the casadi wheel and uses the MUMPS linear solver, which
+# needs no external library -- a solve runs out of the box on any platform.
+# (The faster HSL/MA57 solver is deliberately not used: it requires a licensed
+# HSL DLL that IPOPT loads at solve time. If you ever want it, set
+# opts["ipopt"]["linear_solver"] = "ma57" and opts["ipopt"]["hsllib"] in
+# userOpts.py and make the HSL library findable on your loader path.)
