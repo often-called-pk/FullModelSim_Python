@@ -216,6 +216,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ("zs", m.zs), ("theta", m.theta), ("phi", m.phi),
         ("T_fl", m.T_fl), ("T_fr", m.T_fr), ("T_rl", m.T_rl), ("T_rr", m.T_rr),
         ("Lon_acc", m.Lon_acc), ("Lat_acc", m.Lat_acc),
+        # --- added: per-tyre friction coefficients (needed for the friction circle) ---
+        ("mu_fl_x", m.mu_fl_x), ("mu_fl_y", m.mu_fl_y),
+        ("mu_fr_x", m.mu_fr_x), ("mu_fr_y", m.mu_fr_y),
+        ("mu_rl_x", m.mu_rl_x), ("mu_rl_y", m.mu_rl_y),
+        ("mu_rr_x", m.mu_rr_x), ("mu_rr_y", m.mu_rr_y),
     ]
     if pt.EM4 == 0:
         veh_syms += [("Om_motor", m.Om_motor), ("P_motor", m.P_motor)]

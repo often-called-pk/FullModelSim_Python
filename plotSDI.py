@@ -249,9 +249,15 @@ def plotSDI(source, save_dir="Plots", show=False):
     }
     for name, fig in figs.items():
         path = os.path.join(out_dir, f"{name}.html")
-        fig.write_html(path, include_plotlyjs="cdn")
+        fig.write_html(path, include_plotlyjs=True, full_html=True)
         if show:
             fig.show()
+    # --- g-g / friction-circle plots (added) -------------------------------
+    try:
+        from gg_plots import generate_gg_plots
+        generate_gg_plots(data, out_dir)          # writes friction_circle_gg.html + gg_diagram.html
+    except Exception as exc:
+        print(f"[plotSDI] gg plots skipped: {exc}")
     print(f"[plotSDI] wrote {len(figs)} figures -> {out_dir}")
     return figs
 

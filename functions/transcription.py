@@ -336,3 +336,6 @@ def _make_solver(ca, nlp, opts):
         ip["linear_solver"] = "mumps"
     ip.pop("hsllib", None)
     return ca.nlpsol("solver", "ipopt", nlp, opts)
+    # opts = {**opts, "jit": True, "compiler": "shell",
+    #     "jit_options": {"flags": ["-O3"], "compiler": "gcc"}}
+    # return ca.nlpsol("solver", "ipopt", nlp, opts)
