@@ -187,6 +187,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ctx.duk_lb, ctx.duk_ub, ctx.Xi, ctx.Xf,
         ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts)
     sol = res["sol"]
+    ctx.solve_stats = res["solver"].stats()
     elapsed["solve"] = time.time() - t0 - elapsed["init"]
 
     # ---- postprocess: collect + reconstruct ------------------------------
@@ -278,6 +279,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         except Exception as exc:    # plotSDI may not exist yet / plotly missing
             print(f"[MLTP] plotting skipped: {exc}")
 
+    ctx.elapsed = elapsed
     return ctx
 
 
