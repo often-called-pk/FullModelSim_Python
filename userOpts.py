@@ -236,7 +236,7 @@ def userOpts(ctx,
     ctx.Xf_init = np.array([vf, nan, nan, nan, nan, nan, nan])
 
     # ---- collocation options ----------------------------------------------
-    ctx.OPT_ds = 10        # collocation step (m)
+    ctx.OPT_ds = 30        # collocation step (m)
     ctx.OPT_d = 3          # degree of interpolating polynomials
     ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs
     ctx.OPT_e = 1e-2       # slack for path constraints / initial guesses
@@ -248,15 +248,17 @@ def userOpts(ctx,
     ipopt = {
         "max_iter": 6000,
         "fixed_variable_treatment": "make_constraint",
-        "tol": 1e-6,
-        "acceptable_tol": 1e-5,
+        "tol": 1e-4,
+        "acceptable_tol": 1e-3,
         "mu_init": 1e-1,
+        "mu_strategy": "adaptive",
         "bound_push": 1e-2,
         "bound_frac": 1e-2,
         "constr_viol_tol": 1e-4,
         "dual_inf_tol": 1e-4,
         "compl_inf_tol": 1e-4,
         "linear_solver": "mumps",
+        "print_timing_statistics": "yes",
     }
     ctx.opts = {"ipopt": ipopt}
 
