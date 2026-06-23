@@ -126,6 +126,14 @@ def apply_linear_solver(opts, *, linear_solver, hsl_dir, probe=probe_linear_solv
     if lib and probe(linear_solver, lib):
         ip["linear_solver"] = linear_solver
         ip["hsllib"] = lib
+        # MA57 does no internal scaling by default (unlike MUMPS, which scales
+        # the augmented system automatically). On a badly-scaled NLP like the
+        # 23-state MLTP this stalls IPOPT with oscillating dual infeasibility,
+        # so MA57 can hit max_iter where MUMPS converges. Enabling MC64
+        # auto-scaling restores convergence parity. Respects an explicit
+        # caller-set value.
+        if linear_solver == "ma57":
+            ip.setdefault("ma57_automatic_scaling", "yes")
         return opts
 
     warnings.warn(
