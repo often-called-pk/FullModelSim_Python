@@ -93,8 +93,11 @@ grid (defaults from `userOpts.py`: step `OPT_ds=30` m, degree `OPT_d=3`, `OPT_ui
 `w = [Xk; Uk; (Yk); Xkj (; P)]` packed **column-major (`order='F'`)**, collocation defect +
 endpoint continuity, path constraints, time-domain input-rate limits, `Xi/Xf` boundary bounds
 (**`NaN` = free state**), objective `J = Σ Qk·B·dsk` + regularisation — then calls
-`nlpsol('ipopt')`. `_make_solver()` **forces `linear_solver='mumps'` and strips any HSL config**
-(so requesting `ma57` silently downgrades). After the solve: `unpack_solution`,
+`nlpsol('ipopt')`. `_make_solver()` **selects the configured `linear_solver`**: it uses HSL
+(`ma*`) when a working Coin-HSL DLL is found (via the `COINHSL_DIR` env var or a
+seeded default, registered on the Windows DLL path and probed once), otherwise
+it transparently falls back to `mumps` — so a solve never crashes on a missing
+HSL DLL. Default is `ma57`. After the solve: `unpack_solution`,
 `reconstruct_x_full`, `interp_inputs`, `compute_time`, `reconstruct_track`.
 
 ### Configuration — `userOpts.py`

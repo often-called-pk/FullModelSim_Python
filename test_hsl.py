@@ -77,4 +77,37 @@ if _lib_real:
 else:
     print("  [SKIP] no CoinHSL DLL resolved; skipping real-probe smoke")
 
+# ---- 5. _make_solver: pops _hsl_dir, falls back, uses HSL when present -------
+print("_make_solver")
+import casadi as ca
+from functions.transcription import _make_solver
+
+_x = ca.MX.sym("x")
+_nlp = {"x": _x, "f": (_x - 1) ** 2, "g": _x}
+
+# (a) bogus _hsl_dir + ma57 -> must NOT crash (key popped) and must solve (mumps)
+S = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "ma57", "print_level": 0,
+                                       "max_iter": 50},
+                            "_hsl_dir": r"Z:\no_such_dir"})
+S(x0=0, lbg=-10, ubg=10)
+ok("ma57 + bogus dir -> falls back and solves",
+   S.stats().get("return_status") == "Solve_Succeeded")
+
+# (b) explicit mumps -> solves, _hsl_dir absent is fine
+S2 = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "mumps", "print_level": 0,
+                                        "max_iter": 50}})
+S2(x0=0, lbg=-10, ubg=10)
+ok("mumps still works",
+   S2.stats().get("return_status") == "Solve_Succeeded")
+
+# (c) if a real DLL resolves, ma57 via the default resolver solves on HSL
+if _lib_real:   # set in Section 4
+    S3 = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "ma57",
+                                           "print_level": 0, "max_iter": 50}})
+    S3(x0=0, lbg=-10, ubg=10)
+    ok("ma57 via default resolver solves",
+       S3.stats().get("return_status") == "Solve_Succeeded")
+else:
+    print("  [SKIP] no CoinHSL DLL resolved; skipping _make_solver HSL check")
+
 print("ALL HSL TESTS PASSED")
