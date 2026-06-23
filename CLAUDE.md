@@ -32,6 +32,21 @@ python -c "from MLTP import MLTP; MLTP(circuit='BCN', AeroConfig='Static', ATD='
 python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit='Sturn')"
 ```
 
+**Using Coin-HSL (HSL linear solver).** The solve defaults to IPOPT's HSL `ma57`
+solver. Provide a Coin-HSL library (the MinGW/`libgfortran5` `CoinHSL_jll` build
+matches the casadi wheel's ABI) by setting `COINHSL_DIR` to its `bin/` folder, or
+rely on the seeded default in `functions/hsl.py`. The directory is registered on
+the Windows DLL path and probed once; if HSL can't load, `_make_solver` falls
+back to MUMPS with a warning (a solve never crashes on a missing DLL). `ma57`
+runs with MC64 auto-scaling (`ma57_automatic_scaling`, set automatically in
+`functions/hsl.py`) so it converges on the stiff 23-state problem, where unscaled
+MA57 can stall. Choose the solver per call: `MLTP(circuit='BCN',
+linear_solver='ma97')` or `linear_solver='mumps'`. Benchmark them with `python
+bench_linear_solver.py`, which reports a per-iteration linear-solver cost (the
+apples-to-apples metric — MA57 factorises ~4–5× faster per IPOPT iteration than
+MUMPS; total wall-clock depends on how many iterations each takes on this
+nonconvex problem).
+
 **Tests.** There is **no pytest/unittest** — the four `test_*.py` files are plain scripts whose
 assertions run at module top level (no `if __name__ == '__main__'` block). Run a file directly;
 there is no test runner and the finest selectable unit is a **whole file** (the first failing
