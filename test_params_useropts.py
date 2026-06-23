@@ -60,7 +60,7 @@ ok("OPT_ds=30, OPT_d=3", ctx.OPT_ds == 30 and ctx.OPT_d == 3)
 ok("OPT_uinter linear", ctx.OPT_uinter == "linear")
 ok("ipopt max_iter 6000", ctx.opts["ipopt"]["max_iter"] == 6000)
 ok("ipopt tol 1e-4", ctx.opts["ipopt"]["tol"] == 1e-4)
-ok("MUMPS solver selected", ctx.opts["ipopt"]["linear_solver"] == "mumps")
+ok("default linear_solver ma57", ctx.opts["ipopt"]["linear_solver"] == "ma57")
 
 print("input ordering + limits per configuration")
 # default: Static(0), ATD On(1), EM4 Off(0)

@@ -110,4 +110,22 @@ if _lib_real:   # set in Section 4
 else:
     print("  [SKIP] no CoinHSL DLL resolved; skipping _make_solver HSL check")
 
+# ---- 6. userOpts wiring: intent flows into ctx.opts -------------------------
+print("userOpts wiring")
+from functions.context import Ctx
+from userOpts import userOpts
+
+c1 = Ctx(); userOpts(c1, circuit="Sturn")          # synthetic track, no files needed
+ok("default linear_solver is ma57",
+   c1.opts["ipopt"]["linear_solver"] == "ma57")
+ok("_hsl_dir present (default None)",
+   "_hsl_dir" in c1.opts and c1.opts["_hsl_dir"] is None)
+
+c2 = Ctx(); userOpts(c2, circuit="Sturn", linear_solver="mumps")
+ok("explicit mumps honored", c2.opts["ipopt"]["linear_solver"] == "mumps")
+
+c3 = Ctx(); userOpts(c3, circuit="Sturn", linear_solver="ma97", hsl_dir=r"X:\hsl\bin")
+ok("ma97 + hsl_dir threaded",
+   c3.opts["ipopt"]["linear_solver"] == "ma97" and c3.opts["_hsl_dir"] == r"X:\hsl\bin")
+
 print("ALL HSL TESTS PASSED")
