@@ -56,10 +56,10 @@ ok("Xi_init length 7", ctx.Xi_init.shape == (7,))
 ok("Xf all NaN, length 23", ctx.Xf.shape == (23,) and np.all(np.isnan(ctx.Xf)))
 
 print("collocation + solver options")
-ok("OPT_ds=10, OPT_d=3", ctx.OPT_ds == 10 and ctx.OPT_d == 3)
+ok("OPT_ds=30, OPT_d=3", ctx.OPT_ds == 30 and ctx.OPT_d == 3)
 ok("OPT_uinter linear", ctx.OPT_uinter == "linear")
 ok("ipopt max_iter 6000", ctx.opts["ipopt"]["max_iter"] == 6000)
-ok("ipopt tol 1e-6", ctx.opts["ipopt"]["tol"] == 1e-6)
+ok("ipopt tol 1e-4", ctx.opts["ipopt"]["tol"] == 1e-4)
 ok("MUMPS solver selected", ctx.opts["ipopt"]["linear_solver"] == "mumps")
 
 print("input ordering + limits per configuration")
