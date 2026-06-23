@@ -76,6 +76,9 @@ def probe_linear_solver(solver_name, hsllib):
 
     A failed HSL load makes IPOPT return status 'Invalid_Option'; a working one
     reaches 'Solve_Succeeded'. We treat only the latter as success.
+
+    Also registers the HSL library's directory with the loader (on first call for
+    a given library) so the library and its co-located dependency DLLs can load.
     """
     key = (solver_name, hsllib)
     if key in _probe_cache:
@@ -94,7 +97,10 @@ def probe_linear_solver(solver_name, hsllib):
                       {"ipopt": ip, "print_time": False})
         S(x0=0, lbg=-10, ubg=10)
         ok = (S.stats().get("return_status") == "Solve_Succeeded")
-    except Exception:
+    except Exception as exc:
+        warnings.warn(
+            f"HSL probe for linear_solver '{solver_name}' failed: {exc}",
+            RuntimeWarning, stacklevel=2)
         ok = False
     _probe_cache[key] = ok
     return ok
