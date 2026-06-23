@@ -68,6 +68,13 @@ ok("ma57 + no dir -> fallback mumps (probe not reached)",
 
 ok("input opts not mutated", base["ipopt"].get("linear_solver") is None)
 
+def _boom_probe(*_):
+    raise AssertionError("probe must not run for an unsupported ma* name")
+
+unsup = H.apply_linear_solver(base, linear_solver="ma86", hsl_dir=_d, probe=_boom_probe)
+ok("unsupported ma* name -> fallback mumps, probe never reached",
+   unsup["ipopt"]["linear_solver"] == "mumps" and "hsllib" not in unsup["ipopt"])
+
 # ---- 4. guarded real-DLL smoke (skips if no CoinHSL on this machine) ---------
 print("real probe smoke")
 _dir = H.resolve_hsl_dir()

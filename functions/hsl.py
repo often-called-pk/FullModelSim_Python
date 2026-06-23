@@ -25,6 +25,12 @@ _LIB_NAMES = ("libhsl.dll", "libcoinhsl.dll",
               "libhsl.so", "libcoinhsl.so",
               "libhsl.dylib", "libcoinhsl.dylib")
 
+# HSL solvers we let reach the probe. `ma86` is deliberately excluded: it
+# segfaulted in a loader probe, and a native segfault is NOT a catchable Python
+# exception -- it would take down the whole process. An unrecognised `ma*` name
+# (typo, or an unsupported solver) is downgraded to MUMPS rather than probed.
+_SUPPORTED_HSL = ("ma27", "ma57", "ma97")
+
 _registered = set()      # dirs already added to the DLL search path
 _probe_cache = {}        # (solver_name, hsllib) -> bool
 
@@ -118,6 +124,16 @@ def apply_linear_solver(opts, *, linear_solver, hsl_dir, probe=probe_linear_solv
 
     if not str(linear_solver).startswith("ma"):
         ip["linear_solver"] = linear_solver
+        ip.pop("hsllib", None)
+        return opts
+
+    if linear_solver not in _SUPPORTED_HSL:
+        warnings.warn(
+            f"Unsupported HSL linear_solver {linear_solver!r} "
+            f"(supported: {_SUPPORTED_HSL}); falling back to MUMPS without "
+            f"probing it.",
+            RuntimeWarning, stacklevel=2)
+        ip["linear_solver"] = "mumps"
         ip.pop("hsllib", None)
         return opts
 
