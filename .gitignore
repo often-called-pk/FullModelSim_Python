@@ -193,9 +193,10 @@ cython_debug/
 
 # packaging sources are hand-written and MUST be committed, despite the
 # generic `build/` and `*.spec` ignores above. Re-include the build/ dir but
-# keep ignoring its generated contents (e.g. PyInstaller's build/<name>/),
-# then re-include only the two hand-written source files.
+# keep ignoring its generated contents (e.g. PyInstaller's build/<name>/ and
+# the _pyi_build.log), then re-include only the hand-written source files.
 !build/
 build/*
 !build/windows-app.spec
 !build/README.md
+!build/rthook_casadi.py

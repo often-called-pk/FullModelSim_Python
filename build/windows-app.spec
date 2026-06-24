@@ -28,13 +28,13 @@ if hsl_dir and os.path.isdir(hsl_dir):
             binaries.append((os.path.join(hsl_dir, fn), "."))
 
 a = Analysis(
-    ["app/main.py"],
+    [os.path.join(ROOT, "app", "main.py")],   # absolute: relative paths resolve against the spec dir (build/), not ROOT
     pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    runtime_hooks=[],
+    runtime_hooks=[os.path.join(ROOT, "build", "rthook_casadi.py")],
     excludes=[],
 )
 pyz = PYZ(a.pure, a.zipped_data)
