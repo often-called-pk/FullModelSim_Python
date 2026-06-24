@@ -4,8 +4,7 @@
 import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-block_cipher = None
-ROOT = os.path.abspath(os.getcwd())
+ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
 # Bundle read-only resources next to the frozen root (sys._MEIPASS).
 datas = [
@@ -37,9 +36,8 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
-    cipher=block_cipher,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True,
     name="FullModelSim", console=True,        # console=True so the IPOPT log is visible while debugging

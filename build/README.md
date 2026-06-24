@@ -6,7 +6,7 @@
 venv\Scripts\Activate.ps1
 # optional: bundle Coin-HSL DLLs
 $env:COINHSL_DIR = "C:\path\to\coinhsl\bin"
-pyinstaller build\windows-app.spec
+venv\Scripts\pyinstaller.exe build\windows-app.spec
 ```
 
 Output: `dist\FullModelSim\FullModelSim.exe`.
