@@ -135,7 +135,7 @@ def warmstart_guesses(ctx, m, init_x, init_u, N):
 
 def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
          AeroConfig="Static", ATD="On", Electric_4Motors="Off", TyreModel="CombinedSlip",
-         save=True, plot=True, results_dir="Results", **useropts_kwargs):
+         save=True, plot=True, results_dir="Results", plots_dir="Plots", **useropts_kwargs):
     t0 = time.time()
     elapsed = {}
 
@@ -148,7 +148,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     # ---- warm start (data.init) ------------------------------------------
     if warm_start is None:
         ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
-                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False)
+                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False,
+                                **useropts_kwargs)
         init = ctx_init.data.init
         init_x = np.asarray(init.x_opt, dtype=float)
         init_u = np.asarray(init.u_opt, dtype=float)
@@ -275,7 +276,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     if plot:
         try:
             from plotSDI import plotSDI
-            plotSDI(ctx)
+            plotSDI(ctx, save_dir=plots_dir)
         except Exception as exc:    # plotSDI may not exist yet / plotly missing
             print(f"[MLTP] plotting skipped: {exc}")
 
