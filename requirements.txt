@@ -24,3 +24,9 @@ kaleido>=0.2.1     # OPTIONAL: static PNG/PDF export of Plotly figures (figure.w
 # (bundled in the casadi wheel, needs no external library). To force MUMPS, call
 # with linear_solver="mumps" (e.g. MLTP(..., linear_solver="mumps")). Compare
 # solvers with:  python bench_linear_solver.py
+
+# ---------------------------------------------------------------------------
+# GUI and packaging
+# ---------------------------------------------------------------------------
+PySide6
+pyinstaller
