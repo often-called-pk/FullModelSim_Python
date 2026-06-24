@@ -37,6 +37,55 @@ finally:
     if _saved_env is not None:
         os.environ["COINHSL_DIR"] = _saved_env
 
+# ---- 1b. resolve_hsl_dir: frozen bundle root (sys._MEIPASS) ------------------
+# In a PyInstaller-frozen exe the spec drops the Coin-HSL DLLs at the bundle
+# root (sys._MEIPASS); resolve_hsl_dir must find them there. Only when frozen.
+print("resolve_hsl_dir (frozen bundle)")
+_saved_env = os.environ.pop("COINHSL_DIR", None)
+_saved_default = H._DEFAULT_HSL_DIR
+_saved_frozen = getattr(sys, "frozen", None)
+_saved_meipass = getattr(sys, "_MEIPASS", None)
+try:
+    H._DEFAULT_HSL_DIR = r"Z:\definitely_not_a_real_hsl_dir"
+    meipass = tempfile.mkdtemp(prefix="hsl_meipass_")   # stands in for the bundle root
+    explicit = tempfile.mkdtemp(prefix="hsl_explicit_")
+    sys._MEIPASS = meipass
+
+    # attr present but not frozen -> _MEIPASS must be ignored
+    if hasattr(sys, "frozen"):
+        del sys.frozen
+    ok("not frozen -> _MEIPASS ignored",
+       H.resolve_hsl_dir() is None)
+
+    # frozen -> bundle root resolves when env/explicit absent
+    sys.frozen = True
+    ok("frozen -> _MEIPASS resolves",
+       H.resolve_hsl_dir() == os.path.abspath(meipass))
+
+    # explicit arg still wins over the bundle root
+    ok("explicit wins over _MEIPASS",
+       H.resolve_hsl_dir(explicit) == os.path.abspath(explicit))
+
+    # COINHSL_DIR env still wins over everything
+    os.environ["COINHSL_DIR"] = explicit
+    ok("env wins over _MEIPASS",
+       H.resolve_hsl_dir() == os.path.abspath(explicit))
+    del os.environ["COINHSL_DIR"]
+finally:
+    H._DEFAULT_HSL_DIR = _saved_default
+    if _saved_env is not None:
+        os.environ["COINHSL_DIR"] = _saved_env
+    if _saved_meipass is None:
+        if hasattr(sys, "_MEIPASS"):
+            del sys._MEIPASS
+    else:
+        sys._MEIPASS = _saved_meipass
+    if _saved_frozen is None:
+        if hasattr(sys, "frozen"):
+            del sys.frozen
+    else:
+        sys.frozen = _saved_frozen
+
 # ---- 2. hsllib_path ----------------------------------------------------------
 print("hsllib_path")
 _d = tempfile.mkdtemp(prefix="hsl_lib_")

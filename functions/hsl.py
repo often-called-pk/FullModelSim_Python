@@ -35,14 +35,28 @@ _registered = set()      # dirs already added to the DLL search path
 _probe_cache = {}        # (solver_name, hsllib) -> bool
 
 
+def _frozen_bundle_dir():
+    """The PyInstaller bundle root (sys._MEIPASS) when frozen, else None.
+
+    The build spec drops the Coin-HSL DLLs at the bundle root (`"."`), so in a
+    frozen exe that root is where the HSL library lives. Guarded on sys.frozen
+    so a stray _MEIPASS attribute in a dev process is never picked up.
+    """
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", None)
+    return None
+
+
 def resolve_hsl_dir(explicit=None):
     """Resolve the directory that should contain the HSL library.
 
-    Precedence: COINHSL_DIR env var > `explicit` arg > seeded default. Returns
-    the first candidate that is an existing directory, as an absolute path, or
-    None if none exist.
+    Precedence: COINHSL_DIR env var > `explicit` arg > the frozen bundle root
+    (PyInstaller sys._MEIPASS, where the spec drops the Coin-HSL DLLs) > seeded
+    default. Returns the first candidate that is an existing directory, as an
+    absolute path, or None if none exist.
     """
-    for cand in (os.environ.get("COINHSL_DIR"), explicit, _DEFAULT_HSL_DIR):
+    for cand in (os.environ.get("COINHSL_DIR"), explicit,
+                 _frozen_bundle_dir(), _DEFAULT_HSL_DIR):
         if cand and os.path.isdir(cand):
             return os.path.abspath(cand)
     return None
