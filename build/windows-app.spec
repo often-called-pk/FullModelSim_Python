@@ -1,10 +1,21 @@
-# PyInstaller spec for the FullModelSim windows-app.
+# PyInstaller spec for the FullModelSim windows-app (onedir).
 # Build from repo root:  venv\Scripts\pyinstaller.exe build\windows-app.spec
-# Onedir first (easier DLL debugging); flip EXE(console=...) / onefile later.
+#   set COINHSL_DIR to bundle Coin-HSL; set FMS_CONSOLE=1 for a debug build with
+#   a console window (default is windowed: no terminal pops up on launch).
 import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
+
+# Windowed by default for a clean end-user launch; FMS_CONSOLE=1 forces a console
+# so a startup crash's traceback is visible while debugging.
+CONSOLE = os.environ.get("FMS_CONSOLE", "0") == "1"
+
+# Optional drop-in icon: place build/app.ico and it is picked up automatically.
+_icon = os.path.join(ROOT, "build", "app.ico")
+ICON = _icon if os.path.isfile(_icon) else None
+
+VERSION_FILE = os.path.join(ROOT, "build", "version_info.txt")
 
 # Bundle read-only resources next to the frozen root (sys._MEIPASS).
 datas = [
@@ -40,6 +51,9 @@ a = Analysis(
 pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True,
-    name="FullModelSim", console=True,        # console=True so the IPOPT log is visible while debugging
+    name="FullModelSim",
+    console=CONSOLE,        # windowed by default; the IPOPT log streams into the GUI log pane
+    icon=ICON,
+    version=VERSION_FILE,
 )
 coll = COLLECT(exe, a.binaries, a.zipfiles, a.datas, name="FullModelSim")

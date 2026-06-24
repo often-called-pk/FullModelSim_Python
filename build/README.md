@@ -6,11 +6,28 @@
 venv\Scripts\Activate.ps1
 # optional: bundle Coin-HSL DLLs so MA57/MA97 work in the frozen exe
 $env:COINHSL_DIR = "C:\path\to\coinhsl\bin"
+# optional: $env:FMS_CONSOLE = "1"   # debug build WITH a console window
 venv\Scripts\pyinstaller.exe build\windows-app.spec
 ```
 
 Output: `dist\FullModelSim\FullModelSim.exe` (onedir; resources under
 `dist\FullModelSim\_internal\`).
+
+### Build options
+
+- **Windowed by default (`console=False`).** No terminal window pops up on
+  launch; the IPOPT log streams into the GUI log pane instead (verified to reach
+  the QProcess pipe even though the exe is GUI-subsystem). Set `FMS_CONSOLE=1` at
+  build time for a debug build with a console so a startup-crash traceback is
+  visible.
+- **Version metadata** (`build/version_info.txt`) is embedded — visible under the
+  exe's right-click → Properties → Details (ProductName, FileVersion 1.0.0.0, …).
+- **Icon** is a drop-in: place `build/app.ico` and it is picked up automatically
+  (none shipped yet → default PyInstaller icon).
+- Because the windowed exe shows a **modal dialog** on an *unhandled* exception,
+  `headless_solve.main` catches solve failures, prints the traceback to stdout
+  (so it lands in the GUI log), and exits non-zero — no dialog from the solve
+  subprocess.
 
 ## Packaging notes (why the spec is the way it is)
 
@@ -51,6 +68,14 @@ spawns) with `circuit=Sturn, linear_solver=ma57`:
 - `EXIT: Optimal Solution Found.`, lap time 25.574 s;
 - results + 9 Plotly plots written under `%USERPROFILE%\Documents\FullModelSim`.
 
+### Self-containment (sanitized-environment run)
+
+Re-running the frozen `--headless` solve with `PATH` stripped to the standard
+Windows system dirs and `COINHSL_DIR` unset still imports casadi and runs
+**`ma57` from the bundled Coin-HSL** (no MUMPS fallback, no DLL errors) at both
+the warm-start and full-solve banners — i.e. neither casadi nor HSL leaks a DLL
+from the dev `PATH`; the bundle is self-contained.
+
 A literal clean-VM run (no Python/casadi/HSL installed) remains the gold-standard
-final check — the dev-machine frozen run proves the bundle is self-contained but
-cannot prove the total absence of host-environment leakage.
+final check — the sanitized run strongly approximates it but a real bare machine
+is the only way to prove the total absence of host-environment leakage.

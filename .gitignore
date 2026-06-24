@@ -200,3 +200,5 @@ build/*
 !build/windows-app.spec
 !build/README.md
 !build/rthook_casadi.py
+!build/version_info.txt
+!build/app.ico

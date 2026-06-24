@@ -3,7 +3,6 @@
 Reads cfg.json, runs MLTP, streams IPOPT output to stdout, exits.
 """
 import json
-import math
 import os
 import sys
 
@@ -41,13 +40,24 @@ def main(argv):
     if not argv:
         print("usage: headless_solve.py <cfg.json>", file=sys.stderr)
         return 2
-    with open(argv[0]) as fh:
-        cfg = json.load(fh)
-    os.makedirs(cfg["output_dir"], exist_ok=True)
-    kwargs = build_solve_kwargs(cfg, resource_root())
-    from MLTP import MLTP            # imported here so the unit test stays casadi-free
-    MLTP(**kwargs)
-    return 0
+    try:
+        with open(argv[0]) as fh:
+            cfg = json.load(fh)
+        os.makedirs(cfg["output_dir"], exist_ok=True)
+        kwargs = build_solve_kwargs(cfg, resource_root())
+        from MLTP import MLTP        # imported here so the unit test stays casadi-free
+        MLTP(**kwargs)
+        return 0
+    except Exception:
+        # Surface the failure in the captured stdout (the GUI log pane) and exit
+        # non-zero rather than letting it escape: a frozen windowed (console=
+        # False) exe would otherwise pop a modal traceback dialog from this
+        # solve subprocess. flush() because stdout is block-buffered to the pipe.
+        import traceback
+        print("\n[headless_solve] solve failed:", file=sys.stdout)
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+        return 1
 
 
 if __name__ == "__main__":
