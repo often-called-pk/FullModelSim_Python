@@ -188,11 +188,12 @@ def userOpts(ctx,
              circuits_dir="Circuits",
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
-             hsl_dir=None):                # Coin-HSL bin dir; None -> COINHSL_DIR env / default
+             hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
+             vp_overrides=None):           # dict of vehParams primary/mf overrides
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)
-    vehParams(ctx, data_dir=data_dir)
+    vehParams(ctx, data_dir=data_dir, vp_overrides=vp_overrides)
     vp, pt = ctx.vp, ctx.pt
 
     # ---- aerodynamic / torque-distribution configuration ------------------
