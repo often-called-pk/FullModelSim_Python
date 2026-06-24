@@ -10,7 +10,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QFormLayout, QVBoxLayout, QHBoxLayout,
     QComboBox, QDoubleSpinBox, QCheckBox, QPushButton, QPlainTextEdit, QLabel,
-    QLineEdit, QFileDialog, QListWidget,
+    QLineEdit, QFileDialog, QListWidget, QListWidgetItem,
 )
 
 from app.runconfig import RunConfig, TIER1_FIELDS
@@ -23,6 +23,7 @@ CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
 AEROS = ["Static", "Active_RW", "Active", "AALB"]
 TYRES = ["CombinedSlip", "PureSlip"]
 SOLVERS = ["ma57", "ma97", "ma27", "mumps"]
+_PATH_ROLE = 256  # Qt.ItemDataRole.UserRole — stores the plot's filesystem path on the list item
 
 
 def _spin(value, lo, hi, step=1.0, decimals=4):
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
         self._runner.output.connect(self._append_log)
         self._runner.finished.connect(self._on_finished)
         self._defaults = RunConfig()
+        self._active_rc = None
 
         tabs = QTabWidget()
         tabs.addTab(self._build_main_tab(), "Main")
@@ -129,7 +131,7 @@ class MainWindow(QMainWindow):
         self.summary = QLabel("No results yet.")
         self.plot_list = QListWidget()
         self.plot_list.itemDoubleClicked.connect(
-            lambda it: webbrowser.open(it.data(256)))
+            lambda it: webbrowser.open(it.data(_PATH_ROLE)))
         lay.addWidget(self.summary)
         lay.addWidget(QLabel("Plots (double-click to open):"))
         lay.addWidget(self.plot_list)
@@ -222,9 +224,8 @@ class MainWindow(QMainWindow):
                                 rc.ATD, rc.Electric_4Motors)
         self.plot_list.clear()
         for p in results.list_plots(pdir):
-            from PySide6.QtWidgets import QListWidgetItem
             it = QListWidgetItem(os.path.basename(p))
-            it.setData(256, p)
+            it.setData(_PATH_ROLE, p)
             self.plot_list.addItem(it)
 
     # ---- helpers ----------------------------------------------------------
@@ -253,7 +254,8 @@ class MainWindow(QMainWindow):
     def _load_expert_tier1(self, path):
         import json
         try:
-            data = json.load(open(path))
+            with open(path) as fh:
+                data = json.load(fh)
         except Exception as exc:
             self._append_log(f"[expert config error] {exc}\n")
             return
