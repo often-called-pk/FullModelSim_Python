@@ -6,14 +6,24 @@
 
 ## Goal
 
-Expand the GUI **Setup** tab from the current 7 hardcoded tunables to **every
-adjustable vehicle parameter** `vehParams` accepts as an override
-(`PRIMARY_KEYS ∪ MF_KEYS` — **51 primaries + 59 Pacejka 5.2 coefficients = 110**).
-Organize them into collapsible sections with reset, save/load presets,
-changed-from-default highlighting, and tooltips/units.
+Two related additions to the GUI:
 
-This is a **front-end + config-storage change only**. The solve pipeline
-downstream of `cfg.json` (`headless_solve → MLTP → vehParams`) is unchanged.
+1. **Setup tab — full vehicle-parameter editor.** Expand from the current 7
+   hardcoded tunables to **every adjustable vehicle parameter** `vehParams`
+   accepts as an override (`PRIMARY_KEYS ∪ MF_KEYS` — **51 primaries + 59
+   Pacejka 5.2 coefficients = 110**), in collapsible sections with reset,
+   save/load presets, changed-from-default highlighting, and tooltips/units.
+2. **Advanced tab — solver & collocation options.** Expose five knobs currently
+   hardcoded inside `userOpts` — **max iterations, collocation step (`OPT_ds`),
+   interpolating-polynomial degree (`OPT_d`), path-constraint slack (`OPT_e`),
+   and IPOPT tolerance (`tol`)** — next to the existing linear-solver control.
+
+The vehicle params flow through the existing `vp_overrides` path (no solve
+change). The five solver options need a small plumbing addition: `userOpts`
+gains them as keyword arguments (identical defaults) and `headless_solve`
+forwards them from `cfg.json`. The transcription/model internals
+(`MLTP`, `vehModel`, `functions/transcription.py`) are unchanged — `MLTP`
+already forwards `**useropts_kwargs` to `userOpts` and to `MLTP_initial`.
 
 ## Background — the existing pipeline
 
@@ -30,8 +40,15 @@ Setup widgets → MainWindow.collect_runconfig() → RunConfig
 recomputes all derived quantities from the merged primaries. Today only 7 keys
 (`TIER1_FIELDS = brkB, Tdist, ksD, alpha_FL, alpha_FR, alpha_RW, alpha_TW`) are
 exposed as GUI widgets; the other ~103 are reachable only via the Advanced
-tab's "Expert config .json" file picker. So the entire task is **GUI widgets +
-`RunConfig` storage** — no new solve capability is required.
+tab's "Expert config .json" file picker. So the **vehicle-parameter** half of
+this task is purely **GUI widgets + `RunConfig` storage** — no new solve
+capability is required.
+
+The **solver/collocation** half is different: `OPT_ds, OPT_d, OPT_e, max_iter,
+tol` are hardcoded inside `userOpts` (lines ~242–267) and are *not* currently
+parameterised. `MLTP`/`MLTP_initial` already forward `**useropts_kwargs` to
+`userOpts`, so exposing them needs only: make `userOpts` accept them as kwargs
+(identical defaults) and make `headless_solve` forward them from `cfg.json`.
 
 ## Full adjustable parameter set (grouping for the UI)
 
@@ -71,6 +88,12 @@ Notes carried into tooltips:
    `~/Documents/FullModelSim/presets/`, not the read-only bundled
    `app/presets/` (which is inside `sys._MEIPASS` when frozen). Loading reads
    from both the bundled and user directories.
+3. **The five solver/collocation options live on the Advanced tab** (a new
+   "Solver & Collocation" group beside the linear-solver control), are carried
+   as **top-level `RunConfig`/`cfg.json` fields** (not `vp_overrides`), and are
+   plumbed by adding keyword arguments to `userOpts` with defaults identical to
+   today's hardcoded values. They apply to **both** the 7-state warm-start solve
+   and the 23-state solve (as the hardcoded values do today).
 
 ## Architecture
 
@@ -152,6 +175,12 @@ class RunConfig:
     # …run fields unchanged: circuit, AeroConfig, ATD, Electric_4Motors,
     #   TyreModel, vi, ni, linear_solver, warm_start, save, plot, output_dir,
     #   expert_config…
+    # NEW top-level solver/collocation fields (defaults == userOpts defaults):
+    max_iter: int = 6000
+    OPT_ds: float = 30.0
+    OPT_d: int = 3
+    OPT_e: float = 1e-2
+    tol: float = 1e-4
     vp: dict = field(default_factory=all_vp_defaults)
 
     def vp_overrides(self):
@@ -172,9 +201,11 @@ class RunConfig:
 - Precedence preserved: **expert file < GUI**. With the GUI at defaults the diff
   is empty, so expert values pass through unchanged (keeps `test_runconfig`'s
   expert-merge semantics: GUI `brkB≠default` overrides expert `brkB`).
-- `_cfg()` drops `vp` and `expert_config`, emits `vp_overrides` only — so
-  **`headless_solve` is unchanged** (it already reads only `vp_overrides`).
-- `to_dict`/`from_dict` round-trip the `vp` dict (it is a dataclass field).
+- `_cfg()` drops `vp` and `expert_config` and emits `vp_overrides`; the five
+  solver fields (`max_iter, OPT_ds, OPT_d, OPT_e, tol`) **stay as top-level cfg
+  keys**, alongside `linear_solver`.
+- `to_dict`/`from_dict` round-trip the `vp` dict and the solver fields (all
+  dataclass fields).
 
 ### `app/mainwindow.py` — Setup tab rebuild
 
@@ -210,16 +241,77 @@ class RunConfig:
   `_load_expert_into_widgets` and generalized to set any matching spin in
   `self.vp_spins` (intersection of file keys with known spins).
 
-## Data flow (unchanged below `collect_runconfig`)
+### `app/mainwindow.py` — Advanced tab "Solver & Collocation" group
+
+A new `QGroupBox` ("Solver & Collocation") added to `_build_advanced_tab`,
+beside the existing Linear solver / Warm start / Expert config rows. Five
+widgets:
+
+| Label | field | widget | default | range | note |
+|---|---|---|---|---|---|
+| Max iterations | `max_iter` | `QSpinBox` (int) | 6000 | 1 … 100000 | IPOPT `max_iter` |
+| Collocation step [m] | `OPT_ds` | `QDoubleSpinBox` | 30.0 | 1 … 500 | grid spacing; smaller ⇒ more knots |
+| Polynomial degree | `OPT_d` | `QSpinBox` (int) | 3 | 1 … 6 | degree of interpolating polynomials |
+| Path-constraint slack | `OPT_e` | `ScientificField` | 1e-2 | 1e-6 … 1 | `OPT_e` slack/seed |
+| IPOPT tolerance | `tol` | `ScientificField` | 1e-4 | 1e-10 … 1e-1 | IPOPT `tol` |
+
+`collect_runconfig()` reads these into the new `RunConfig` fields. They are
+**not** part of `self.vp_spins` and never enter `vp_overrides`. (`OPT_e` and
+`tol` reuse the `ScientificField` from `app/widgets.py`.)
+
+### `userOpts.py` — accept the five options as keyword arguments
+
+Add parameters with defaults equal to today's hardcoded values, so an
+unmodified call is byte-for-byte identical:
+
+```python
+def userOpts(ctx, …existing args…,
+             OPT_ds=30, OPT_d=3, OPT_e=1e-2,   # collocation
+             max_iter=6000, tol=1e-4):          # IPOPT
+    …
+    ctx.OPT_ds = OPT_ds
+    ctx.OPT_d  = OPT_d
+    ctx.OPT_e  = OPT_e
+    ctx.OPT_uinter = "linear"                   # unchanged (not exposed)
+    …
+    ipopt = { …, "max_iter": max_iter, "tol": tol, … }
+```
+
+`MLTP` and `MLTP_initial` already pass `**useropts_kwargs` straight through, so
+no change is needed in either; the same values reach both the 7-state and
+23-state solves.
+
+### `headless_solve.py` — forward the five cfg keys
+
+`build_solve_kwargs(cfg, …)` adds the five to the MLTP kwargs, reading with the
+userOpts defaults so an older `cfg.json` without them still works:
+
+```python
+kwargs["max_iter"] = int(cfg.get("max_iter", 6000))
+kwargs["OPT_ds"]   = float(cfg.get("OPT_ds", 30))
+kwargs["OPT_d"]    = int(cfg.get("OPT_d", 3))
+kwargs["OPT_e"]    = float(cfg.get("OPT_e", 1e-2))
+kwargs["tol"]      = float(cfg.get("tol", 1e-4))
+```
+
+These land in MLTP's `**useropts_kwargs` and are forwarded to `userOpts`.
+
+## Data flow (vehicle params unchanged below `collect_runconfig`)
 
 ```
-vp_spins (dict of QDoubleSpinBox | ScientificField)
-  → collect_runconfig(): vp = {key: field.value()}
-  → RunConfig(vp=vp, …run fields, expert_config)
-  → write_cfg(): cfg["vp_overrides"] = vp_overrides()   # expert ∪ (vp diff)
+vp_spins (dict of QDoubleSpinBox | ScientificField)  + 5 solver widgets
+  → collect_runconfig(): vp = {key: field.value()}; max_iter/OPT_ds/OPT_d/OPT_e/tol
+  → RunConfig(vp=vp, max_iter=…, OPT_ds=…, …run fields, expert_config)
+  → write_cfg():
+        cfg["vp_overrides"] = vp_overrides()              # expert ∪ (vp diff)
+        cfg["max_iter"], cfg["OPT_ds"], cfg["OPT_d"],     # top-level keys
+        cfg["OPT_e"], cfg["tol"]
   → cfg.json
-  → headless_solve.build_solve_kwargs(): vp_overrides passed through
-  → MLTP(vp_overrides=…) → vehParams(ctx, vp_overrides=…)
+  → headless_solve.build_solve_kwargs():
+        vp_overrides passed through; 5 solver keys → MLTP **useropts_kwargs
+  → MLTP(vp_overrides=…, OPT_ds=…, …)
+        → vehParams(ctx, vp_overrides=…)
+        → userOpts(ctx, OPT_ds=…, OPT_d=…, OPT_e=…, max_iter=…, tol=…)
 ```
 
 ## Error handling
@@ -240,9 +332,11 @@ vp_spins (dict of QDoubleSpinBox | ScientificField)
 |---|---|---|---|
 | `app/vp_params.py` | param presentation registry + defaults helper | `vehParams` | no |
 | `app/widgets.py` | `CollapsibleSection` + `ScientificField` reusable widgets | PySide6 | yes |
-| `app/runconfig.py` | `vp` dict config model + override emission | `vp_params`, `vehParams` | no |
+| `app/runconfig.py` | `vp` dict + 5 solver fields; override/cfg emission | `vp_params`, `vehParams` | no |
 | `app/paths.py` | `user_presets_dir()` | stdlib | no |
-| `app/mainwindow.py` | builds Setup widgets from the registry | all of the above | yes |
+| `app/mainwindow.py` | builds Setup + Advanced-tab widgets | all of the above | yes |
+| `userOpts.py` | accept `OPT_ds/OPT_d/OPT_e/max_iter/tol` kwargs | — | no |
+| `headless_solve.py` | forward the 5 solver cfg keys to MLTP | stdlib | no |
 
 The two testable-without-Qt units (`vp_params`, `runconfig`) hold all the
 non-trivial logic; the Qt units are thin construction code.
@@ -252,7 +346,15 @@ non-trivial logic; the Qt units are thin construction code.
 - **Rewrite `test_runconfig.py`** for the `vp` dict: round-trip
   `from_dict(to_dict)`; `vp` diff folds into `vp_overrides`; expert-file merge
   with GUI-overrides-expert precedence; unknown expert key raises; run fields
-  preserved in `_cfg()`.
+  preserved in `_cfg()`; **the five solver fields appear as top-level cfg keys
+  (not inside `vp_overrides`) with both defaults and overridden values.**
+- **Extend `test_headless_config.py`:** `build_solve_kwargs` forwards
+  `max_iter/OPT_ds/OPT_d/OPT_e/tol` (correct types) into the MLTP kwargs, and a
+  cfg missing them falls back to the userOpts defaults.
+- **Extend `test_vp_overrides.py` (or add a small userOpts test):** calling
+  `userOpts()` with no new kwargs still gives `ctx.OPT_ds==30, OPT_d==3,
+  OPT_e==1e-2`, `ipopt["max_iter"]==6000`, `ipopt["tol"]==1e-4`; passing each
+  kwarg overrides the corresponding `ctx`/`ipopt` value.
 - **New `test_vp_params.py`:** `PARAM_GROUPS` key-union == `PRIMARY_KEYS ∪
   MF_KEYS` (no gaps/extras, no duplicates); `all_vp_defaults()` equals the merge
   of `default_primaries()` + `_default_mf()`; every `meta_for(key)` has
@@ -267,7 +369,12 @@ non-trivial logic; the Qt units are thin construction code.
 
 ## Out of scope (YAGNI)
 
-- No changes to the solve, `vehModel`, `userOpts`, or `headless_solve`.
+- No changes to the transcription/model internals (`MLTP`, `MLTP_initial`,
+  `vehModel`, `functions/transcription.py`). `userOpts` and `headless_solve`
+  change only to accept/forward the five solver kwargs.
+- Of the solver/collocation knobs, only the five requested are exposed. The
+  input-interpolation mode (`OPT_uinter`) and the other IPOPT options
+  (`acceptable_tol`, `mu_*`, bound pushes, etc.) stay hardcoded in `userOpts`.
 - No per-parameter physical validation beyond spinbox ranges + the existing
   unknown-key check.
 - No special-casing of `Cd`/`Cl` overwrite — surfaced via tooltip only.
