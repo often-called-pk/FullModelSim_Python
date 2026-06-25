@@ -8,8 +8,8 @@
 
 Expand the GUI **Setup** tab from the current 7 hardcoded tunables to **every
 adjustable vehicle parameter** `vehParams` accepts as an override
-(`PRIMARY_KEYS ∪ MF_KEYS` — ~49 primaries + ~60 Pacejka 5.2 coefficients, ~110
-total). Organize them into collapsible sections with reset, save/load presets,
+(`PRIMARY_KEYS ∪ MF_KEYS` — **51 primaries + 59 Pacejka 5.2 coefficients = 110**).
+Organize them into collapsible sections with reset, save/load presets,
 changed-from-default highlighting, and tooltips/units.
 
 This is a **front-end + config-storage change only**. The solve pipeline
@@ -81,13 +81,15 @@ come from `vehParams`).
 
 - `PARAM_GROUPS: list[tuple[str, list[str]]]` — ordered `(section_title,
   [keys])` as in the table above. Covers `PRIMARY_KEYS ∪ MF_KEYS` exactly once.
-- `@dataclass ParamMeta`: `label, unit, tooltip, lo, hi, step, decimals`.
-- `META: dict[str, ParamMeta]` — hand-authored entries for the ~49 physical
+- `@dataclass ParamMeta`: `label, unit, tooltip, lo, hi, step, decimals, kind`,
+  where `kind ∈ {"spin", "sci"}` selects the widget (see **Widget
+  representation** below).
+- `META: dict[str, ParamMeta]` — hand-authored entries for the 51 physical
   primaries (sensible labels, SI units `kg/m/N·m/N/m/deg/…`, tight ranges).
 - `meta_for(key) -> ParamMeta` — returns the annotated entry, else a **generic
-  fallback** (wide symmetric range, 6 decimals, no unit, label = key). This is
-  what the ~60 Pacejka coefficients use, so they need no hand entries and are
-  never silently clamped.
+  fallback** (wide symmetric range, `kind="sci"`, label = key). This is what the
+  59 Pacejka coefficients use, so they need no hand entries and are never
+  silently clamped or rounded to zero.
 - `all_vp_defaults() -> dict` — `{**default_primaries(), **vars(_default_mf())}`.
   This is (a) the seed for `RunConfig.vp`, (b) the reset baseline, and (c) the
   reference for changed-from-default highlighting.
@@ -96,18 +98,49 @@ come from `vehParams`).
 `PRIMARY_KEYS ∪ MF_KEYS`. If a parameter is later added to `vehParams` without
 being placed in a group, the test fails — preventing silent omission.
 
+### Widget representation — why two field kinds
+
+A plain `QDoubleSpinBox` stores its value rounded to its `decimals` setting, so
+it **cannot represent** the small-magnitude tyre coefficients in this set —
+e.g. `rHy1 = -9.1492e-11`, `rVy5 = -8.8234e-11`, `pHy2 = 0.00051596`, and the
+`1e-6` numerical epsilons. Loading those into a spinbox would silently collapse
+them to `0`, corrupting the tyre model and producing a bogus
+"changed-from-default" diff. Because the chosen scope is "everything (~110)",
+this must be handled, not deferred.
+
+Resolution: `ParamMeta.kind` picks the editor per parameter.
+- `kind="spin"` → `QDoubleSpinBox` (range/step/decimals/unit) for the
+  well-scaled physical primaries — keeps nice step arrows for tuning.
+- `kind="sci"` → a `ScientificField` (see `app/widgets.py`) backed by a
+  `QLineEdit` + `QDoubleValidator(ScientificNotation)`. It displays via
+  `"%.12g"` and reports `value() = float(text)`, so it round-trips
+  `-9.1492e-11` and `1e-6` exactly with no rounding.
+
+Assignment rule (in the registry, covered by a test): **all `MF_KEYS` and the
+three `eps_*` keys use `kind="sci"`; every other key uses `kind="spin"`.** Both
+kinds expose the same `value()` / `setValue()` / `valueChanged` API so the
+Setup tab treats them uniformly.
+
 ### New module — `app/widgets.py`
 
-`CollapsibleSection(QWidget)` — a reusable collapsible group (Qt ships none):
-a `QToolButton` header (▶/▼) that toggles a content widget's visibility, plus a
-live "(N changed)" badge in the header. `addRow(label_widget, field_widget)`
-delegates to an inner `QFormLayout`. `set_expanded(bool)`.
+- `CollapsibleSection(QWidget)` — a reusable collapsible group (Qt ships none):
+  a `QToolButton` header (▶/▼) that toggles a content widget's visibility, plus
+  a live "(N changed)" badge in the header. `addRow(label_widget, field_widget)`
+  delegates to an inner `QFormLayout`. `set_expanded(bool)`.
+- `ScientificField(QWidget)` — a `QLineEdit` + `QDoubleValidator` (with
+  `setNotation(QDoubleValidator.ScientificNotation)`) exposing the same minimal
+  API as `QDoubleSpinBox`: `value() -> float` (= `float(text)`),
+  `setValue(float)` (text set via `"%.12g"`), and a `valueChanged` signal
+  emitted on `editingFinished`/text change. Used for `kind="sci"` parameters so
+  tiny tyre coefficients and epsilons round-trip without rounding.
 
 ### `app/paths.py`
 
-Add `user_presets_dir()` → `os.path.join(default_output_dir_root, "presets")`
-(writable, created on demand). `app/presets/` (bundled) remains read-only and is
-resolved via `resource_path("app", "presets")`.
+Add `user_presets_dir()` → `os.path.join(default_output_dir(), "presets")`
+(i.e. `~/Documents/FullModelSim/presets/`; writable, created on demand —
+`default_output_dir()` already returns the `FullModelSim` folder). The bundled
+`app/presets/` remains read-only and is resolved via
+`resource_path("app", "presets")`.
 
 ### `app/runconfig.py` — `vp` dict model
 
@@ -148,22 +181,31 @@ class RunConfig:
 - `_build_setup_tab()` returns a `QScrollArea` containing one
   `CollapsibleSection` per `PARAM_GROUPS` entry, built by iteration. **Balance &
   Aero** starts expanded; the rest collapsed.
-- Each row: a tooltip'd `QLabel` + a `QDoubleSpinBox` configured from
-  `meta_for(key)` (range/step/decimals, unit via `setSuffix`). A generalized
-  `_spin_for(key)` replaces the ad-hoc `_spin`. All spins kept in
-  `self.vp_spins: dict[str, QDoubleSpinBox]`.
+- Each row: a tooltip'd `QLabel` + a field built from `meta_for(key)`. A
+  `_field_for(key)` factory returns a `QDoubleSpinBox` (`kind="spin"`,
+  range/step/decimals, unit via `setSuffix`) or a `ScientificField`
+  (`kind="sci"`); the ad-hoc `_spin` helper is removed. All fields kept in
+  `self.vp_spins: dict[str, QDoubleSpinBox | ScientificField]` (both share the
+  `value()`/`setValue()`/`valueChanged` API).
 - **Reset:** a global "Reset all to defaults" button and a per-section reset,
-  both writing `all_vp_defaults()` back into the relevant spins.
-- **Changed highlight:** each spin's `valueChanged` compares to its default and
-  applies a bold/colored style when different; the owning section's "(N
-  changed)" badge updates. Mirrors exactly what `vp_overrides()` will send.
-- **Save/Load preset:** Save writes the full param set (the existing
-  `default.json` flat-key format) via `QFileDialog`, defaulting to
-  `user_presets_dir()`. Load reads a JSON and sets matching spins; unknown keys
-  are ignored with a log line. Shipped presets load from the bundled
-  `app/presets/`.
-- `collect_runconfig()` builds `vp = {k: s.value() for k, s in
-  self.vp_spins.items()}` and passes `vp=vp`; the 7 named kwargs are removed.
+  both writing `all_vp_defaults()` back into the relevant fields.
+- **Changed highlight:** driven purely by **current value vs. default**, so it
+  stays correct after any reset, preset load, or expert-file load. Each field's
+  `valueChanged` re-evaluates and applies a bold/colored style when different;
+  the owning section's "(N changed)" badge updates. Mirrors exactly what
+  `vp_overrides()` will send.
+- **Save/Load preset:** presets use the same **flat `{key: value}` JSON shape**
+  as `app/presets/default.json`. Save writes the full current param set (all 110
+  keys, including the Pacejka coefficients that `default.json` omits) via
+  `QFileDialog`, defaulting to `user_presets_dir()`. Load reads a JSON and sets
+  matching fields; a partial file (e.g. `default.json`, which has only the 51
+  primaries) is fine — keys it omits keep their current value. Unknown keys are
+  ignored with a log line. Shipped presets load from the bundled `app/presets/`.
+- `collect_runconfig()` builds `vp = {k: f.value() for k, f in
+  self.vp_spins.items()}` and passes `vp=vp`. **Only the 7 vehicle-param kwargs
+  are replaced by `vp=`; all run-config kwargs (`circuit, AeroConfig, ATD,
+  Electric_4Motors, TyreModel, vi, ni, linear_solver, warm_start, save, plot,
+  output_dir, expert_config`) are unchanged.**
 - The Advanced-tab "Expert config" picker stays; `_load_expert_tier1` is renamed
   `_load_expert_into_widgets` and generalized to set any matching spin in
   `self.vp_spins` (intersection of file keys with known spins).
@@ -171,8 +213,8 @@ class RunConfig:
 ## Data flow (unchanged below `collect_runconfig`)
 
 ```
-vp_spins (dict of QDoubleSpinBox)
-  → collect_runconfig(): vp = {key: spin.value()}
+vp_spins (dict of QDoubleSpinBox | ScientificField)
+  → collect_runconfig(): vp = {key: field.value()}
   → RunConfig(vp=vp, …run fields, expert_config)
   → write_cfg(): cfg["vp_overrides"] = vp_overrides()   # expert ∪ (vp diff)
   → cfg.json
@@ -185,9 +227,10 @@ vp_spins (dict of QDoubleSpinBox)
 - Loading a preset / expert file with **unknown keys**: ignored at widget-load
   time (logged), and still hard-rejected by `vp_overrides()`'s
   `ValueError` if they reach an override dict.
-- Out-of-range loaded values are clamped by the spinbox; physical ranges are set
-  generously and Pacejka coeffs use the wide fallback range to avoid surprising
-  clamps.
+- Values typed into a spin field are clamped to its range by Qt; `ScientificField`
+  validates typed input but accepts programmatically-loaded values as-is.
+  Physical ranges are set generously and Pacejka coeffs use the wide `sci`
+  fallback, so legitimate values are never surprised by a clamp.
 - Save to a read-only location is avoided by targeting `user_presets_dir()`
   (created on demand); failures are caught and surfaced in the log pane.
 
@@ -196,7 +239,7 @@ vp_spins (dict of QDoubleSpinBox)
 | Unit | Purpose | Depends on | Qt? |
 |---|---|---|---|
 | `app/vp_params.py` | param presentation registry + defaults helper | `vehParams` | no |
-| `app/widgets.py` | `CollapsibleSection` reusable widget | PySide6 | yes |
+| `app/widgets.py` | `CollapsibleSection` + `ScientificField` reusable widgets | PySide6 | yes |
 | `app/runconfig.py` | `vp` dict config model + override emission | `vp_params`, `vehParams` | no |
 | `app/paths.py` | `user_presets_dir()` | stdlib | no |
 | `app/mainwindow.py` | builds Setup widgets from the registry | all of the above | yes |
@@ -213,7 +256,10 @@ non-trivial logic; the Qt units are thin construction code.
 - **New `test_vp_params.py`:** `PARAM_GROUPS` key-union == `PRIMARY_KEYS ∪
   MF_KEYS` (no gaps/extras, no duplicates); `all_vp_defaults()` equals the merge
   of `default_primaries()` + `_default_mf()`; every `meta_for(key)` has
-  `lo ≤ default ≤ hi` and `decimals ≥ 0`.
+  `lo ≤ default ≤ hi` and `decimals ≥ 0`; **`kind="sci"` for every `MF_KEYS`
+  member and every `eps_*`, `kind="spin"` otherwise**; and the `"%.12g"`
+  format/parse helper round-trips **every** default value exactly (catches the
+  tiny-coefficient rounding bug — `float("%.12g" % v) == v` for all 110).
 - **`test_presets.py`:** unchanged (`default.json` untouched, still a subset of
   `PRIMARY_KEYS ∪ MF_KEYS`).
 - GUI construction (`MainWindow`) remains not unit-tested (no `QApplication`
