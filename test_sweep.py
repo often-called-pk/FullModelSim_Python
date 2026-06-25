@@ -73,3 +73,22 @@ ok("outcome fields present at end",
 row = sweep.manifest_row(cs[0], {"status": "ok", "lap_time": 12.3})
 ok("manifest_row merges inputs", row["circuit"] == "BCN")
 ok("manifest_row merges outcome", row["status"] == "ok" and row["lap_time"] == 12.3)
+
+print("resume filtering")
+fd, manifest = tempfile.mkstemp(suffix=".csv"); os.close(fd)
+with open(manifest, "w", newline="") as fh:
+    w = csv.DictWriter(fh, fieldnames=["case_id", "status"]); w.writeheader()
+    w.writerow({"case_id": "0", "status": "ok"})
+    w.writerow({"case_id": "1", "status": "error"})
+ok("completed_ids returns only ok rows",
+   sweep.completed_ids(manifest) == {"0"})
+ok("completed_ids on missing file is empty",
+   sweep.completed_ids(manifest + ".nope") == set())
+
+allcases = [{"case_id": c} for c in ("0", "1", "2")]
+pend = sweep.pending_cases(allcases, manifest, resume=True)
+ok("resume drops ok, keeps error + unseen",
+   {c["case_id"] for c in pend} == {"1", "2"})
+ok("resume=False keeps all",
+   len(sweep.pending_cases(allcases, manifest, resume=False)) == 3)
+os.remove(manifest)

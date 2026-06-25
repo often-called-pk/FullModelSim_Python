@@ -87,3 +87,28 @@ def manifest_row(case, result):
     row = dict(case)
     row.update(result)
     return row
+
+
+_DONE_STATUSES = ("ok",)
+
+
+def completed_ids(manifest_path):
+    """case_ids whose manifest row has status 'ok'. Missing file -> empty set.
+    Only successful cases are skipped on resume; 'error' rows are retried."""
+    if not os.path.isfile(manifest_path):
+        return set()
+    done = set()
+    with open(manifest_path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("status") in _DONE_STATUSES:
+                done.add(row.get("case_id"))
+    return done
+
+
+def pending_cases(cases, manifest_path, resume=True):
+    """Cases still to run: drop already-completed (status ok) when resume is
+    True; otherwise return all cases unchanged."""
+    if not resume:
+        return list(cases)
+    done = completed_ids(manifest_path)
+    return [c for c in cases if c["case_id"] not in done]
