@@ -27,4 +27,19 @@ ok("vp_overrides passed", kw["vp_overrides"] == {"mb": 2000.0})
 
 cfg2 = dict(cfg, ni=0.3)
 ok("numeric ni preserved", build_solve_kwargs(cfg2, "/res")["ni"] == 0.3)
+
+# solver/collocation forwarding — defaults when absent
+ok("max_iter default", kw["max_iter"] == 6000 and isinstance(kw["max_iter"], int))
+ok("OPT_ds default", kw["OPT_ds"] == 30.0 and isinstance(kw["OPT_ds"], float))
+ok("OPT_d default", kw["OPT_d"] == 3 and isinstance(kw["OPT_d"], int))
+ok("OPT_e default", kw["OPT_e"] == 1e-2)
+ok("tol default", kw["tol"] == 1e-4)
+
+cfg3 = dict(cfg, max_iter=3000, OPT_ds=20, OPT_d=4, OPT_e=5e-3, tol=1e-6)
+kw3 = build_solve_kwargs(cfg3, "/res")
+ok("max_iter forwarded", kw3["max_iter"] == 3000)
+ok("OPT_ds forwarded", kw3["OPT_ds"] == 20.0)
+ok("OPT_d forwarded", kw3["OPT_d"] == 4)
+ok("OPT_e forwarded", kw3["OPT_e"] == 5e-3)
+ok("tol forwarded", kw3["tol"] == 1e-6)
 print("\nALL headless config TESTS PASSED")

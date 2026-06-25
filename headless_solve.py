@@ -31,6 +31,12 @@ def build_solve_kwargs(cfg, resource_root_dir):
         data_dir=os.path.join(resource_root_dir, "Data"),
         vp_overrides=cfg.get("vp_overrides") or None,
     )
+    # solver / collocation options -> userOpts (via MLTP **useropts_kwargs)
+    kwargs["max_iter"] = int(cfg.get("max_iter", 6000))
+    kwargs["OPT_ds"] = float(cfg.get("OPT_ds", 30))
+    kwargs["OPT_d"] = int(cfg.get("OPT_d", 3))
+    kwargs["OPT_e"] = float(cfg.get("OPT_e", 1e-2))
+    kwargs["tol"] = float(cfg.get("tol", 1e-4))
     if cfg.get("warm_start"):
         kwargs["warm_start"] = cfg["warm_start"]
     return kwargs
