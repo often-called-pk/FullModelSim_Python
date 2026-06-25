@@ -1,0 +1,6 @@
+case_id,circuit,vi,ATD,Electric_4Motors,AeroConfig,TyreModel,linear_solver
+0,BCN,40,On,Off,Static,CombinedSlip,ma57
+1,BCN,60,On,Off,Static,CombinedSlip,ma57
+2,BCN,80,On,Off,Static,CombinedSlip,ma57
+3,Spa,60,Off,On,Static,CombinedSlip,ma57
+4,Jarama,60,On,Off,Static,CombinedSlip,ma57
