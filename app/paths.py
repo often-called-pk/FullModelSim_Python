@@ -24,3 +24,9 @@ def resource_path(*parts):
 
 def default_output_dir():
     return os.path.join(os.path.expanduser("~"), "Documents", "FullModelSim")
+
+
+def user_presets_dir():
+    """Writable directory for user-saved setup presets (created on demand by
+    the caller). The bundled app/presets/ is read-only when frozen."""
+    return os.path.join(default_output_dir(), "presets")
