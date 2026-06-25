@@ -128,3 +128,58 @@ ok("error isolated to the case", bad["status"] == "error")
 ok("exception type recorded", bad["return_status"] == "RuntimeError")
 ok("error row still has out_path",
    bad["out_path"].replace("\\", "/") == "Results/run1/case_1")
+
+print("run_sweep serial path (stubbed _solve)")
+import run_sweep
+
+# Stub out the real (casadi) solve. _run_serial -> run_case references the
+# module global _solve, so rebinding it here takes effect.
+_calls = {"n": 0}
+def _stub_solve(results_dir, **kwargs):
+    _calls["n"] += 1
+    if kwargs.get("circuit") == "BOOM":
+        raise RuntimeError("kaboom")
+    return SimpleNamespace(
+        data=SimpleNamespace(lap_time=10.0 + _calls["n"]),
+        solve_stats={"return_status": "Solve_Succeeded", "iter_count": 5},
+        elapsed={"init": 0.5, "solve": 2.0})
+run_sweep._solve = _stub_solve
+
+tmpdir = tempfile.mkdtemp()
+manifest = os.path.join(tmpdir, "manifest.csv")
+serial_cases = [
+    {"case_id": "0", "circuit": "BCN", "vi": "40"},
+    {"case_id": "1", "circuit": "BOOM", "vi": "60"},   # raises -> error row
+]
+run_sweep._run_serial(serial_cases, "unit", manifest)
+
+with open(manifest, newline="") as fh:
+    rows = list(csv.DictReader(fh))
+ok("manifest has one row per case", len(rows) == 2)
+ok("first case ok", rows[0]["status"] == "ok" and rows[0]["lap_time"] == "11.0")
+ok("second case error-isolated", rows[1]["status"] == "error")
+ok("manifest header has outcome cols",
+   "return_status" in rows[0] and "wall_s" in rows[0])
+
+# arg parsing + sweep name default
+args = run_sweep._parse_args(["cases.csv"])
+ok("default sweep name is csv stem", run_sweep._sweep_name(args) == "cases")
+args2 = run_sweep._parse_args(["x/foo.csv", "--name", "doe1"])
+ok("explicit --name wins", run_sweep._sweep_name(args2) == "doe1")
+ok("--no-resume flag parsed", run_sweep._parse_args(["c.csv", "--no-resume"]).no_resume)
+
+# fail-fast: a bad CSV column raises before any solve/MPI work
+badfd, badcsv = tempfile.mkstemp(suffix=".csv"); os.close(badfd)
+with open(badcsv, "w", newline="") as fh:
+    bw = csv.DictWriter(fh, fieldnames=["circuit", "bogus"]); bw.writeheader()
+    bw.writerow({"circuit": "BCN", "bogus": "x"})
+raised = False
+try:
+    run_sweep._load_cases(badcsv, os.path.join(tmpdir, "m2.csv"), True)
+except ValueError:
+    raised = True
+ok("bad column fails fast in _load_cases", raised)
+os.remove(badcsv)
+
+import shutil; shutil.rmtree(tmpdir)
+print("ALL SWEEP TESTS PASSED")
