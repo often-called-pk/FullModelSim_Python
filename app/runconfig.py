@@ -1,18 +1,17 @@
 """RunConfig: the GUI's editable state, serialisable to the solve cfg.json.
 
-`to_dict`/`from_dict` persist the full GUI state. `write_cfg` emits the JSON
-the headless solve consumes: run-config fields plus a single merged
-`vp_overrides` dict (Tier-1 tunables + any expert config file).
+`to_dict`/`from_dict` persist the full GUI state. `write_cfg` emits the JSON the
+headless solve consumes: run-config fields, the five top-level solver/collocation
+options, and a single merged `vp_overrides` dict (vp diff-from-default + any
+expert config file).
 """
 import json
 from dataclasses import dataclass, asdict, field
 from typing import Optional
 
 from app.paths import default_output_dir
+from app.vp_params import all_vp_defaults
 from vehParams import PRIMARY_KEYS, MF_KEYS
-
-TIER1_FIELDS = ("brkB", "Tdist", "ksD",
-                "alpha_FL", "alpha_FR", "alpha_RW", "alpha_TW")
 
 
 @dataclass
@@ -29,23 +28,25 @@ class RunConfig:
     save: bool = True
     plot: bool = True
     output_dir: str = field(default_factory=default_output_dir)
-    # Tier-1 tunables (vehParams primaries)
-    brkB: float = 0.6766
-    Tdist: float = 0.7281
-    ksD: float = 0.4620
-    alpha_FL: float = 10.0
-    alpha_FR: float = 10.0
-    alpha_RW: float = 8.0
-    alpha_TW: float = 0.0
     expert_config: Optional[str] = None
+    # solver / collocation options (top-level cfg fields, NOT vp_overrides)
+    max_iter: int = 6000
+    OPT_ds: float = 30.0
+    OPT_d: int = 3
+    OPT_e: float = 1e-2
+    tol: float = 1e-4
+    # full vehicle-parameter set (primaries + Pacejka mf), seeded from defaults
+    vp: dict = field(default_factory=all_vp_defaults)
 
     def vp_overrides(self):
         ov = {}
         if self.expert_config:
             with open(self.expert_config) as fh:
-                ov.update(json.load(fh))
-        for k in TIER1_FIELDS:
-            ov[k] = getattr(self, k)
+                ov.update(json.load(fh))            # expert is the base layer
+        defaults = all_vp_defaults()
+        for k, v in self.vp.items():                 # GUI diff overrides expert
+            if v != defaults[k]:
+                ov[k] = v
         unknown = set(ov) - PRIMARY_KEYS - MF_KEYS
         if unknown:
             raise ValueError(f"Unknown vehParams override keys: {sorted(unknown)}")
@@ -67,8 +68,7 @@ class RunConfig:
     def _cfg(self):
         d = asdict(self)
         d.pop("expert_config", None)
-        for k in TIER1_FIELDS:
-            d.pop(k, None)
+        d.pop("vp", None)
         d["vp_overrides"] = self.vp_overrides()
         return d
 
