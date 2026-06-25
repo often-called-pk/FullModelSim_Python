@@ -52,3 +52,38 @@ def case_kwargs(case):
         kwargs[k] = float(v) if k in _FLOAT_COLUMNS else v
     kwargs["plot"] = False
     return kwargs
+
+
+# Manifest outcome columns, in order, appended after the input columns.
+OUTCOME_FIELDS = ("status", "return_status", "iter_count",
+                  "lap_time", "init_s", "solve_s", "wall_s", "out_path")
+
+
+def output_dir_for(sweep_name, case_id):
+    """Per-case results dir: Results/<sweep_name>/case_<case_id>/.
+
+    Unique per case even when two cases differ only by vi (which MLTP's own
+    <circuit>_<config>.mat filename omits).
+    """
+    return os.path.join("Results", sweep_name, f"case_{case_id}")
+
+
+def input_fieldnames(cases):
+    """Ordered input columns across all cases: case_id first, then
+    ACCEPTED_COLUMNS in declared order, keeping only those that appear."""
+    present = set()
+    for c in cases:
+        present.update(c)
+    return ["case_id"] + [c for c in ACCEPTED_COLUMNS if c in present]
+
+
+def manifest_fieldnames(cases):
+    """Full manifest header: input columns then outcome columns."""
+    return input_fieldnames(cases) + list(OUTCOME_FIELDS)
+
+
+def manifest_row(case, result):
+    """Flatten a case's inputs and its outcome into one manifest row dict."""
+    row = dict(case)
+    row.update(result)
+    return row

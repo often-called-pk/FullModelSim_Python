@@ -51,3 +51,25 @@ except ValueError:
     raised = True
 ok("unknown column raises ValueError", raised)
 os.remove(path); os.remove(path2)
+
+print("output_dir_for + manifest formatting")
+ok("vi-only-differing cases get distinct dirs",
+   sweep.output_dir_for("run1", "0") != sweep.output_dir_for("run1", "1"))
+ok("output dir shape",
+   sweep.output_dir_for("run1", "3").replace("\\", "/")
+   == "Results/run1/case_3")
+
+cs = [
+    {"case_id": "0", "circuit": "BCN", "vi": "40"},
+    {"case_id": "1", "circuit": "Spa", "vi": "60", "ATD": "On"},
+]
+fields = sweep.manifest_fieldnames(cs)
+ok("case_id is first field", fields[0] == "case_id")
+ok("input cols before outcome", fields.index("circuit") < fields.index("status"))
+ok("ATD column included once", fields.count("ATD") == 1)
+ok("outcome fields present at end",
+   fields[-len(sweep.OUTCOME_FIELDS):] == list(sweep.OUTCOME_FIELDS))
+
+row = sweep.manifest_row(cs[0], {"status": "ok", "lap_time": 12.3})
+ok("manifest_row merges inputs", row["circuit"] == "BCN")
+ok("manifest_row merges outcome", row["status"] == "ok" and row["lap_time"] == 12.3)
