@@ -44,8 +44,9 @@ class RunConfig:
             with open(self.expert_config) as fh:
                 ov.update(json.load(fh))            # expert is the base layer
         defaults = all_vp_defaults()
+        _MISSING = object()
         for k, v in self.vp.items():                 # GUI diff overrides expert
-            if v != defaults[k]:
+            if v != defaults.get(k, _MISSING):
                 ov[k] = v
         unknown = set(ov) - PRIMARY_KEYS - MF_KEYS
         if unknown:

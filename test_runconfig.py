@@ -56,4 +56,15 @@ except ValueError:
     raised = True
 ok("unknown expert key raises", raised)
 
+# unknown key inside the vp dict raises a friendly ValueError (not KeyError)
+vp_bad = dict(all_vp_defaults()); vp_bad["bogus_key"] = 1.0
+raised_vp = False
+try:
+    RunConfig(vp=vp_bad).vp_overrides()
+except ValueError:
+    raised_vp = True
+except KeyError:
+    raised_vp = False
+ok("unknown vp key raises ValueError not KeyError", raised_vp)
+
 print("\nALL RunConfig TESTS PASSED")
