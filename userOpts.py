@@ -189,7 +189,12 @@ def userOpts(ctx,
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
              hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
-             vp_overrides=None):           # dict of vehParams primary/mf overrides
+             vp_overrides=None,            # dict of vehParams primary/mf overrides
+             OPT_ds=30,                    # collocation step (m)
+             OPT_d=3,                      # degree of interpolating polynomials
+             OPT_e=1e-2,                   # slack for path constraints / guesses
+             max_iter=6000,                # IPOPT max iterations
+             tol=1e-4):                    # IPOPT convergence tolerance
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)
@@ -239,10 +244,10 @@ def userOpts(ctx,
     ctx.Xf_init = np.array([vf, nan, nan, nan, nan, nan, nan])
 
     # ---- collocation options ----------------------------------------------
-    ctx.OPT_ds = 30        # collocation step (m)
-    ctx.OPT_d = 3          # degree of interpolating polynomials
-    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs
-    ctx.OPT_e = 1e-2       # slack for path constraints / initial guesses
+    ctx.OPT_ds = OPT_ds         # collocation step (m)
+    ctx.OPT_d = OPT_d           # degree of interpolating polynomials
+    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs (not exposed)
+    ctx.OPT_e = OPT_e           # slack for path constraints / initial guesses
 
     # ---- solver options (IPOPT) -------------------------------------------
     # `linear_solver` is configurable (default 'ma57'). An ma* solver uses
@@ -251,9 +256,9 @@ def userOpts(ctx,
     # and transparently falls back to MUMPS if it is unavailable. 'mumps' (the
     # casadi-bundled solver) is always available and needs no external library.
     ipopt = {
-        "max_iter": 6000,
+        "max_iter": max_iter,
         "fixed_variable_treatment": "make_constraint",
-        "tol": 1e-4,
+        "tol": tol,
         "acceptable_tol": 1e-3,
         "mu_init": 1e-1,
         "mu_strategy": "adaptive",
