@@ -283,6 +283,22 @@ class MainWindow(QMainWindow):
         form.addRow("Linear solver", self.solver)
         form.addRow("Warm start .mat", ws)
         form.addRow("Expert config .json", ex)
+
+        grp = QGroupBox("Solver & Collocation")
+        gform = QFormLayout(grp)
+        self.max_iter = QSpinBox(); self.max_iter.setRange(1, 100000); self.max_iter.setValue(6000)
+        self.opt_ds = QDoubleSpinBox(); self.opt_ds.setRange(1.0, 500.0)
+        self.opt_ds.setSingleStep(1.0); self.opt_ds.setDecimals(2)
+        self.opt_ds.setValue(30.0); self.opt_ds.setSuffix(" m")
+        self.opt_d = QSpinBox(); self.opt_d.setRange(1, 6); self.opt_d.setValue(3)
+        self.opt_e = ScientificField(); self.opt_e.setValue(1e-2)
+        self.tol = ScientificField(); self.tol.setValue(1e-4)
+        gform.addRow("Max iterations", self.max_iter)
+        gform.addRow("Collocation step", self.opt_ds)
+        gform.addRow("Polynomial degree", self.opt_d)
+        gform.addRow("Path-constraint slack", self.opt_e)
+        gform.addRow("IPOPT tolerance", self.tol)
+        form.addRow(grp)
         return w
 
     # ---- conflict rule ----------------------------------------------------
@@ -320,6 +336,11 @@ class MainWindow(QMainWindow):
             plot=self.plot_cb.isChecked(),
             output_dir=self.output_dir.text(),
             expert_config=self.expert.text() or None,
+            max_iter=self.max_iter.value(),
+            OPT_ds=self.opt_ds.value(),
+            OPT_d=self.opt_d.value(),
+            OPT_e=float(self.opt_e.value()),
+            tol=float(self.tol.value()),
             vp=vp,
         )
 
