@@ -92,3 +92,39 @@ ok("resume drops ok, keeps error + unseen",
 ok("resume=False keeps all",
    len(sweep.pending_cases(allcases, manifest, resume=False)) == 3)
 os.remove(manifest)
+
+print("run_case (stubbed solve + fake clock)")
+
+class _FakeClock:
+    def __init__(self): self.t = 0.0
+    def __call__(self):
+        self.t += 1.5      # each call advances 1.5s -> wall_s = 1.5
+        return self.t
+
+def _good_solve(results_dir, **kwargs):
+    return SimpleNamespace(
+        data=SimpleNamespace(lap_time=42.0),
+        solve_stats={"return_status": "Solve_Succeeded", "iter_count": 37},
+        elapsed={"init": 1.0, "solve": 9.0})
+
+def _bad_solve(results_dir, **kwargs):
+    raise RuntimeError("diverged")
+
+good = sweep.run_case({"case_id": "0", "circuit": "BCN", "vi": "40"},
+                      "run1", _good_solve, _FakeClock())
+ok("status ok on success", good["status"] == "ok")
+ok("return_status captured", good["return_status"] == "Solve_Succeeded")
+ok("iter_count captured", good["iter_count"] == 37)
+ok("lap_time captured", good["lap_time"] == 42.0)
+ok("init_s captured", good["init_s"] == 1.0)
+ok("solve_s captured", good["solve_s"] == 9.0)
+ok("wall_s measured", good["wall_s"] == 1.5)
+ok("out_path is the case dir",
+   good["out_path"].replace("\\", "/") == "Results/run1/case_0")
+
+bad = sweep.run_case({"case_id": "1", "circuit": "Spa"},
+                     "run1", _bad_solve, _FakeClock())
+ok("error isolated to the case", bad["status"] == "error")
+ok("exception type recorded", bad["return_status"] == "RuntimeError")
+ok("error row still has out_path",
+   bad["out_path"].replace("\\", "/") == "Results/run1/case_1")

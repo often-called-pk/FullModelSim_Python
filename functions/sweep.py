@@ -112,3 +112,46 @@ def pending_cases(cases, manifest_path, resume=True):
         return list(cases)
     done = completed_ids(manifest_path)
     return [c for c in cases if c["case_id"] not in done]
+
+
+def _result_from_ctx(ctx, out_path, wall_s):
+    """Build a manifest outcome dict from a returned MLTP ctx."""
+    st = getattr(ctx, "solve_stats", {}) or {}
+    elapsed = getattr(ctx, "elapsed", {}) or {}
+    return {
+        "status": "ok",
+        "return_status": st.get("return_status", "?"),
+        "iter_count": st.get("iter_count", "?"),
+        "lap_time": float(ctx.data.lap_time),
+        "init_s": float(elapsed.get("init", float("nan"))),
+        "solve_s": float(elapsed.get("solve", float("nan"))),
+        "wall_s": round(wall_s, 3),
+        "out_path": out_path,
+    }
+
+
+def run_case(case, sweep_name, solve_fn, clock):
+    """Run one case through solve_fn; return a manifest outcome dict.
+
+    solve_fn(results_dir=..., **case_kwargs(case)) -> ctx (MLTP-like). Wrapped
+    in try/except so a crash is isolated to this case (status='error'); a
+    non-converged solve returns normally and is recorded via return_status.
+    `clock` is a no-arg callable returning seconds (time.perf_counter in prod,
+    a fake in tests) so wall time is deterministically testable.
+    """
+    out_dir = output_dir_for(sweep_name, case["case_id"])
+    t0 = clock()
+    try:
+        ctx = solve_fn(results_dir=out_dir, **case_kwargs(case))
+        return _result_from_ctx(ctx, out_dir, clock() - t0)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "return_status": type(exc).__name__,
+            "iter_count": "",
+            "lap_time": "",
+            "init_s": "",
+            "solve_s": "",
+            "wall_s": round(clock() - t0, 3),
+            "out_path": out_dir,
+        }
