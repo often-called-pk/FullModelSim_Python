@@ -3,19 +3,24 @@ results summary. Non-visual logic (collect_runconfig, conflict rule) is exposed
 as methods for testing.
 """
 import os
+import json
 import tempfile
 import webbrowser
 
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QFormLayout, QVBoxLayout, QHBoxLayout,
-    QComboBox, QDoubleSpinBox, QCheckBox, QPushButton, QPlainTextEdit, QLabel,
-    QLineEdit, QFileDialog, QListWidget, QListWidgetItem,
+    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QPlainTextEdit,
+    QLabel, QLineEdit, QFileDialog, QListWidget, QListWidgetItem, QScrollArea,
+    QGroupBox,
 )
 
-from app.runconfig import RunConfig, TIER1_FIELDS
+from app.runconfig import RunConfig
 from app.solve_runner import SolveRunner
 from app import results, paths
+from app.vp_params import PARAM_GROUPS, meta_for, all_vp_defaults
+from app.widgets import CollapsibleSection, ScientificField
+from app.paths import user_presets_dir
 
 CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
             "VirtualTrack", "BCN", "BCN_S1", "BCN_S2", "BCN_S3", "Jarama", "Spa",
@@ -97,23 +102,150 @@ class MainWindow(QMainWindow):
         return w
 
     def _build_setup_tab(self):
-        w = QWidget(); form = QFormLayout(w)
-        d = self._defaults
-        self.brkB = _spin(d.brkB, 0.0, 1.0, 0.01)
-        self.Tdist = _spin(d.Tdist, 0.0, 1.0, 0.01)
-        self.ksD = _spin(d.ksD, 0.0, 1.0, 0.01)
-        self.alpha_FL = _spin(d.alpha_FL, 0.0, 10.0, 0.5, 2)
-        self.alpha_FR = _spin(d.alpha_FR, 0.0, 10.0, 0.5, 2)
-        self.alpha_RW = _spin(d.alpha_RW, 0.0, 30.0, 0.5, 2)
-        self.alpha_TW = _spin(d.alpha_TW, -12.0, 12.0, 0.5, 2)
-        form.addRow("Brake bias (front)", self.brkB)
-        form.addRow("Torque dist (rear)", self.Tdist)
-        form.addRow("Roll stiff (rear)", self.ksD)
-        form.addRow("Front wing L [deg]", self.alpha_FL)
-        form.addRow("Front wing R [deg]", self.alpha_FR)
-        form.addRow("Rear wing [deg]", self.alpha_RW)
-        form.addRow("Rear wing tilt [deg]", self.alpha_TW)
-        return w
+        self.vp_spins = {}            # key -> QDoubleSpinBox | ScientificField
+        self._sections = {}           # title -> CollapsibleSection
+        self._section_keys = {}       # title -> [keys]
+        defaults = all_vp_defaults()
+
+        container = QWidget()
+        vlay = QVBoxLayout(container)
+
+        bar = QHBoxLayout()
+        reset_all = QPushButton("Reset all to defaults")
+        reset_all.clicked.connect(self._reset_all_params)
+        save_btn = QPushButton("Save preset…"); save_btn.clicked.connect(self._save_preset)
+        load_btn = QPushButton("Load preset…"); load_btn.clicked.connect(self._load_preset)
+        bar.addWidget(reset_all); bar.addWidget(save_btn); bar.addWidget(load_btn)
+        bar.addStretch(1)
+        vlay.addLayout(bar)
+
+        for title, keys in PARAM_GROUPS:
+            sec = CollapsibleSection(title)
+            self._sections[title] = sec
+            self._section_keys[title] = list(keys)
+            for key in keys:
+                m = meta_for(key)
+                field = self._field_for(key)
+                field.setValue(float(defaults[key]))
+                field.valueChanged.connect(lambda _v=None, k=key: self._on_param_changed(k))
+                self.vp_spins[key] = field
+                lbl = QLabel(m.label); lbl.setToolTip(m.tooltip or m.label)
+                sec.addRow(lbl, field)
+            sec.set_expanded(title == "Balance & Aero")
+            sec.reset_requested.connect(lambda t=title: self._reset_section(t))
+            vlay.addWidget(sec)
+
+        vlay.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(container)
+        return scroll
+
+    def _field_for(self, key):
+        m = meta_for(key)
+        if m.kind == "sci":
+            field = ScientificField()
+        else:
+            field = QDoubleSpinBox()
+            field.setRange(m.lo, m.hi)
+            field.setSingleStep(m.step)
+            field.setDecimals(m.decimals)
+            if m.unit:
+                field.setSuffix(f" {m.unit}")
+        field.setToolTip(m.tooltip or m.label)
+        return field
+
+    # ---- changed-from-default highlighting --------------------------------
+    def _on_param_changed(self, key):
+        defaults = all_vp_defaults()
+        self._set_field_changed_style(self.vp_spins[key], self._is_changed(key, defaults))
+        for title, keys in self._section_keys.items():
+            if key in keys:
+                self._update_section_badge(title, defaults)
+                break
+
+    def _is_changed(self, key, defaults):
+        try:
+            return float(self.vp_spins[key].value()) != float(defaults[key])
+        except ValueError:
+            return True
+
+    def _set_field_changed_style(self, field, changed):
+        if isinstance(field, ScientificField):
+            field.set_changed(changed)
+        else:
+            field.setStyleSheet("font-weight: bold; color: #b30000;" if changed else "")
+
+    def _update_section_badge(self, title, defaults=None):
+        if defaults is None:
+            defaults = all_vp_defaults()
+        n = sum(1 for k in self._section_keys[title] if self._is_changed(k, defaults))
+        self._sections[title].set_changed_count(n)
+
+    def _refresh_all_changed(self):
+        defaults = all_vp_defaults()
+        for k in self.vp_spins:
+            self._set_field_changed_style(self.vp_spins[k], self._is_changed(k, defaults))
+        for title in self._section_keys:
+            self._update_section_badge(title, defaults)
+
+    # ---- reset / preset ---------------------------------------------------
+    def _reset_all_params(self):
+        defaults = all_vp_defaults()
+        for k, field in self.vp_spins.items():
+            field.setValue(float(defaults[k]))
+        self._refresh_all_changed()
+
+    def _reset_section(self, title):
+        defaults = all_vp_defaults()
+        for k in self._section_keys[title]:
+            self.vp_spins[k].setValue(float(defaults[k]))
+        self._refresh_all_changed()
+
+    def _save_preset(self):
+        os.makedirs(user_presets_dir(), exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save preset", os.path.join(user_presets_dir(), "setup.json"),
+            "JSON (*.json)")
+        if not path:
+            return
+        data = {k: float(self.vp_spins[k].value()) for k in self.vp_spins}
+        try:
+            with open(path, "w") as fh:
+                json.dump(data, fh, indent=2)
+            self._append_log(f"[preset saved] {path}\n")
+        except Exception as exc:
+            self._append_log(f"[preset save error] {exc}\n")
+
+    def _load_preset(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load preset", user_presets_dir(), "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except Exception as exc:
+            self._append_log(f"[preset load error] {exc}\n")
+            return
+        self._apply_param_dict(data)
+
+    def _apply_param_dict(self, data):
+        applied, ignored = 0, 0
+        for k, v in data.items():
+            if k in self.vp_spins:
+                try:
+                    self.vp_spins[k].setValue(float(v))
+                    applied += 1
+                except (TypeError, ValueError):
+                    ignored += 1
+            else:
+                ignored += 1
+        self._refresh_all_changed()
+        msg = f"[preset] applied {applied} values"
+        if ignored:
+            msg += f", ignored {ignored} unknown/invalid keys"
+        self._append_log(msg + "\n")
 
     def _build_output_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
@@ -167,6 +299,13 @@ class MainWindow(QMainWindow):
 
     # ---- collect / run ----------------------------------------------------
     def collect_runconfig(self):
+        defaults = all_vp_defaults()
+        vp = {}
+        for k, field in self.vp_spins.items():
+            try:
+                vp[k] = float(field.value())
+            except (TypeError, ValueError):
+                vp[k] = float(defaults[k])
         return RunConfig(
             circuit=self.circuit.currentText(),
             AeroConfig=self.aero.currentText(),
@@ -180,10 +319,8 @@ class MainWindow(QMainWindow):
             save=self.save_cb.isChecked(),
             plot=self.plot_cb.isChecked(),
             output_dir=self.output_dir.text(),
-            brkB=self.brkB.value(), Tdist=self.Tdist.value(), ksD=self.ksD.value(),
-            alpha_FL=self.alpha_FL.value(), alpha_FR=self.alpha_FR.value(),
-            alpha_RW=self.alpha_RW.value(), alpha_TW=self.alpha_TW.value(),
             expert_config=self.expert.text() or None,
+            vp=vp,
         )
 
     def _on_run(self):
@@ -249,16 +386,13 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getOpenFileName(self, "Expert config", "", "JSON (*.json)")
         if f:
             self.expert.setText(f)
-            self._load_expert_tier1(f)
+            self._load_expert_into_widgets(f)
 
-    def _load_expert_tier1(self, path):
-        import json
+    def _load_expert_into_widgets(self, path):
         try:
             with open(path) as fh:
                 data = json.load(fh)
         except Exception as exc:
             self._append_log(f"[expert config error] {exc}\n")
             return
-        for k in TIER1_FIELDS:
-            if k in data and hasattr(self, k):
-                getattr(self, k).setValue(float(data[k]))
+        self._apply_param_dict(data)
