@@ -1,14 +1,11 @@
-"""curv2cart.py - direct port of Functions/curv2cart.m
+"""curv2cart.py - port of Functions/curv2cart.m
 
-Reconstruct a track in cartesian coordinates (x,y) from curvilinear data (s,k).
+Reconstruct cartesian (x,y) from curvilinear (s,k).
 
     s     : cumulative distance along the curve (m)
-    k     : curvature, with sign (1/m)
-    o     : +1 or -1. By default (o=+1) k>0 is a left-hand turn; o=-1 reverses it.
-    theta : orientation of the first segment in the cartesian plane (default 0).
-
-Faithful translation of the MATLAB loop, including the 1e-4 straight-line
-threshold and the chord/angle update used on curved segments.
+    k     : signed curvature (1/m)
+    o     : +1 (default) means k>0 is a left turn; o=-1 reverses it.
+    theta : orientation of the first segment (default 0).
 """
 
 import numpy as np
@@ -21,7 +18,7 @@ def _pol2cart(theta, rho):
 
 
 def curv2cart(s, k, o=1, theta=0.0):
-    thr = 1e-4  # threshold for the curvature to be considered a straight
+    thr = 1e-4  # |k| below this = straight
 
     if o == -1:
         k = -np.asarray(k, dtype=float)

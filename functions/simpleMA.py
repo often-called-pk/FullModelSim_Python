@@ -1,22 +1,13 @@
-"""simpleMA.py - direct port of Functions/simpleMA.m
+"""simpleMA.py - port of Functions/simpleMA.m
 
-Moving-average smoother used to clean synthetic curvature signals.
+Moving-average smoother for synthetic curvature signals.
 
     s_in : input signal
-    N    : number of intervals used for the moving average
-    M    : number of times to apply the moving average (default 1)
+    N    : moving-average window (intervals)
+    M    : number of passes (default 1)
 
-MATLAB original:
-    s_out = s_in;
-    for i=1:M
-        coeff = ones(1,round(N))/(N);
-        s_out = filter(coeff,1,s_out);          % causal FIR
-        s_out = circshift(s_out, -round(N/2));  % undo the FIR delay
-    end
-
-``filter(b,1,x)`` is reproduced with scipy.signal.lfilter and ``circshift`` with
-np.roll. MATLAB ``round`` (half away from zero) is reproduced with floor(x+0.5)
-for the positive arguments used here.
+Port notes: filter(b,1,x) -> scipy lfilter, circshift -> np.roll, MATLAB round
+(half away from zero) -> floor(x+0.5) for the positive args used here.
 """
 
 import numpy as np

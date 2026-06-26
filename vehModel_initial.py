@@ -7,9 +7,8 @@ States  (7): vx, vy, r, n, eps, Om_f, Om_r
 Inputs  (3): Tdrive, Tbrake, delta
 Aux     (1): ltx        (longitudinal load transfer)
 
-Everything needed by MLTP_initial.py (symbols, scalings, limits, dynamics, and
-the intermediate force/torque expressions used to build the path constraints and
-post-processing) is stored on ``ctx.m7`` (a namespace).
+Symbols, scalings, limits, dynamics, and intermediate force/torque expressions
+are stored on ``ctx.m7`` (used by MLTP_initial.py for constraints + post-processing).
 """
 
 import numpy as np

@@ -1,15 +1,13 @@
 """transcription.py - shared direct-collocation transcription utilities.
 
-The transcription (discretisation, NLP assembly, solve, reconstruction) is
-byte-for-byte identical between MLTP_initial.m and MLTP.m, so it lives here once
-and is called by both ports. This keeps the per-script files thin while exactly
-reproducing the MATLAB numerics.
+Discretisation, NLP assembly, solve, and reconstruction shared by MLTP_initial.m
+and MLTP.m (identical numerics in both ports).
 
 Conventions reproduced from MATLAB:
   * decision vector  w = [Xk(:); Uk(:); Yk(:); Xkj(:)]  (Yk omitted when ny == 0)
   * all reshapes are column-major (order='F') to match MATLAB
-  * boundary bounds use NaN-ignoring max/min (np.fmax/np.fmin) so that NaN entries
-    in Xi/Xf leave the corresponding state free, exactly like MATLAB max/min.
+  * boundary bounds use NaN-ignoring max/min (np.fmax/np.fmin) so NaN entries in
+    Xi/Xf leave that state free, like MATLAB max/min.
 """
 
 import numpy as np
@@ -326,13 +324,12 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
 def _make_solver(ca, nlp, opts):
     """Create the IPOPT solver with a configurable linear solver.
 
-    If an HSL solver (ma*) is requested, register the Coin-HSL DLL directory,
-    probe once that IPOPT can load it, and use it via the `hsllib` option; if
-    HSL is unavailable or fails to load, transparently fall back to MUMPS
+    For an HSL solver (ma*), register the Coin-HSL DLL dir, probe once that IPOPT
+    can load it, and select it via `hsllib`; on any failure fall back to MUMPS
     (bundled in the casadi wheel) so a solve never crashes on a missing or
-    incompatible HSL DLL. The HSL directory is taken from a private top-level
-    `opts["_hsl_dir"]` hint (set by userOpts) resolved against COINHSL_DIR and
-    a seeded default; the hint is always stripped before reaching CasADi.
+    incompatible HSL DLL. The HSL dir comes from a private `opts["_hsl_dir"]` hint
+    (set by userOpts, resolved against COINHSL_DIR and a seeded default) that is
+    always stripped before reaching CasADi.
     """
     import copy
     from functions.hsl import apply_linear_solver, resolve_hsl_dir

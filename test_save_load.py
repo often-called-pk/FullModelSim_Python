@@ -1,6 +1,5 @@
-"""Validate that a saved optimal-solution .mat round-trips: save -> reload ->
-the racing line and channels are all recoverable without re-solving.
-This is the user's core requirement. Uses scipy only (no casadi/plotly)."""
+"""Validate a saved optimal-solution .mat round-trips (save -> reload): the racing
+line and channels recover without re-solving. scipy only (no casadi/plotly)."""
 import sys, os, tempfile
 import numpy as np
 import scipy.io as sio

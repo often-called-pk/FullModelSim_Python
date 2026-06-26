@@ -1,8 +1,4 @@
-"""Validation of the foundation modules (no casadi required).
-
-Checks the numpy/scipy helpers against analytic ground truth so we know the
-formulas are correct before building the model on top of them.
-"""
+"""Validate the foundation helpers against analytic ground truth (no casadi)."""
 import sys, os
 import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))

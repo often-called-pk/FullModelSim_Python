@@ -1,22 +1,14 @@
-"""vehModel.py - direct port of vehModel.m (FullModel_4EM_Suspension_FullTyre)
+"""Full 23-state vehicle model (port of vehModel.m, FullModel_4EM_Suspension_FullTyre).
 
-The full 23-state vehicle model: four wheels, sprung heave/pitch/roll + four
-unsprung-mass and four tyre-deflection states, full Pacejka 5.2 Magic Formula
-(pure + combined slip, both axes, with camber), active aerodynamics, and the
-single-motor / ATD / four-motor (EM4) powertrain branches.
+States: 4 wheels, sprung heave/pitch/roll + 4 unsprung + 4 tyre-deflection. Full
+Pacejka 5.2 (pure + combined slip, both axes, with camber), active aero, and the
+single-motor / ATD / four-motor (EM4) powertrain branches. Tyre coeffs from
+``ctx.mf`` (Copy B), aero from ``ctx.aero``, camber-gain from ``ctx.cg``. The MATLAB
+hard-coded switches (``Steering='NA'``, ``CamberGain='Off'``, ``TyreModel='CombinedSlip'``)
+are exposed as args with the same defaults.
 
-The selected tyre coefficient set is read from ``ctx.mf`` (Copy B, per the user's
-confirmation), the DATA_AA aero polynomials from ``ctx.aero``, and the linear
-camber-gain coefficients from ``ctx.cg``. Hard-coded model switches in the MATLAB
-(``Steering='NA'``, ``CamberGain='Off'``, ``TyreModel='CombinedSlip'``) are exposed
-as arguments with the same defaults.
-
-There are NO aux variables (ny = 0): the load transfers are produced by the
-suspension/tyre states, not by algebraic decision variables.
-
-Everything needed by MLTP.py (symbols, sizes, scalings, limits, dynamics, and the
-intermediate signals for path constraints and post-processing) is stored on
-``ctx.m23`` (a namespace).
+No aux variables (ny=0): load transfers come from the suspension/tyre states, not
+algebraic decision variables. Results are stored on ``ctx.m23``.
 """
 
 import numpy as np

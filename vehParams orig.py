@@ -29,8 +29,8 @@ def vehParams(ctx, data_dir="Data"):
     vp = ctx.vp
 
     # ---- vehicle parameter inputs -----------------------------------------
-    vp.brkB = 0.65          # fraction of total brake force to front wheels (-)
-    vp.Tdist = 0.33         # fraction of total torque to rear wheels       (-)
+    vp.brkB = 0.6766          # fraction of total brake force to front wheels (-)
+    vp.Tdist = 0.7281         # fraction of total torque to rear wheels       (-)
     vp.ksD = 0.4620           # fraction of total roll stiffness, rear axle   (-)
 
     # ---- aerodynamic input ------------------------------------------------
@@ -41,26 +41,26 @@ def vehParams(ctx, data_dir="Data"):
 
     # ---- constants --------------------------------------------------------
     vp.g = 9.81               # gravitational acceleration (m/s^2)
-    vp.rho = 1.225            # air density                (kg/m^3)
+    vp.rho = 1.204            # air density                (kg/m^3)
 
     # ---- masses -----------------------------------------------------------
-    vp.mb = 1517.0            # sprung mass            (kg)
+    vp.mb = 1820.0            # sprung mass            (kg)
     vp.md = 75.0              # driver mass            (kg)
     vp.ms = vp.mb + vp.md     # total sprung mass      (kg)
-    vp.muf = 45.0             # unsprung mass front    (kg)
-    vp.mur = 55.0             # unsprung mass rear     (kg)
+    vp.muf = 90.0             # unsprung mass front    (kg)
+    vp.mur = 100.0            # unsprung mass rear     (kg)
     vp.mus = vp.muf + vp.mur  # total unsprung mass    (kg)
     vp.m = vp.ms + vp.muf + vp.mur   # total mass      (kg)
 
     # ---- dimensions -------------------------------------------------------
-    vp.A = 2.0               # reference area (m^2)
-    vp.t = 1.7                # track width    (m)
-    vp.l = 2.8                # wheelbase      (m)
-    vp.wB = 0.57               # COG distribution front (-)
+    vp.A = 1.95               # reference area (m^2)
+    vp.t = 1.8                # track width    (m)
+    vp.l = 3.0                # wheelbase      (m)
+    vp.wB = 0.5               # COG distribution front (-)
     vp.l_f = vp.l * (1 - vp.wB)   # COG -> front axle (m)
     vp.l_r = vp.l * vp.wB         # COG -> rear  axle (m)
 
-    vp.hcg = 0.45              # COG height (m)
+    vp.hcg = 0.5              # COG height (m)
     vp.huf = 0.2968771        # height COG unsprung front (m)
     vp.hur = 0.2968771        # height COG unsprung rear  (m)
     vp.hw = 1.28              # rear wing height (m)
@@ -71,31 +71,31 @@ def vehParams(ctx, data_dir="Data"):
     vp.hride = 0.117          # ride height (m)
 
     # ---- inertias ---------------------------------------------------------
-    vp.I_z = 2900.0           # yaw   (kg*m^2)
-    vp.I_y = 2500.0           # pitch (kg*m^2)
-    vp.I_x = 500.0           # roll  (kg*m^2)
+    vp.I_z = 1960.0           # yaw   (kg*m^2)
+    vp.I_y = 1600.0           # pitch (kg*m^2)
+    vp.I_x = 1000.0           # roll  (kg*m^2)
 
     # placeholders (overwritten below by DATA_AA)
-    vp.Cd = 0.32
-    vp.Cl = -.15
+    vp.Cd = 0.75
+    vp.Cl = 1.45
 
     # ---- tyre parameters --------------------------------------------------
     # NOTE: overwrites Powertrain's vp.Rw = 0.3142857 (see module docstring).
-    vp.Rw = 0.35
-    vp.Rw_r = 0.37
-    vp.Rw_f = 0.35
-    vp.Jw = 1.6       # = 1.6  (kg*m^2) WHEEL ROTATIONAL INERTIA (2 wheels)
-    vp.f = 0.01               # rolling resistance coefficient (-) X
-    vp.kt = 280000.0          # tyre vertical stiffness (N/m)
+    vp.Rw = 0.355
+    vp.Rw_r = 0.355
+    vp.Rw_f = 0.355
+    vp.Jw = 0.9 * 2 * 2       # = 3.6  (kg*m^2)
+    vp.f = 0.01               # rolling resistance coefficient (-)
+    vp.kt = 300000.0          # tyre vertical stiffness (N/m)
 
-    vp.Fz0 = 4300.0           # nominal vertical wheel load (N)   [Copy B] X
+    vp.Fz0 = 4905.0           # nominal vertical wheel load (N)   [Copy B]
     vp.Fz0_shift = 1.0        # nominal-load shift (optimised in TyreOptim)
 
     # ---- suspension -------------------------------------------------------
-    vp.k_fl = 40000.0
-    vp.k_fr = 40000.0
-    vp.k_rl = 50000.0
-    vp.k_rr = 50000.0
+    vp.k_fl = 75000.0
+    vp.k_fr = 75000.0
+    vp.k_rl = 80000.0
+    vp.k_rr = 80000.0
 
     vp.zeta_fl = 0.7
     vp.zeta_fr = 0.7
@@ -132,7 +132,7 @@ def vehParams(ctx, data_dir="Data"):
     vp.lsi_rr = vp.hcg - (vp.Rw - vp.xti_rr)
 
     # ---- brakes -----------------------------------------------------------
-    vp.Tbrake_max = 6e3       # max braking torque (Nm)
+    vp.Tbrake_max = 4e3       # max braking torque (Nm)
 
     # ---- aerodynamics (DATA_AA) ------------------------------------------
     aa_path = os.path.join(data_dir, "DATA_AA.mat")

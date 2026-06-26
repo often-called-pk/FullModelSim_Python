@@ -1,21 +1,20 @@
 """collocation.py - Legendre collocation helpers.
 
-Provides ``collocation_points(d, scheme)`` and ``collocation_coeff(tau)``,
-matching MATLAB's CasADi helpers used by the MLTP transcription:
+``collocation_points(d, scheme)`` and ``collocation_coeff(tau)``, matching the
+MATLAB CasADi helpers used by the MLTP transcription:
 
     tau        = collocation_points(d, 'legendre')   % d points in (0,1)
     [C, D, B]  = collocation_coeff(tau)
 
-with the exact shapes the transcription relies on:
+with the shapes the transcription relies on:
     C : (d+1) x d   differentiation matrix      ->  dPi = Z * C      (Z is nx x (d+1))
     D : (d+1) x 1   continuity / end-point row  ->  Xk_end = Z * D
     B : d x 1       quadrature (Gauss) weights   ->  J += Qk * B * ds  (Qk is 1 x d)
 
-When the installed CasADi exposes the native helpers they are used directly
-(guaranteeing identical numerics to the MATLAB run); otherwise a self-contained
-Lagrange-polynomial implementation is used. The augmented node set is
-``[0, tau_1, ..., tau_d]`` for C and D; the quadrature weights B use the Lagrange
-basis over the d collocation points only (the standard Gauss-Legendre weights).
+Uses CasADi's native helpers when available (identical numerics to MATLAB), else
+a self-contained Lagrange-polynomial fallback. Augmented node set is
+``[0, tau_1, ..., tau_d]`` for C and D; B uses the Lagrange basis over the d
+collocation points only (standard Gauss-Legendre weights).
 """
 
 import numpy as np

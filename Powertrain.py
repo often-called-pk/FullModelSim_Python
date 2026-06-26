@@ -1,9 +1,9 @@
 """Powertrain.py - direct port of Powertrain.m
 
-Defines the powertrain parameter namespace ``pt`` and, exactly as the MATLAB
-script does, sets ``vp.Rw`` (wheel radius) and the derived ``vp.gear`` (final
-drive ratio from the top-speed requirement). Called from userOpts before
-vehParams (which re-asserts the same vp.Rw value).
+Defines the powertrain namespace ``pt`` and, as in the MATLAB script, sets
+``vp.Rw`` and the derived ``vp.gear`` (final drive ratio from top speed).
+Called from userOpts before vehParams, which later overwrites vp.Rw with 0.355
+(a different value) but keeps this gear — see the wheel-radius quirk.
 
 MATLAB original:
     pt.Pmax  = 2*228*1000;        % max continuous power e-motor (W)   [2x SPM242-176]
@@ -24,13 +24,13 @@ def Powertrain(ctx):
         ctx.vp = SimpleNamespace()
 
     pt = SimpleNamespace()
-    pt.Pmax = 2 * 228 * 1000.0          # max continuous power e-motor (W)
-    pt.Tmax = 2 * 301.0                 # max continuous torque e-motor (Nm)
-    pt.OMmax = 17750 * (np.pi / 30.0)   # max angular velocity e-motor (rad/s)
-    pt.Vmax = 290.0 / 3.6               # required top speed (m/s)
+    pt.Pmax = 3 * 150 * 1000.0          # max continuous power e-motor (W)
+    pt.Tmax = 3 * 143.0                 # max continuous torque e-motor (Nm)
+    pt.OMmax = 25000 * (np.pi / 30.0)   # max angular velocity e-motor (rad/s)
+    pt.Vmax = 380.0 / 3.6               # max top speed (m/s) calculated using vmax = {(2 × Pmax)/(Rho × Cd × A)}^(1/3)
     pt.eff = 0.9                        # efficiency e-motor (-)
 
-    ctx.vp.Rw = 0.3142857               # wheel radius (m)
+    ctx.vp.Rw = 0.35               # wheel radius (m)
     ctx.vp.gear = (pt.OMmax * ctx.vp.Rw) / pt.Vmax   # final drive ratio
 
     ctx.pt = pt

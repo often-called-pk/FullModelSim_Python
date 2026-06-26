@@ -1,8 +1,8 @@
 """HSL integration tests (plain script, no pytest).
 
 Sections 1-3 are casadi-free (resolution / path / opts-rewriting via an injected
-fake probe). Section 4 is a guarded smoke that only runs if a real CoinHSL DLL
-resolves on this machine. Run from the repo root:
+fake probe); section 4's real-DLL smoke runs only if a CoinHSL DLL resolves here.
+Run from the repo root:
 
     venv\\Scripts\\python.exe test_hsl.py
 """

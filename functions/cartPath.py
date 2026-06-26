@@ -1,14 +1,6 @@
-"""cartPath.py - direct port of Functions/cartPath.m
+"""cartPath.py - port of Functions/cartPath.m
 
-Retrieve cartesian coordinates of the vehicle trajectory from the centre-line
-coordinates (x0,y0) and the signed normal distance to the centre line (n).
-
-MATLAB original:
-    X0 = [x0(:) y0(:)];
-    dx = diff(X0);
-    n_vec = [-dx(:,2) dx(:,1)]./vecnorm(dx')';
-    X = X0 + n(:).*[n_vec; n_vec(end,:)];
-    x = X(:,1); y = X(:,2);
+Vehicle trajectory (x,y) from centre-line (x0,y0) and signed normal offset n.
 """
 
 import numpy as np

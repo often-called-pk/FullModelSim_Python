@@ -1,13 +1,9 @@
 """context.py - shared-context utilities.
 
-MATLAB scripts share a single base workspace; each ``run('foo.m')`` injects its
-variables into scope. Python has no equivalent, so the ported scripts pass one
-mutable ``Ctx`` object between the module functions (``userOpts(ctx)``,
-``vehModel(ctx)``, ...). This keeps one file per MATLAB file while making every
-data dependency explicit.
-
-Parameter groups (``vp``, ``pt``, ``track``, ``c`` ...) are stored as nested
-SimpleNamespaces so they preserve the MATLAB dot syntax (``vp.tyre.mu``,
+A single mutable ``Ctx`` is threaded through the ported modules (``userOpts(ctx)``,
+``vehModel(ctx)``, ...), replacing MATLAB's shared base workspace and making every
+data dependency explicit. Parameter groups (``vp``, ``pt``, ``track``, ``c`` ...)
+are nested SimpleNamespaces, preserving the MATLAB dot syntax (``vp.tyre.mu``,
 ``pt.Pmax``, ``c.ub.T_motor``).
 """
 

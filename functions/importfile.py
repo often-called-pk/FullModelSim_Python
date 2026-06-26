@@ -1,15 +1,11 @@
 """importfile.py - port of Functions/importfile.m
 
-MATLAB original loads a ``-mat`` file and injects every field into the base
-workspace via ``assignin('base', ...)``. Python has no base workspace, so this
-version returns a dict mapping each saved variable name to a Python value, with
-MATLAB structs converted recursively to ``types.SimpleNamespace`` so that field
-access keeps the MATLAB dot syntax (e.g. ``data.x_opt``, ``track.s``).
-
-Typical use mirrors the MATLAB ``importfile('Static_MidDF.mat'); data.init = data;``:
+MATLAB injects every .mat field into the base workspace; Python has none, so this
+returns {var_name: value} with structs as SimpleNamespace to keep dot syntax
+(e.g. data.x_opt, track.s).
 
     vars = importfile('Data/Initialisation/Static_MidDF.mat')
-    ctx.data = vars['data']            # the saved result struct
+    ctx.data = vars['data']
 """
 
 import numpy as np
@@ -42,9 +38,8 @@ def importfile(file_to_read):
 
 
 def load_solution(path):
-    """Reload a saved MLTP/MLTP_initial solution .mat and return the ``data``
-    struct as a namespace (data.track.xopt, data.vehicle.fx_fl, data.x_full, ...).
-    Works for both full-solve files ({'data': {...}}) and warm-start files
+    """Reload a saved MLTP solution .mat and return the ``data`` namespace.
+    Handles full-solve files ({'data': {...}}) and warm-start files
     ({'data': {'init': {...}}})."""
     loaded = importfile(path)
     data = loaded["data"]

@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
-"""gg_plots.py - interactive Plotly friction-circle / g-g plots for the MLTP pipeline.
+"""Interactive Plotly friction-circle / g-g plots for the MLTP pipeline.
 
-Adds TWO standalone HTML plots, written next to your existing friction_circle.html
-(which is left completely untouched - this module only ADDS files):
+Adds two standalone HTML plots; the existing friction_circle.html is untouched:
 
   * <outdir>/friction_circle_gg.html  per-tyre friction circle (4 tyres);
         axes Fx/(mu*Fz) and Fy/(mu*Fz); the unit circle is the grip limit.
   * <outdir>/gg_diagram.html          vehicle g-g diagram; lateral vs
         longitudinal acceleration in g, points coloured by speed.
 
-INTEGRATION - one import + one call, placed wherever your other plots are made
-(e.g. the post-processing tail of MLTP.py, right after the existing friction
-circle is written):
+Integration - one import + one call, placed wherever your other plots are made:
 
     from gg_plots import generate_gg_plots
     generate_gg_plots(data, fullFolderPath)      # writes both HTML files
 
-Both use only quantities your solution already carries: the MATLAB pipeline
-computes per-tyre fx/fy/fz and mu_x/mu_y, and vehicle ax_g/ay_g, and already
-saves FrictionCircles.fig and G-G_Diagram_LatLonAcc_ByZone.fig. The ONLY thing
-to verify for your Python port is the two extraction helpers at the bottom -
-adjust the field names to match your `data` structure. Or skip extraction
-entirely by passing arrays directly:
+Uses only quantities the solution already carries (per-tyre fx/fy/fz, mu_x/mu_y,
+vehicle ax_g/ay_g). The two extraction helpers at the bottom map field names to
+your `data` struct; or bypass them by passing arrays directly:
 
     generate_gg_plots(
         outdir=fullFolderPath,
@@ -287,13 +281,12 @@ def generate_gg_plots(data=None, outdir=".", *, tyre=None, vehicle=None,
 
 
 # ---------------------------------------------------------------------------
-# data extraction  --  matched to the Python port (MLTP.py / plotSDI.py):
+# data extraction  --  field-name map for the Python port (MLTP.py / plotSDI.py):
 #   `data` is a SimpleNamespace; `data.vehicle` is a dict of flat (N+1,) arrays.
 #     per-tyre forces : fx_<w> / fy_<w> / fz_<w>   (w in fl,fr,rl,rr)  [present]
 #     per-tyre mu     : mu_<w>_x / mu_<w>_y        [ADD to veh_syms in MLTP.py]
 #     vehicle accel   : Lon_acc / Lat_acc in m/s^2                     [present]
 #     vx at knots     : data.x_opt[0, :]   |   s at knots: from data.s_full
-#   Inside the pipeline these are called by generate_gg_plots(data, outdir).
 # ---------------------------------------------------------------------------
 _G = 9.81
 
@@ -365,7 +358,7 @@ def vehicle_gg_from_solution(data):
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # synthetic demo so the module runs standalone (writes both HTMLs)
+    # synthetic demo so the module runs standalone
     def synth(n=1400, lat=1.0, lon=1.0, seed=0):
         rng = np.random.default_rng(seed)
         th = np.concatenate([

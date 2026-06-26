@@ -4,7 +4,7 @@ Solves the full Minimum Lap Time Problem with the 23-state model:
 
     userOpts -> warm start (MLTP_initial or importfile) -> vehModel
     -> build OCP (objective + config-dependent path constraints)
-    -> direct-collocation transcription -> IPOPT (MUMPS) -> postprocess -> save .mat
+    -> direct-collocation transcription -> IPOPT (ma57) -> postprocess -> save .mat
 
 The optimal solution is written to Results/<circuit>_<config>.mat. The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
@@ -217,7 +217,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ("zs", m.zs), ("theta", m.theta), ("phi", m.phi),
         ("T_fl", m.T_fl), ("T_fr", m.T_fr), ("T_rl", m.T_rl), ("T_rr", m.T_rr),
         ("Lon_acc", m.Lon_acc), ("Lat_acc", m.Lat_acc),
-        # --- added: per-tyre friction coefficients (needed for the friction circle) ---
+        # per-tyre friction coefficients (for the friction circle)
         ("mu_fl_x", m.mu_fl_x), ("mu_fl_y", m.mu_fl_y),
         ("mu_fr_x", m.mu_fr_x), ("mu_fr_y", m.mu_fr_y),
         ("mu_rl_x", m.mu_rl_x), ("mu_rl_y", m.mu_rl_y),

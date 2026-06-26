@@ -1,17 +1,10 @@
-"""rotatePoint2D.py - direct port of Functions/rotatePoint2D.m
+"""rotatePoint2D.py - port of Functions/rotatePoint2D.m
 
 Rotate a 2D point P about the origin.
 
-MATLAB original:
-    function rotatedPoint = rotatePoint2D(alpha, P)
-    P = reshape(P,1,[]);
-    s = sin(alpha);  c = cos(alpha);
-    R = [c, -s;  s, c];
-    rotatedPoint = P * R;
-
-Note: the MATLAB header comment says ``alpha in degrees`` but the code applies
-sin/cos directly (i.e. radians). The behaviour is preserved exactly here. In the
-only call site (curv2cart) the angle is 0 by default, so R is the identity.
+Gotcha: the MATLAB header says ``alpha in degrees`` but the code applies sin/cos
+directly (radians); preserved exactly here. The only call site (curv2cart) passes
+alpha=0, so R is the identity.
 """
 
 import numpy as np

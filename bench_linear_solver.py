@@ -1,16 +1,13 @@
 """Benchmark IPOPT linear solvers on the full 23-state MLTP.
 
-Solves the same OCP once per linear solver and reports iteration count, the
-isolated 23-state solve time (excludes the 7-state warm start), the split
-between NLP function-evaluation time and IPOPT-internal time (dominated by the
-linear-solver factorisations), and that IPOPT-internal time *per iteration*.
+Solves the same OCP once per linear solver and reports iteration count, isolated
+23-state solve time (excludes the 7-state warm start), the NLP-eval vs
+IPOPT-internal time split, and IPOPT-internal time *per iteration*.
 
-The per-iteration figure (`ip_ms/it`) is the apples-to-apples linear-solver
-metric: total wall-clock is confounded because this nonconvex OCP has multiple
-local optima, so different linear solvers can take very different iteration
-counts to converge. Comparing IPOPT-internal cost *per iteration* isolates the
-linear solver from the iteration count and is the honest way to quantify the
-Coin-HSL speed-up over MUMPS.
+`ip_ms/it` is the apples-to-apples metric: total wall-clock is confounded because
+this nonconvex OCP has multiple local optima, so solvers take different iteration
+counts to converge. Cost *per iteration* isolates the linear solver and is the
+honest way to quantify the Coin-HSL speed-up over MUMPS.
 
 Run from the repo root:
 
@@ -33,9 +30,8 @@ def _row(solver, ctx):
     iters = st.get("iter_count", "?")
     ipopt_s = (total - func) if total == total else float("nan")  # NaN-safe
     # IPOPT-internal time per iteration (ms): dominated by the linear-solver
-    # factorisation + back-solve, so this is the per-iteration linear-solver
-    # cost. Across solvers it isolates the linear solver from the iteration
-    # count, which differs when they converge to different local optima.
+    # factorisation + back-solve, so it isolates the linear solver from the
+    # iteration count (which differs across local optima).
     try:
         ip_ms_it = 1000.0 * ipopt_s / iters if iters else float("nan")
     except (TypeError, ZeroDivisionError):
@@ -82,8 +78,7 @@ def _print_table(results):
         spd = base["solve_s"] / r["solve_s"] if r["solve_s"] else float("nan")
         print(f"  {r['solver']} total solve_s vs mumps: {spd:.2f}x")
         # Per-iteration linear-solver speed-up -- the apples-to-apples figure;
-        # the total above is confounded when the solvers take different
-        # iteration counts (different local optima) to converge.
+        # the total above is confounded by differing iteration counts.
         if (base["ip_ms_it"] == base["ip_ms_it"]
                 and r["ip_ms_it"] == r["ip_ms_it"] and r["ip_ms_it"]):
             spd_it = base["ip_ms_it"] / r["ip_ms_it"]

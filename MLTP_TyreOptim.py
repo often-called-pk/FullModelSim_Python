@@ -1,13 +1,10 @@
-"""MLTP_TyreOptim.py - direct port of MLTP_TyreOptim.m
+"""Port of MLTP_TyreOptim.m - co-optimise tyre nominal-load-shift Fz0_shift with the racing line.
 
-Co-optimises the tyre nominal-load-shift parameter ``Fz0_shift`` with the racing
-line. vehParams.m documents this parameter as the "fraction shift in nominal
-wheel load - optimisation parameter in TyreOptim script": it scales the load fed
-into the Pacejka formula via ``fz_shift = fz / Fz0_shift`` at every wheel, so
-optimising it tunes the effective operating point of the tyre model.
+Fz0_shift scales the load fed into the Pacejka formula (fz_shift = fz / Fz0_shift
+at every wheel), so optimising it tunes the tyre model's operating point.
 
-It reuses the shared solve core from MLTP_paramOptim.py; only the promoted
-parameter set differs.
+Reuses the shared solve core from MLTP_paramOptim.py; only the promoted parameter
+set differs.
 """
 
 import numpy as np

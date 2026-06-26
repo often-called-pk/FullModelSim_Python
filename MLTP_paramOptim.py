@@ -1,16 +1,13 @@
-"""MLTP_paramOptim.py - direct port of MLTP_paramOptim.m
+"""Port of MLTP_paramOptim.m - co-optimise static design parameters with the racing line.
 
-Co-optimises a set of static *design parameters* together with the racing line:
-the parameters are promoted from fixed values (in ctx.vp) to scalar decision
-variables that are constant over the lap, appended once to the NLP decision
-vector with their own bounds, and solved simultaneously with the trajectory.
+Promotes chosen ctx.vp fields from fixed values to constant-over-lap decision
+variables, appended to the NLP vector with their own bounds and solved jointly
+with the trajectory. Default params: brkB, Tdist, alpha_FL/FR/RW/TW.
 
-Default promoted parameters (Static aero config): brake balance ``brkB``, torque
-distribution ``Tdist``, and the four wing angles ``alpha_FL/FR/RW/TW``. (The roll-
-stiffness fraction ``ksD`` is intentionally excluded: in the 23-state model the
-lumped roll-stiffness block is inactive, so it has no effect on the dynamics.)
+ksD is intentionally excluded: the 23-state model's lumped roll-stiffness block
+is inactive, so it has no effect on the dynamics.
 
-The shared solve core ``optimise_design`` is reused by MLTP_TyreOptim.py.
+Shared core optimise_design is reused by MLTP_TyreOptim.py.
 """
 
 import os

@@ -1,14 +1,12 @@
 """Coin-HSL linear-solver support for IPOPT.
 
-CasADi's bundled IPOPT already contains the HSL runtime loader; it loads an
-external HSL shared library at *solve* time when `linear_solver` is an `ma*`
-solver and the `hsllib` option points at the library. This module locates that
-library, makes it (and its co-located dependency DLLs) findable on Windows,
-probes once that IPOPT can actually use it, and rewrites the IPOPT options dict
-to either use HSL or fall back to MUMPS.
+CasADi's bundled IPOPT loads an external HSL shared library at *solve* time when
+`linear_solver` is an `ma*` solver and `hsllib` points at it. This module locates
+the library, makes it (and co-located dependency DLLs) findable on Windows, probes
+once that IPOPT can use it, and rewrites the IPOPT options dict to use HSL or fall
+back to MUMPS.
 
-Everything here is casadi-free except `probe_linear_solver`, which imports
-casadi lazily so the rest of the module stays importable without it.
+Casadi-free except `probe_linear_solver`, which imports casadi lazily.
 """
 import copy
 import os
@@ -27,8 +25,8 @@ _LIB_NAMES = ("libhsl.dll", "libcoinhsl.dll",
 
 # HSL solvers we let reach the probe. `ma86` is deliberately excluded: it
 # segfaulted in a loader probe, and a native segfault is NOT a catchable Python
-# exception -- it would take down the whole process. An unrecognised `ma*` name
-# (typo, or an unsupported solver) is downgraded to MUMPS rather than probed.
+# exception -- it would crash the whole process. An unrecognised `ma*` name is
+# downgraded to MUMPS rather than probed.
 _SUPPORTED_HSL = ("ma27", "ma57", "ma97")
 
 _registered = set()      # dirs already added to the DLL search path
@@ -60,10 +58,10 @@ def hsllib_path(hsl_dir):
 
 
 def register_hsl_dll_dir(hsl_dir):
-    """Make `hsl_dir` (and its co-located dependency DLLs) findable by the
-    Windows loader when IPOPT LoadLibrary's the HSL library. Idempotent; no-op
-    if the dir is missing. Uses both os.add_dll_directory and a PATH prepend so
-    transitive dependencies resolve regardless of the loader's search mode.
+    """Make `hsl_dir` (and co-located dependency DLLs) findable by the Windows
+    loader when IPOPT loads the HSL library. Idempotent; no-op if missing. Uses
+    both os.add_dll_directory and a PATH prepend so transitive dependencies
+    resolve regardless of the loader's search mode.
     """
     if not hsl_dir or hsl_dir in _registered or not os.path.isdir(hsl_dir):
         return
@@ -78,13 +76,11 @@ def register_hsl_dll_dir(hsl_dir):
 
 def probe_linear_solver(solver_name, hsllib):
     """Return True iff IPOPT can actually load+use `solver_name` (with `hsllib`)
-    in THIS process. Builds and solves a trivial NLP. Cached per (solver, lib).
+    in THIS process. Builds and solves a trivial NLP; cached per (solver, lib).
 
-    A failed HSL load makes IPOPT return status 'Invalid_Option'; a working one
-    reaches 'Solve_Succeeded'. We treat only the latter as success.
-
-    Also registers the HSL library's directory with the loader (on first call for
-    a given library) so the library and its co-located dependency DLLs can load.
+    A failed HSL load makes IPOPT return 'Invalid_Option'; a working one reaches
+    'Solve_Succeeded' -- only the latter counts as success. Also registers the
+    library's directory with the loader (first call per library).
     """
     key = (solver_name, hsllib)
     if key in _probe_cache:

@@ -1,8 +1,7 @@
-"""plotSDI.py - Plotly replacement for plotSDI.m (Simulink Data Inspector).
+"""Plotly replacement for plotSDI.m (Simulink Data Inspector).
 
-The MATLAB original streams every channel into Simulink's Simulation Data
-Inspector. Plotly has no SDI equivalent, so this module reproduces the same
-*information* as standalone interactive HTML figures:
+MATLAB streamed channels into the SDI; Plotly has no equivalent, so this emits
+the same information as standalone HTML figures:
 
   * racing line coloured by velocity (with track boundaries + centreline)
   * speed & longitudinal/lateral acceleration vs distance
@@ -16,12 +15,9 @@ Usage:
     from plotSDI import plotSDI, plot_racing_line
     plotSDI(ctx)                          # after a MLTP solve (uses ctx.data)
     plotSDI("Results/Sturn_Static_ATDOff_EM4Off.mat")   # from a saved file
-
-    from functions.importfile import load_solution
     plot_racing_line(load_solution(path)).show()
 
-Figures are written to Plots/<circuit>/<config>/<name>.html and also returned in
-a dict so a caller can display them inline.
+Figures are written to Plots/<circuit>/<config>/<name>.html and returned in a dict.
 """
 
 import os
