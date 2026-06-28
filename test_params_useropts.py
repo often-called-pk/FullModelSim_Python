@@ -99,4 +99,17 @@ ok("Sturn track has s,k", hasattr(ctx.track, "s") and hasattr(ctx.track, "k"))
 ok("Sturn s monotonic increasing", np.all(np.diff(ctx.track.s) > 0))
 ok("Sturn k smoothed (finite)", np.all(np.isfinite(ctx.track.k)))
 
+# Hybrid overrides EM4/ATD and produces the Aurora control order
+ctx4 = Ctx()
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    userOpts(ctx4, circuit="Straight", Hybrid="On", ATD="On", Electric_4Motors="On")
+ok("Hybrid topology selected", ctx4.pt.topology == "hybrid")
+ok("Hybrid forces EM4/ATD off", ctx4.pt.EM4 == 0 and ctx4.pt.ATD == 0)
+ok("Hybrid keys", ctx4.input_keys ==
+   ["T_motor_fl", "T_motor_fr", "T_motor_r", "T_ice_r", "T_brake", "split_R", "delta"])
+ok("Hybrid duk_ub shape matches keys", ctx4.duk_ub.shape == (7, 1))
+ok("Hybrid rdu2 split_R=1.5", np.allclose(
+   ctx4.rdu2.ravel(), [0, 0, 0, 0, 0, 1.5, 15]))
+
 print("\nALL vehParams / userOpts TESTS PASSED")

@@ -19,6 +19,7 @@ from Powertrain import Powertrain
 from vehParams import vehParams
 from functions.simpleMA import simpleMA
 from functions.importfile import mat_to_namespace
+from functions.drive_sources import build_topology, control_keys, _topology
 
 
 # ----------------------------------------------------------------------------- 
@@ -113,6 +114,9 @@ def _build_c():
         "T_motor_fr": (2e4, -2e4),
         "T_motor_rl": (2e4, -2e4),
         "T_motor_rr": (2e4, -2e4),
+        "T_motor_r":  (2e4, -2e4),
+        "T_ice_r":    (2e4, -2e4),
+        "split_R":    (2e4, -2e4),
         "T_brake":    (1.45e5, -1.45e5),
         "ATD":        (2e4, -2e4),
         "delta":      (0.1, -0.1),
@@ -131,6 +135,9 @@ def _build_c():
         "T_motor_fr": (0.0, 0.0, 0.0),
         "T_motor_rl": (0.0, 0.0, 0.0),
         "T_motor_rr": (0.0, 0.0, 0.0),
+        "T_motor_r":  (0.0, 0.0, 0.0),
+        "T_ice_r":    (0.0, 0.0, 0.0),
+        "split_R":    (0.0, 0.0, 1.5),
         "T_brake":    (0.0, 0.0, 0.0),
         "delta":      (0.0, 8.0, 15.0),
         "ATD":        (0.0, 0.0, 1.5),
@@ -146,26 +153,6 @@ def _build_c():
     return c
 
 
-def _input_keys(EM4, ATD, ActAero):
-    """Ordered list of input channels for a given configuration.
-
-    Reproduces exactly the explicit if/elseif ladder in userOpts.m that builds
-    duk_ub/duk_lb/ru/rdu/rdu2. Order: motor(s) -> brake -> [ATD x4] -> aero -> delta.
-    """
-    keys = (["T_motor_fl", "T_motor_fr", "T_motor_rl", "T_motor_rr"]
-            if EM4 == 1 else ["T_motor"])
-    keys = keys + ["T_brake"]
-    if ATD == 1:
-        keys += ["ATD", "ATD", "ATD", "ATD"]
-    if ActAero == 1:        # active RW
-        keys += ["RW"]
-    elif ActAero == 2:      # active FW + RW
-        keys += ["FW", "RW"]
-    elif ActAero == 3:      # AALB: split FW (x2) + RW + TW
-        keys += ["FW", "FW", "RW", "TW"]
-    keys += ["delta"]
-    return keys
-
 
 def _col(ns_group, keys):
     """Column vector of attribute values for the given keys."""
@@ -179,9 +166,11 @@ def userOpts(ctx,
              AeroConfig="Static",          # 'Static' | 'Active_RW' | 'Active' | 'AALB'
              ATD="On",                     # 'On' | 'Off'
              Electric_4Motors="Off",       # 'On' | 'Off'
+             Hybrid="Off",                 # 'On' | 'Off'  (overrides ATD/EM4)
              circuit="BCN",
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
+             ice_gear=1.0,                 # fixed ICE gear (default 6th = 1.0)
              circuits_dir="Circuits",
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
@@ -198,18 +187,31 @@ def userOpts(ctx,
         raise ValueError(f"Unknown AeroConfig '{AeroConfig}'.")
     vp.ActAero = actaero_map[AeroConfig]
 
-    # conflict guard (ATD and 4 motors cannot both be on) -- matches MATLAB warning
-    if ATD == "On" and Electric_4Motors == "On":
+    # conflict guard (3-way). Hybrid overrides EM4/ATD; otherwise the legacy
+    # "ATD and 4 motors cannot both be On" rule applies.
+    if Hybrid == "On":
+        if ATD == "On" or Electric_4Motors == "On":
+            warnings.warn("Hybrid='On' overrides ATD/Electric_4Motors; "
+                          "both forced Off.")
+        ATD = "Off"
+        Electric_4Motors = "Off"
+    elif ATD == "On" and Electric_4Motors == "On":
         warnings.warn("Electric_4Motors and ATD cannot both be On. "
                       "Setting ATD to Off and ElectricMotors to On.")
         ATD = "Off"
         Electric_4Motors = "On"
     pt.ATD = 1 if ATD == "On" else 0
     pt.EM4 = 1 if Electric_4Motors == "On" else 0
+    pt.Hybrid = 1 if Hybrid == "On" else 0
+
+    # build the drive-source topology (single source of truth for ordering)
+    pt.topology = _topology(pt.EM4, pt.ATD, pt.Hybrid)
+    pt.sources, pt.splits = build_topology(pt.topology, pt, vp, ice_gear=ice_gear)
 
     ctx.AeroConfig = AeroConfig
     ctx.ATD = ATD
     ctx.Electric_4Motors = Electric_4Motors
+    ctx.Hybrid = Hybrid
     ctx.circuit = circuit
 
     # ---- track ------------------------------------------------------------
@@ -269,7 +271,7 @@ def userOpts(ctx,
     ctx.rdy = np.array([[0.0], [0.0]])      # first-derivative aux-variable reg
     ctx.rdy2 = np.array([[1.0], [0.0]])     # second-derivative aux-variable reg
 
-    keys = _input_keys(pt.EM4, pt.ATD, vp.ActAero)
+    keys = control_keys(pt.sources, pt.splits, vp.ActAero)
     ctx.input_keys = keys
     ctx.duk_ub = _col(c.ub, keys)
     ctx.duk_lb = _col(c.lb, keys)
