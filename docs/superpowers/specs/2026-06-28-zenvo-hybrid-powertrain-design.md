@@ -8,6 +8,22 @@ of it. Add the full Aurora vehicle as an **opt-in parameter profile** (baseline 
 
 ---
 
+> ## Spec revision — 2026-06-28 (post spec-review)
+> **DP2 reversed by user decision.** The baseline default car is now the **Zenvo Aurora** — the
+> chassis + aggregate powertrain ratings already applied to `Powertrain.py`/`vehParams.py` are
+> kept. Where the text below conflicts, the following overrides it:
+> - **§13 resolved → update tests, do NOT revert baseline.** Bring `test_foundation.py`
+>   (Powertrain block, 81-86) and `test_params_useropts.py` (mass/Fz0/Rw/gear/Jw asserts 21-27 +
+>   the `c_fl` spring-rate assert at L30) to the Zenvo baseline numbers. Note the Rw/gear "quirk"
+>   is now numerically dissolved — `Powertrain.Rw` and `vehParams.Rw` are both 0.35 — so the
+>   updated assert pins `gear = pt.OMmax·0.35/pt.Vmax`.
+> - **§10 / DP2 → no `functions/aurora_params.py`.** The Aurora chassis numbers ARE the baseline.
+>   The Aurora **per-source powertrain ratings/gears + ICE curve** (the §10 powertrain list) live
+>   as in-code constants in `build_topology`'s `hybrid` branch, gated by `Hybrid='On'`.
+> - **Minor baseline nits to confirm while updating tests:** `vp.rho` is 1.225 (was 1.204; not a
+>   Zenvo value) and the fallback `vp.Cl` sign should be +0.15 (downforce convention; only used
+>   when `DATA_AA.mat` is absent).
+
 ## 1. Goal & motivation
 
 Model the **Zenvo Aurora** powertrain in the MLTP framework: **two independent front e-motors**
@@ -32,7 +48,7 @@ duplicated control-vector ordering (today split across `vehModel.u_list` and
 | ICE envelope | **Digitized rpm→torque curve** `T_ice ≤ poly(Om_ice)`; numeric curve is a flagged **placeholder** until the engine-map image is supplied. |
 | ICE gear | **Fixed representative gear** per solve (config param `ice_gear`, default 6th = 1.0); no shifting. |
 | Selector | New **`Hybrid='On'/'Off'`** flag; when `On` it overrides `EM4`/`ATD`. |
-| Aurora params | **Opt-in profile** `apply_aurora_params(ctx)`; baseline default car numbers unchanged (DP2). |
+| Aurora params | **(REVISED — see banner)** Baseline default car **is** the Zenvo Aurora; per-source hybrid powertrain ratings live in `build_topology`'s `hybrid` branch. No separate `apply_aurora_params` module. |
 | Gear convention | **Fix the latent bug** (DP1): unify to `Om_source = mean(target wheels) × gear`. |
 | Energy report | **Split** `E_motor` (electric, back-compat) + `E_fuel` (ICE), per-source efficiency (DP3). |
 
@@ -114,7 +130,7 @@ scalars `pt.Pmax/Tmax/OMmax` as-is — so `single` caps at `pt.Pmax` *as an aggr
 four `four_motor` sources caps at `pt.Pmax` *per motor*, **reproducing today's dual semantics
 unchanged** (the map flagged that `pt.Pmax/Tmax` mean "3-motor total" in EM4=0 but "per-motor" in
 EM4=1; we preserve that rather than reinterpret it). Only the `hybrid` source list uses explicit
-per-source ratings/gears (from `apply_aurora_params`, §10). `pt.Vmax`/`pt.eff` stay vehicle-level.
+per-source ratings/gears (in-code constants in `build_topology`'s `hybrid` branch — see banner & §10). `pt.Vmax`/`pt.eff` stay vehicle-level.
 
 | topology | sources | splits |
 |---|---|---|
@@ -288,11 +304,15 @@ Legacy configs have no ICE → `E_fuel` absent/0.
 
 ---
 
-## 10. Aurora parameter profile — `functions/aurora_params.py` (new, opt-in)
+## 10. Aurora parameters — baseline chassis + `build_topology` hybrid sources (REVISED — see banner)
 
-`apply_aurora_params(ctx)` overrides `vp`/`pt` with Zenvo Aurora values from the spec sheet
-(`Zenvo_PublicAcademicProjects_VehicleModelParameters.xlsx`). **Baseline defaults unchanged** (DP2);
-this is opt-in and is the recommended companion to `Hybrid='On'`.
+> **DP2 reversed:** the baseline default car **is** the Zenvo Aurora, so the chassis numbers below
+> are already in `Powertrain.py`/`vehParams.py` (no override call, no `functions/aurora_params.py`).
+> The **powertrain source ratings/gears + ICE curve** below are defined as in-code constants in
+> `build_topology`'s `hybrid` branch, gated by `Hybrid='On'`.
+
+The Zenvo Aurora values from the spec sheet
+(`Zenvo_PublicAcademicProjects_VehicleModelParameters.xlsx`):
 
 **Chassis (direct drop-in / derived):** `m=1692`, sprung `mb=1517`, `muf=45`, `mur=55`, `md=75`;
 `l=2.8`, track `t=1.74` (front; rear 1.67 — single-track model), `wB=0.57` (rear fraction = 1−0.43),
@@ -370,12 +390,13 @@ already fail on this branch against the partially-applied Aurora baseline number
 
 ## 13. Open issues / out of scope
 
-- **Stale baseline tests (DP2 consequence).** Earlier commits half-applied Aurora numbers to the
-  *baseline* `Powertrain.py`/`vehParams.py`, so `test_foundation`/`test_params_useropts` already
-  fail. With Aurora moved to an opt-in profile, the baseline *should* be reverted to the original
-  framework numbers so those tests pass, **or** the tests updated to the current baseline. **Recommended
-  follow-up:** revert baseline `pt`/`vp` to original values and put all Zenvo numbers solely in
-  `apply_aurora_params`. Flagged for decision at spec review; not blocking the powertrain refactor.
+- **Stale baseline tests — RESOLVED at spec review (DP2 reversed).** Earlier commits applied Aurora
+  numbers to the baseline `Powertrain.py`/`vehParams.py`, so `test_foundation` (Powertrain block
+  81-86) and `test_params_useropts` (21-30) currently fail. **Decision:** keep the Aurora baseline
+  and **update those tests** to the Zenvo numbers — including the now-dissolved Rw/gear quirk
+  (Powertrain Rw and vehParams Rw are both 0.35) and the `c_fl` spring-rate assert (L30). Minor
+  baseline nits to confirm while updating: `vp.rho` 1.225 (was 1.204) and the fallback `vp.Cl` sign
+  (downforce = +0.15; only used when `DATA_AA.mat` is absent).
 - **ICE torque-map image** not yet provided → placeholder curve. **Split tyre stiffness**
   (`kt_f`≠`kt_r`) and **split `Jw`** unsupported by the single-field model (mapping-doc caveats).
 - **Active aero / AALB** for Aurora needs the DATA_AA polynomial map (not in the Zenvo data) →
@@ -393,7 +414,7 @@ already fail on this branch against the partially-applied Aurora baseline number
    reproduce identical keys (tests green).
 3. Refactor `vehModel.py` symbol/split/signal loops (DP1 gear fix); smoke-test EM4=0/1 build.
 4. Generalize `MLTP.build_path_constraints` + `warmstart_guesses`; EM4=0/1 full-solve regression.
-5. Add `hybrid` topology end-to-end + `apply_aurora_params`; first Aurora solve on a synthetic
-   circuit.
+5. Add `hybrid` topology end-to-end (Aurora source ratings as in-code constants in
+   `build_topology`'s `hybrid` branch); first Aurora solve on a synthetic circuit.
 6. Save/plot/sweep/paramOptim wiring + `E_fuel` + back-compat checks.
-7. (Follow-up, see §13) resolve baseline vs profile test status.
+7. Update `test_foundation` + `test_params_useropts` to the Zenvo baseline (see §13, resolved).
