@@ -186,11 +186,19 @@ def userOpts(ctx,
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
              circuits_dir="Circuits",
-             data_dir="Data"):
+             data_dir="Data",
+             linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
+             hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
+             vp_overrides=None,            # dict of vehParams primary/mf overrides
+             OPT_ds=30,                    # collocation step (m)
+             OPT_d=3,                      # degree of interpolating polynomials
+             OPT_e=1e-2,                   # slack for path constraints / guesses
+             max_iter=6000,                # IPOPT max iterations
+             tol=1e-4):                    # IPOPT convergence tolerance
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)
-    vehParams(ctx, data_dir=data_dir)
+    vehParams(ctx, data_dir=data_dir, vp_overrides=vp_overrides)
     vp, pt = ctx.vp, ctx.pt
 
     # ---- aerodynamic / torque-distribution configuration ------------------
@@ -236,19 +244,21 @@ def userOpts(ctx,
     ctx.Xf_init = np.array([vf, nan, nan, nan, nan, nan, nan])
 
     # ---- collocation options ----------------------------------------------
-    ctx.OPT_ds = 30        # collocation step (m)
-    ctx.OPT_d = 3          # degree of interpolating polynomials
-    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs
-    ctx.OPT_e = 1e-2       # slack for path constraints / initial guesses
+    ctx.OPT_ds = OPT_ds         # collocation step (m)
+    ctx.OPT_d = OPT_d           # degree of interpolating polynomials
+    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs (not exposed)
+    ctx.OPT_e = OPT_e           # slack for path constraints / initial guesses
 
     # ---- solver options (IPOPT) -------------------------------------------
-    # MUMPS is the linear solver: it ships inside the casadi wheel and needs no
-    # external library. (HSL/MA57 would be faster but requires a licensed HSL
-    # DLL that IPOPT loads at solve time; not used here.)
+    # `linear_solver` is configurable (default 'ma57'). An ma* solver uses
+    # Coin-HSL, which IPOPT loads at solve time from `hsl_dir` (resolved against
+    # COINHSL_DIR / a seeded default in functions/hsl.py); _make_solver probes it
+    # and transparently falls back to MUMPS if it is unavailable. 'mumps' (the
+    # casadi-bundled solver) is always available and needs no external library.
     ipopt = {
-        "max_iter": 6000,
+        "max_iter": max_iter,
         "fixed_variable_treatment": "make_constraint",
-        "tol": 1e-4,
+        "tol": tol,
         "acceptable_tol": 1e-3,
         "mu_init": 1e-1,
         "mu_strategy": "adaptive",
@@ -257,10 +267,11 @@ def userOpts(ctx,
         "constr_viol_tol": 1e-4,
         "dual_inf_tol": 1e-4,
         "compl_inf_tol": 1e-4,
-        "linear_solver": "mumps",
+        "linear_solver": linear_solver,
         "print_timing_statistics": "yes",
     }
     ctx.opts = {"ipopt": ipopt}
+    ctx.opts["_hsl_dir"] = hsl_dir          # consumed + stripped by _make_solver
 
     # ---- rate limits and regularisation -----------------------------------
     c = _build_c()
