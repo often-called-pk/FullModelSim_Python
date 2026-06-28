@@ -280,14 +280,9 @@ def generate_gg_plots(data=None, outdir=".", *, tyre=None, vehicle=None,
     return out
 
 
-# ---------------------------------------------------------------------------
-# data extraction  --  field-name map for the Python port (MLTP.py / plotSDI.py):
-#   `data` is a SimpleNamespace; `data.vehicle` is a dict of flat (N+1,) arrays.
-#     per-tyre forces : fx_<w> / fy_<w> / fz_<w>   (w in fl,fr,rl,rr)  [present]
-#     per-tyre mu     : mu_<w>_x / mu_<w>_y        [ADD to veh_syms in MLTP.py]
-#     vehicle accel   : Lon_acc / Lat_acc in m/s^2                     [present]
-#     vx at knots     : data.x_opt[0, :]   |   s at knots: from data.s_full
-# ---------------------------------------------------------------------------
+# data extraction. data.vehicle is a dict of flat (N+1,) arrays:
+#   per-tyre fx_<w>/fy_<w>/fz_<w>/mu_<w>_x/mu_<w>_y (w in fl,fr,rl,rr),
+#   Lon_acc/Lat_acc (m/s^2); vx at knots = data.x_opt[0, :].
 _G = 9.81
 
 
