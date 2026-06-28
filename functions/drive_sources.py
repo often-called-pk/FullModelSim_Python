@@ -124,3 +124,37 @@ def build_topology(topology, pt, vp, ice_gear=1.0):
         return src, splits
 
     raise ValueError(f"Unknown topology '{topology}'.")
+
+
+def path_constraint_names(sources, splits):
+    """Path-constraint row names: 4 rho_lim first, then powertrain rows, then ATD_eq.
+
+    Grouped by constraint type so the legacy single/four_motor names + order are
+    reproduced byte-for-byte. The single aggregate emotor (node 'all') uses the
+    unsuffixed legacy names motor_power/motor_rpm/BrTh_1.
+    """
+    names = ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr"]
+    emotors = [s for s in sources if s.type == "emotor"]
+    ices = [s for s in sources if s.type == "ice"]
+    aggregate = len(emotors) == 1 and emotors[0].node == "all" and not ices
+    if aggregate:
+        names += ["motor_power", "motor_rpm", "BrTh_1"]
+    else:
+        names += [f"motor_power_{s.name}" for s in emotors]
+        names += [f"motor_rpm_{s.name}" for s in emotors]
+        names += [f"ice_curve_{s.name}" for s in ices]
+        names += [f"ice_rpm_{s.name}" for s in ices]
+        names += [f"BrTh_{s.name}" for s in (emotors + ices)]
+    for sp in splits:
+        if sp.kind == "atd":
+            names.append("ATD_eq")
+    return names
+
+
+def source_signal_keys(source):
+    """(power_key, speed_key) for the saved vehicle dict / plot prefixes."""
+    if source.type == "ice":
+        return "P_ice_r", "Om_ice_r"
+    if source.node == "all":
+        return "P_motor", "Om_motor"          # legacy single aggregate
+    return f"P_motor_{source.name}", f"Om_motor_{source.name}"

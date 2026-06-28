@@ -63,4 +63,38 @@ ok("hybrid ice gear = ice_gear*3.5", sh[3].gear == 1.0 * 3.5)
 ok("hybrid rear emotor gear = 1.5*ice_gear*3.5", sh[2].gear == 1.5 * 1.0 * 3.5)
 ok("hybrid front emotor 150kW/143Nm", sh[0].Pmax == 150e3 and sh[0].Tmax == 143.0)
 
+from functions.drive_sources import path_constraint_names, source_signal_keys
+
+print("path_constraint_names back-compat")
+s, sp = build_topology("single", pt, vp)
+ok("single ATD0 names", path_constraint_names(s, sp) ==
+   ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
+    "motor_power", "motor_rpm", "BrTh_1"])
+s, sp = build_topology("single_atd", pt, vp)
+ok("single ATD1 names", path_constraint_names(s, sp) ==
+   ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
+    "motor_power", "motor_rpm", "BrTh_1", "ATD_eq"])
+s4, sp4 = build_topology("four_motor", pt, vp)
+ok("four_motor names (grouped by type)", path_constraint_names(s4, sp4) ==
+   ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
+    "motor_power_fl", "motor_power_fr", "motor_power_rl", "motor_power_rr",
+    "motor_rpm_fl", "motor_rpm_fr", "motor_rpm_rl", "motor_rpm_rr",
+    "BrTh_fl", "BrTh_fr", "BrTh_rl", "BrTh_rr"])
+sh, sph = build_topology("hybrid", pt, vp)
+ok("hybrid names", path_constraint_names(sh, sph) ==
+   ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
+    "motor_power_fl", "motor_power_fr", "motor_power_r",
+    "motor_rpm_fl", "motor_rpm_fr", "motor_rpm_r",
+    "ice_curve_ice", "ice_rpm_ice",
+    "BrTh_fl", "BrTh_fr", "BrTh_r", "BrTh_ice"])
+
+print("source_signal_keys back-compat")
+s, _ = build_topology("single", pt, vp)
+ok("single signals", source_signal_keys(s[0]) == ("P_motor", "Om_motor"))
+s4, _ = build_topology("four_motor", pt, vp)
+ok("four_motor fl signals", source_signal_keys(s4[0]) == ("P_motor_fl", "Om_motor_fl"))
+sh, _ = build_topology("hybrid", pt, vp)
+ok("hybrid rear emotor signals", source_signal_keys(sh[2]) == ("P_motor_r", "Om_motor_r"))
+ok("hybrid ice signals", source_signal_keys(sh[3]) == ("P_ice_r", "Om_ice_r"))
+
 print("\nALL DRIVE-SOURCE TESTS PASSED")
