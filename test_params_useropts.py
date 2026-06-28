@@ -18,16 +18,16 @@ with warnings.catch_warnings():
     userOpts(ctx, circuit="Sturn")             # synthetic track, no .mat needed
 vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
 
-ok("ms = mb+md = 1895", vp.ms == 1895.0)
-ok("m  = ms+muf+mur = 2085", vp.m == 2085.0)
-ok("Fz0 = 4905 (Copy B)", vp.Fz0 == 4905.0)
-ok("Rw overwritten to 0.355", vp.Rw == 0.355 and vp.Rw_f == 0.355 and vp.Rw_r == 0.355)
-ok("gear still based on Powertrain Rw=0.3142857",
-   abs(vp.gear - (pt.OMmax * 0.3142857) / pt.Vmax) < 1e-9)
-ok("Jw = 3.6", vp.Jw == 3.6)
+ok("ms = mb+md = 1592", vp.ms == 1592.0)
+ok("m  = ms+muf+mur = 1692", vp.m == 1692.0)
+ok("Fz0 = 4300", vp.Fz0 == 4300.0)
+ok("Rw=0.35 front, Rw_r=0.37", vp.Rw == 0.35 and vp.Rw_f == 0.35 and vp.Rw_r == 0.37)
+ok("gear based on Powertrain Rw=0.35",
+   abs(vp.gear - (pt.OMmax * 0.35) / pt.Vmax) < 1e-9)
+ok("Jw = 1.6", vp.Jw == 1.6)
 # suspension damping: c_fl = zeta*2*sqrt(m_eff_f/2)*k_fl, m_eff_f = m*(1-wB)
 m_eff_f = vp.m * (1 - vp.wB)
-ok("c_fl matches formula", abs(vp.c_fl - 0.7 * 2 * np.sqrt(m_eff_f / 2) * 75000.0) < 1e-6)
+ok("c_fl matches formula", abs(vp.c_fl - 0.7 * 2 * np.sqrt(m_eff_f / 2) * 40000.0) < 1e-6)
 ok("hRC interpolation", abs(vp.hRC - (vp.l_f * vp.hRCr + vp.l_r * vp.hRCf) / vp.l) < 1e-12)
 
 print("Pacejka Copy B coefficients")
