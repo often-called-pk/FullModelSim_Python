@@ -15,6 +15,8 @@ import numpy as np
 import casadi as ca
 from types import SimpleNamespace
 
+from functions.drive_sources import node_wheels
+
 
 def _poly(coeffs, x, powers):
     """Evaluate sum_i coeffs[i] * x**powers[i]  (coeffs 0-indexed numpy array)."""
@@ -85,16 +87,18 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     assert nx == x.shape[0], "Number of states is not consistent"
 
     # ===================== model (A): inputs (config-dependent) ===========
-    # motor torque(s)
-    if pt.EM4 == 0:
-        T_motor_n = SX.sym("T_motor_n"); T_motor_s = pt.Tmax; T_motor = T_motor_s * T_motor_n
-        T_motor_lim = np.array([0, pt.Tmax]) / T_motor_s
-    else:
-        T_motor_fl_n = SX.sym("T_motor_fl_n"); T_motor_fl_s = pt.Tmax; T_motor_fl = T_motor_fl_s * T_motor_fl_n
-        T_motor_fr_n = SX.sym("T_motor_fr_n"); T_motor_fr_s = pt.Tmax; T_motor_fr = T_motor_fr_s * T_motor_fr_n
-        T_motor_rl_n = SX.sym("T_motor_rl_n"); T_motor_rl_s = pt.Tmax; T_motor_rl = T_motor_rl_s * T_motor_rl_n
-        T_motor_rr_n = SX.sym("T_motor_rr_n"); T_motor_rr_s = pt.Tmax; T_motor_rr = T_motor_rr_s * T_motor_rr_n
-        T_motor_lim = np.array([0, pt.Tmax]) / pt.Tmax
+    # source torques (one normalized symbol per drive source)
+    T_by_key = {}        # ctrl_key -> physical torque SX
+    T_n_by_key = {}      # ctrl_key -> normalized torque SX
+    T_s_by_key = {}      # ctrl_key -> scale
+    T_lim_by_key = {}    # ctrl_key -> [lo,hi] normalized limit row
+    for s in pt.sources:
+        sym = SX.sym(f"{s.ctrl_key}_n")
+        T_n_by_key[s.ctrl_key] = sym
+        T_s_by_key[s.ctrl_key] = s.Tmax
+        T_by_key[s.ctrl_key] = s.Tmax * sym
+        lo = -1.0 if s.regen else 0.0
+        T_lim_by_key[s.ctrl_key] = np.array([lo, 1.0])
 
     # brake torque
     T_brake_n = SX.sym("T_brake_n"); T_brake_s = vp.Tbrake_max; T_brake = T_brake_s * T_brake_n
@@ -105,13 +109,17 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     delta_n = SX.sym("delta_n"); delta = delta_max * delta_n
     delta_lim = np.array([-1.0, 1.0])
 
-    # ATD
-    if pt.ATD == 1:
-        ATD_FL_n = SX.sym("ATD_FL_n"); ATD_FL = ATD_FL_n
-        ATD_FR_n = SX.sym("ATD_FR_n"); ATD_FR = ATD_FR_n
-        ATD_RL_n = SX.sym("ATD_RL_n"); ATD_RL = ATD_RL_n
-        ATD_RR_n = SX.sym("ATD_RR_n"); ATD_RR = ATD_RR_n
-        ATD_lim = np.array([0.0, 1.0])
+    # split-fraction controls (ATD x4 or split_R), one normalized symbol each,
+    # built positionally so the four same-named 'ATD' channels are distinct.
+    frac_syms = []       # list of (ctrl_key, SX) in split order
+    for sp in pt.splits:
+        for k in sp.keys:
+            frac_syms.append((k, SX.sym(f"{k}_n_{len(frac_syms)}")))
+    if any(sp.kind == "atd" for sp in pt.splits):
+        atd = [sym for (k, sym) in frac_syms if k == "ATD"]
+        ATD_FL, ATD_FR, ATD_RL, ATD_RR = atd[0], atd[1], atd[2], atd[3]
+    split_R = next((sym for (k, sym) in frac_syms if k == "split_R"), None)
+    frac_lim = np.array([0.0, 1.0])
 
     # active aero inputs (override the fixed wing angles where active)
     aFL, aFR, aRW, aTW = vp.alpha_FL, vp.alpha_FR, vp.alpha_RW, vp.alpha_TW
@@ -136,17 +144,13 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
         activeAeroTW = activeAeroTW_s * activeAeroTW_n; activeAeroTW_lim = np.array([-12, 12]) / activeAeroTW_s
         aFL = activeAeroFL; aFR = activeAeroFR; aRW = activeAeroRW; aTW = activeAeroTW
 
-    # assemble u, u_s, u_lim in the MATLAB order: motors, brake, [ATD x4], aero, delta
+    # assemble u, u_s, u_lim in control_keys order: sources, brake, fracs, aero, delta
     u_list = []   # (sym_norm, scale, lim_row)
-    if pt.EM4 == 0:
-        u_list.append((T_motor_n, T_motor_s, T_motor_lim))
-    else:
-        u_list += [(T_motor_fl_n, T_motor_fl_s, T_motor_lim), (T_motor_fr_n, T_motor_fr_s, T_motor_lim),
-                   (T_motor_rl_n, T_motor_rl_s, T_motor_lim), (T_motor_rr_n, T_motor_rr_s, T_motor_lim)]
+    for s in pt.sources:
+        u_list.append((T_n_by_key[s.ctrl_key], T_s_by_key[s.ctrl_key], T_lim_by_key[s.ctrl_key]))
     u_list.append((T_brake_n, T_brake_s, T_brake_lim))
-    if pt.ATD == 1:
-        u_list += [(ATD_FL_n, 1.0, ATD_lim), (ATD_FR_n, 1.0, ATD_lim),
-                   (ATD_RL_n, 1.0, ATD_lim), (ATD_RR_n, 1.0, ATD_lim)]
+    for (k, sym) in frac_syms:
+        u_list.append((sym, 1.0, frac_lim))
     if vp.ActAero == 1:
         u_list.append((activeAeroRW_n, activeAeroRW_s, activeAeroRW_lim))
     elif vp.ActAero == 2:
@@ -474,38 +478,51 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     My_rl = -(fxg_rl * (vp.Rw_r - zt_rl + ls_rl)); My_rr = -(fxg_rr * (vp.Rw_r - zt_rr + ls_rr))
 
     # ===================== powertrain torque split ========================
-    if pt.EM4 == 0:
-        Om_motor = (Om_fl + Om_fr)/4*vp.gear + (Om_rl + Om_rr)/4*vp.gear
-        if pt.ATD == 0:
-            T_fl = 0.5*T_motor*vp.gear*(1 - vp.Tdist) + T_brake*vp.brkB
-            T_fr = 0.5*T_motor*vp.gear*(1 - vp.Tdist) + T_brake*vp.brkB
-            T_rl = 0.5*T_motor*vp.gear*vp.Tdist + T_brake*(1 - vp.brkB)
-            T_rr = 0.5*T_motor*vp.gear*vp.Tdist + T_brake*(1 - vp.brkB)
-        else:
-            T_fl = ATD_FL*T_motor*vp.gear + ATD_FL*T_brake*2
-            T_fr = ATD_FR*T_motor*vp.gear + ATD_FR*T_brake*2
-            T_rl = ATD_RL*T_motor*vp.gear + ATD_RL*T_brake*2
-            T_rr = ATD_RR*T_motor*vp.gear + ATD_RR*T_brake*2
-        T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
-        T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
-        T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
-        T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
-        P_motor = T_motor * Om_motor
-        Om_motor_each = P_motor_each = None
-    else:
-        Om_motor_fl = Om_fl/vp.gear; Om_motor_fr = Om_fr/vp.gear
-        Om_motor_rl = Om_rl/vp.gear; Om_motor_rr = Om_rr/vp.gear
-        T_fl = T_motor_fl*vp.gear + T_brake*vp.brkB
-        T_fr = T_motor_fr*vp.gear + T_brake*vp.brkB
-        T_rl = T_motor_rl*vp.gear + T_brake*(1 - vp.brkB)
-        T_rr = T_motor_rr*vp.gear + T_brake*(1 - vp.brkB)
-        T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
-        T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
-        T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
-        T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
-        P_motor_fl = T_motor_fl*Om_motor_fl; P_motor_fr = T_motor_fr*Om_motor_fr
-        P_motor_rl = T_motor_rl*Om_motor_rl; P_motor_rr = T_motor_rr*Om_motor_rr
-        Om_motor = P_motor = None
+    Om_w = {"fl": Om_fl, "fr": Om_fr, "rl": Om_rl, "rr": Om_rr}
+
+    def _share(node, wheel):
+        """Fraction of a node's torque sent to `wheel` (0 if not driven)."""
+        if wheel not in node_wheels(node):
+            return 0
+        if node in ("fl", "fr", "rl", "rr"):
+            return 1
+        pol = next((sp for sp in pt.splits if sp.node == node), None)
+        if pol is None or pol.kind == "fixed":
+            return 0.5 * (1 - vp.Tdist) if wheel in ("fl", "fr") else 0.5 * vp.Tdist
+        if pol.kind == "atd":
+            return {"fl": ATD_FL, "fr": ATD_FR, "rl": ATD_RL, "rr": ATD_RR}[wheel]
+        if pol.kind == "tv":
+            return split_R if wheel == "rl" else (1 - split_R)
+        raise ValueError(f"Unknown split kind '{pol.kind}'")
+
+    def _brake_term(wheel):
+        if any(sp.kind == "atd" for sp in pt.splits):
+            return {"fl": ATD_FL, "fr": ATD_FR, "rl": ATD_RL, "rr": ATD_RR}[wheel] * T_brake * 2
+        return T_brake * vp.brkB if wheel in ("fl", "fr") else T_brake * (1 - vp.brkB)
+
+    # per-wheel total drive torque (DP1: Om_source = mean(node wheels) x gear)
+    T_phys = {"fl": 0, "fr": 0, "rl": 0, "rr": 0}
+    for s in pt.sources:
+        for w in node_wheels(s.node):
+            T_phys[w] = T_phys[w] + T_by_key[s.ctrl_key] * s.gear * _share(s.node, w)
+    T_fl = T_phys["fl"] + _brake_term("fl")
+    T_fr = T_phys["fr"] + _brake_term("fr")
+    T_rl = T_phys["rl"] + _brake_term("rl")
+    T_rr = T_phys["rr"] + _brake_term("rr")
+    T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
+    T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
+    T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
+    T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
+
+    # per-source speed / power
+    m_src = {}
+    for s in pt.sources:
+        wl = node_wheels(s.node)
+        Om_mean = sum(Om_w[w] for w in wl) / len(wl)
+        Om_s = Om_mean * s.gear
+        T_s = T_by_key[s.ctrl_key]
+        m_src[s.name] = SimpleNamespace(T=T_s, T_n=T_n_by_key[s.ctrl_key],
+                                        Om=Om_s, P=T_s * Om_s, source=s)
 
     # ===================== change of variable & derivatives ===============
     sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
