@@ -186,6 +186,7 @@ cython_debug/
 
 # plain-script test scratch (written to repo root when CLAUDE_JOB_DIR_TMP is unset)
 /_rc_cfg.json
+/_rc_cfg_s.json
 /_expert.json
 /_bad.json
 /_res.mat

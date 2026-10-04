@@ -37,6 +37,11 @@ def build_solve_kwargs(cfg, resource_root_dir):
     kwargs["OPT_d"] = int(cfg.get("OPT_d", 3))
     kwargs["OPT_e"] = float(cfg.get("OPT_e", 1e-2))
     kwargs["tol"] = float(cfg.get("tol", 1e-4))
+    # speed / fidelity options -> userOpts (same defaults as userOpts)
+    kwargs["mesh"] = str(cfg.get("mesh", "auto"))
+    kwargs["mesh_opts"] = dict(cfg["mesh_opts"]) if cfg.get("mesh_opts") else None
+    kwargs["tyre_set"] = str(cfg.get("tyre_set", "MF205"))
+    kwargs["screening"] = bool(cfg.get("screening", False))
     if cfg.get("warm_start"):
         kwargs["warm_start"] = cfg["warm_start"]
     return kwargs

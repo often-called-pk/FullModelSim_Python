@@ -111,7 +111,7 @@ def plot_racing_line(data):
         fig.add_trace(go.Scatter(x=xopt, y=yopt, mode="lines",
                                  line=dict(color="#e24b4a", width=2), name="racing line"))
     lap = _get(data, "lap_time")
-    title = "Racing line" + (f"  —  lap time {float(lap):.3f} s" if lap is not None else "")
+    title = "Racing line" + (f" ,  lap time {float(lap):.3f} s" if lap is not None else "")
     fig.update_layout(title=title, xaxis_title="x [m]", yaxis_title="y [m]",
                       template="plotly_white")
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -231,11 +231,14 @@ def plot_inputs(data):
 # Top-level: build, save, return all figures
 # --------------------------------------------------------------------------- 
 def plotSDI(source, save_dir="Plots", show=False):
+    from functions.importfile import result_stem
     data = _resolve_data(source)
 
     circuit = str(_get(data, "circuit", "track"))
     cfg = f"{_get(data, 'AeroConfig', 'cfg')}_ATD{_get(data, 'ATD', '')}_EM4{_get(data, 'EM4', '')}"
-    out_dir = os.path.join(save_dir, circuit, cfg)
+    stem = result_stem(circuit, cfg, _get(data, "tyre_set", "MF205"),
+                       _get(data, "mesh_requested", "auto"))
+    out_dir = os.path.join(save_dir, circuit, stem[len(circuit) + 1:])
     os.makedirs(out_dir, exist_ok=True)
 
     figs = {

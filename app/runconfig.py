@@ -2,8 +2,9 @@
 
 `to_dict`/`from_dict` persist the full GUI state. `write_cfg` emits the JSON the
 headless solve consumes: run-config fields, the five top-level solver/collocation
-options, and a single merged `vp_overrides` dict (vp diff-from-default + any
-expert config file).
+options, the four speed/fidelity options (mesh, mesh_opts, tyre_set, screening;
+no GUI widget yet, settable from a saved RunConfig / cfg.json), and a single
+merged `vp_overrides` dict (vp diff-from-default + any expert config file).
 """
 import json
 from dataclasses import dataclass, asdict, field
@@ -35,15 +36,24 @@ class RunConfig:
     OPT_d: int = 3
     OPT_e: float = 1e-2
     tol: float = 1e-4
-    # full vehicle-parameter set (primaries + Pacejka mf), seeded from defaults
-    vp: dict = field(default_factory=all_vp_defaults)
+    # speed / fidelity options (top-level cfg fields, forwarded to userOpts)
+    mesh: str = "auto"                      # 'auto' | 'uniform' | 'curvature' knots; auto = curvature if track >= 2000 m
+    mesh_opts: Optional[dict] = None        # kwargs for functions.mesh.curvature_mesh
+    tyre_set: str = "MF205"                 # 'MF205' | 'CopyB' (vehParams tyre_set)
+    screening: bool = False                 # loose IPOPT tolerances (userOpts SCREENING_IPOPT)
+    # full vehicle-parameter set (primaries + Pacejka mf), seeded from the tyre_set defaults
+    vp: Optional[dict] = None
+
+    def __post_init__(self):
+        if self.vp is None:
+            self.vp = all_vp_defaults(self.tyre_set)
 
     def vp_overrides(self):
         ov = {}
         if self.expert_config:
             with open(self.expert_config) as fh:
                 ov.update(json.load(fh))            # expert is the base layer
-        defaults = all_vp_defaults()
+        defaults = all_vp_defaults(self.tyre_set)
         _MISSING = object()
         for k, v in self.vp.items():                 # GUI diff overrides expert
             if v != defaults.get(k, _MISSING):

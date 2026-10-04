@@ -17,7 +17,9 @@ import scipy.io as sio
 
 import casadi as ca
 
+from functions.casadi_opts import fn_opts
 from functions.context import Ctx
+from functions.importfile import result_stem
 from userOpts import userOpts
 from vehModel_initial import vehModel_initial
 from functions.transcription import (discretise, build_and_solve_nlp,
@@ -49,8 +51,8 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     # ---- OCP: dynamics + objective ---------------------------------------
     L = m.sf                                   # objective integrand (lap time)
     f_dyn = ca.Function("f_dyn", [m.x, m.u, m.y, m.pv], [m.dx, L],
-                        ["x", "u", "y", "pv"], ["dx", "L"])
-    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"])
+                        ["x", "u", "y", "pv"], ["dx", "L"], fn_opts(ctx))
+    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
 
     # ---- OCP: path constraints (nh = 6) ----------------------------------
     BrTh = m.Tdrive_n * m.Tbrake_n
@@ -67,10 +69,13 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     h_lb = np.array([0.0, 0.0, -np.inf, -np.inf, -OPT_e, 0.0])
     h_ub = np.array([np.inf, np.inf, 0.0, 0.0, OPT_e, np.inf])
     assert len(hnames) == h.shape[0], "Number of path constraints not consistent"
-    h_eq = ca.Function("h_eq", [m.x, m.u, m.y, m.pv], [h], ["x", "u", "y", "pv"], ["h"])
+    h_eq = ca.Function("h_eq", [m.x, m.u, m.y, m.pv], [h], ["x", "u", "y", "pv"], ["h"],
+                       fn_opts(ctx))
 
     # ---- discretisation ---------------------------------------------------
-    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d)
+    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,
+                      mesh=getattr(ctx, "mesh", "uniform"),
+                      mesh_opts=getattr(ctx, "mesh_opts", None))
     N = disc["N"]
     elapsed["setup"] = time.time() - t0
 
@@ -125,7 +130,7 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         "f_veh", [m.x, m.u, m.y, m.pv],
         [m.f_drag, m.f_lift, m.fx_f, m.fy_f, m.fz_f, m.fx_r, m.fy_r, m.fz_r,
          m.sa_f, m.sa_r, m.sx_f, m.sx_r, m.T_f, m.T_r, m.Om_motor, m.P_motor,
-         m.mu_f, m.mu_r])
+         m.mu_f, m.mu_r], fn_opts(ctx))
     vv = f_veh(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None],
                y_opt / m.y_s[:, None], disc["pv_knot"])
     vlabels = ["f_drag", "f_lift", "fx_f", "fy_f", "fz_f", "fx_r", "fy_r", "fz_r",
@@ -146,13 +151,18 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         "t_opt": t_opt, "lap_time": float(t_opt[-1]),
         "track": _ns_to_dict(track), "vehicle": vehicle, "constraints": constraints,
         "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d, "circuit": circuit,
+        "tyre_set": getattr(ctx, "tyre_set", "MF205"),
+        "mesh": getattr(ctx, "mesh", "uniform"),
+        "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
     }
     from types import SimpleNamespace
     ctx.data = SimpleNamespace(init=SimpleNamespace(**init))
 
     if save:
         os.makedirs(results_dir, exist_ok=True)
-        save_path = os.path.join(results_dir, f"init_{circuit}.mat")
+        suffix = result_stem(circuit, "x", getattr(ctx, "tyre_set", "MF205"),
+                             getattr(ctx, "mesh_requested", "auto"))[len(circuit) + 2:]
+        save_path = os.path.join(results_dir, f"init_{circuit}{suffix}.mat")
         sio.savemat(save_path, {"data": {"init": init}}, do_compression=True)
         print(f"Saved warm start -> {save_path}")
 

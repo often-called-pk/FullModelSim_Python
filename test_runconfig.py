@@ -1,9 +1,10 @@
 """RunConfig: vp-dict round-trip, diff-from-default -> vp_overrides, expert-file
 merge, solver fields at top level (not in vp_overrides), unknown-key rejection."""
-import os, sys, json
+import os, sys, json, tempfile
 sys.path.insert(0, os.path.dirname(__file__))
 from app.runconfig import RunConfig
 from app.vp_params import all_vp_defaults
+from vehParams import _MF205_OVERRIDES
 
 TMP = os.environ.get("CLAUDE_JOB_DIR_TMP", os.path.dirname(__file__))
 
@@ -36,6 +37,37 @@ ok("max_iter override", cfg_s["max_iter"] == 3000)
 ok("OPT_ds override", cfg_s["OPT_ds"] == 20.0)
 ok("OPT_d override", cfg_s["OPT_d"] == 4)
 ok("tol override", cfg_s["tol"] == 1e-6)
+
+# speed / fidelity options: top-level cfg fields with userOpts defaults, never in vp_overrides
+for k, d in [("mesh", "auto"), ("mesh_opts", None), ("tyre_set", "MF205"), ("screening", False)]:
+    ok(f"{k} top-level default", cfg[k] == d)
+    ok(f"{k} not in vp_overrides", k not in cfg["vp_overrides"])
+rc_f = RunConfig(mesh="curvature", mesh_opts={"a": 2.0}, tyre_set="CopyB", screening=True)
+fpath = os.path.join(tempfile.mkdtemp(), "cfg_f.json")       # scratch dir: no stray file in the repo
+cfg_f = rc_f.write_cfg(fpath)
+ok("mesh override carried", cfg_f["mesh"] == "curvature")
+ok("mesh_opts override carried", cfg_f["mesh_opts"] == {"a": 2.0})
+ok("tyre_set override carried", cfg_f["tyre_set"] == "CopyB")
+ok("screening override carried", cfg_f["screening"] is True)
+ok("speed options survive the JSON file", json.load(open(fpath)) == cfg_f)
+ok("speed options round-trip from_dict(to_dict)", RunConfig.from_dict(rc_f.to_dict()) == rc_f)
+ok("an old saved config without the new fields still loads (defaults)",
+   RunConfig.from_dict({"circuit": "BCN"}).mesh == "auto"
+   and RunConfig.from_dict({"circuit": "BCN"}).tyre_set == "MF205")
+
+rc_cb = RunConfig(tyre_set="CopyB")
+ok("CopyB seeds vp from the CopyB set (pKy4 == 0.0)", rc_cb.vp["pKy4"] == 0.0)
+ok("CopyB untouched vp gives no overrides", rc_cb.vp_overrides() == {})
+rc_cb.vp["pKy4"] = 2.0
+ok("MF205 value entered under CopyB is an explicit override", rc_cb.vp_overrides() == {"pKy4": 2.0})
+ok("default RunConfig seeds MF205 (pKy4 == 2.0) with no overrides",
+   RunConfig().vp["pKy4"] == 2.0 and RunConfig().vp_overrides() == {})
+cb = all_vp_defaults("CopyB")
+rc_old = RunConfig.from_dict(json.loads(json.dumps({"circuit": "BCN", "vp": cb})))
+ok("old JSON with full CopyB vp and no tyre_set key reproduces the stored vp",
+   rc_old.tyre_set == "MF205" and rc_old.vp == cb)
+ok("old CopyB-valued vp under default MF205 becomes the nine explicit overrides",
+   rc_old.vp_overrides() == {k: cb[k] for k in _MF205_OVERRIDES} and len(rc_old.vp_overrides()) == 9)
 
 # expert-file merge: expert provides mb + pKy1; GUI vp value overrides expert's brkB
 expert = {"mb": 2000.0, "pKy1": -19.0, "brkB": 0.5}

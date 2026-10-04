@@ -8,11 +8,14 @@ Configuration is exposed as function arguments with the same defaults as the
 MATLAB file (AeroConfig='Static', ATD='On', Electric_4Motors='Off', circuit='BCN',
 vi=60, ni=nan). Edit the call (or the defaults) the way you would edit userOpts.m.
 
-Linear solver: IPOPT uses MUMPS, which is bundled inside the casadi wheel and
-needs no external library, so a solve runs out of the box on any platform.
+Linear solver: IPOPT defaults to HSL ``ma57`` (Coin-HSL, MC64 auto-scaling) and
+transparently falls back to MUMPS, which is bundled inside the casadi wheel and
+needs no external library, when no working HSL library is found, so a solve runs
+out of the box on any platform.
 """
 
 import os
+import inspect
 import warnings
 import numpy as np
 import scipy.io as sio
@@ -22,6 +25,7 @@ from Powertrain import Powertrain
 from vehParams import vehParams
 from functions.simpleMA import simpleMA
 from functions.importfile import mat_to_namespace
+from functions.mesh import curvature_mesh
 
 
 # ----------------------------------------------------------------------------- 
@@ -99,6 +103,37 @@ def _load_track(circuit, circuits_dir):
     k = simpleMA(k, 10, 2)                                # smoothen curvature
     s = np.linspace(0, 2 * len(k), len(k))               # ~2 m spacing assumed
     return SimpleNamespace(s=s, k=k)
+
+
+# IPOPT "screening" tolerance preset (userOpts(screening=True)): a looser
+# stopping rule for ranking / sweep solves, not a guaranteed saving. Measured on
+# Sturn (N=18, ma57): iteration counts moved by -41 % to +16 % across five matched
+# pairs (196 vs 257 with the 5-coefficient MF205 override, 290 vs 489 with the
+# full tyre_set='MF205') for lap-time changes of -4 to +20 ms; iteration counts on
+# this NLP swing up to +-40 % under 1-ulp perturbations, so judge it per track.
+# Not for final results. Applied over the defaults and under ipopt_overrides.
+SCREENING_IPOPT = {
+    "tol": 1e-3,
+    "acceptable_tol": 1e-2,
+    "dual_inf_tol": 1e-2,
+    "constr_viol_tol": 1e-3,
+    "compl_inf_tol": 1e-3,
+}
+
+# mesh='auto' (the userOpts default) picks the collocation knots from the lap
+# length L = s[-1] - s[0]: L >= MESH_AUTO_MIN_LENGTH metres gets the
+# curvature-weighted knots (BCN-size real circuits), a shorter lap stays uniform
+# (the short synthetic tracks; ZigZag / ZigZagMirror, ~2.4 km, are above it).
+# 'auto' only redistributes the knots; N stays round(L/OPT_ds). Measured: at
+# equal N the lap error vs a fine reference drops (Sturn N=18: +0.72% -> +0.16%);
+# the 2.5x BCN speedup (curvature N=103 vs uniform N=155, same lap) needs
+# OPT_ds=45 together with the curvature mesh.
+MESH_AUTO_MIN_LENGTH = 2000.0
+
+# Accepted userOpts(mesh_opts=...) keys: the curvature_mesh keyword arguments
+# (s, k and OPT_ds are passed by discretise(), so they are not mesh_opts keys).
+_MESH_OPTS_KEYS = tuple(n for n in inspect.signature(curvature_mesh).parameters
+                        if n not in ("s", "k", "OPT_ds"))
 
 
 # ----------------------------------------------------------------------------- 
@@ -190,15 +225,22 @@ def userOpts(ctx,
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
              hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
              vp_overrides=None,            # dict of vehParams primary/mf overrides
+             tyre_set="MF205",             # 'MF205' (default, MATLAB-run lateral set) | 'CopyB' (legacy shipped set, pKy4=0)
              OPT_ds=30,                    # collocation step (m)
              OPT_d=3,                      # degree of interpolating polynomials
              OPT_e=1e-2,                   # slack for path constraints / guesses
+             mesh="auto",                  # 'auto' | 'uniform' | 'curvature' collocation knots (auto: by lap length)
+             mesh_opts=None,               # dict for functions.mesh.curvature_mesh (a, b, ds_min, ...)
              max_iter=6000,                # IPOPT max iterations
-             tol=1e-4):                    # IPOPT convergence tolerance
+             tol=1e-4,                     # IPOPT convergence tolerance
+             jit=False,                    # JIT-compile the casadi Functions (needs gcc/clang/cl)
+             cse=False,                    # casadi common-subexpression elimination (opt-in)
+             screening=False,              # loose IPOPT tolerances (SCREENING_IPOPT) for sweeps / ranking
+             ipopt_overrides=None):        # dict of IPOPT options merged in last (any option, per call)
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)
-    vehParams(ctx, data_dir=data_dir, vp_overrides=vp_overrides)
+    vehParams(ctx, data_dir=data_dir, vp_overrides=vp_overrides, tyre_set=tyre_set)
     vp, pt = ctx.vp, ctx.pt
 
     # ---- aerodynamic / torque-distribution configuration ------------------
@@ -248,6 +290,32 @@ def userOpts(ctx,
     ctx.OPT_d = OPT_d           # degree of interpolating polynomials
     ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs (not exposed)
     ctx.OPT_e = OPT_e           # slack for path constraints / initial guesses
+    # knot placement for discretise(): 'uniform' = N equal steps of ~OPT_ds;
+    # 'curvature' = the same N redistributed by functions/mesh.curvature_mesh
+    # (denser in corners / at corner entry-exit, sparser on straights);
+    # 'auto' = one of those two by lap length (MESH_AUTO_MIN_LENGTH), resolved
+    # here because it needs the track loaded above. ctx.mesh is always the
+    # concrete 'uniform' / 'curvature' (what discretise, the saved data and
+    # MLTP_screen read); ctx.mesh_requested keeps what was asked for.
+    if mesh not in ("auto", "uniform", "curvature"):
+        raise ValueError(f"mesh must be 'auto', 'uniform' or 'curvature', got {mesh!r}")
+    unknown = [key for key in (mesh_opts or {}) if key not in _MESH_OPTS_KEYS]
+    if unknown:
+        raise ValueError(f"unknown mesh_opts key(s) {unknown}; "
+                         f"allowed: {list(_MESH_OPTS_KEYS)}")
+    ctx.mesh_requested = mesh
+    if mesh == "auto":
+        L = float(ctx.track.s[-1] - ctx.track.s[0])
+        ctx.mesh = "curvature" if L >= MESH_AUTO_MIN_LENGTH else "uniform"
+    else:
+        ctx.mesh = mesh
+    ctx.mesh_opts = dict(mesh_opts) if mesh_opts else None
+    if ctx.mesh_opts and ctx.mesh == "uniform":
+        why = (f"lap {L:.0f} m < MESH_AUTO_MIN_LENGTH {MESH_AUTO_MIN_LENGTH:g} m"
+               if mesh == "auto" else "mesh='uniform'")
+        warnings.warn(f"mesh_opts ignored: mesh resolved to 'uniform' ({why}); "
+                      "pass mesh='curvature' to use them.")
+        ctx.mesh_opts = None
 
     # ---- solver options (IPOPT) -------------------------------------------
     # `linear_solver` is configurable (default 'ma57'). An ma* solver uses
@@ -270,8 +338,32 @@ def userOpts(ctx,
         "linear_solver": linear_solver,
         "print_timing_statistics": "yes",
     }
+    # screening=True swaps the five tolerances for the looser SCREENING_IPOPT
+    # preset (it also replaces the `tol` argument). Applied BEFORE the per-call
+    # overrides below, so an explicit ipopt_overrides entry still wins.
+    ctx.screening = bool(screening)
+    if ctx.screening:
+        ipopt.update(SCREENING_IPOPT)
+    # Per-call IPOPT overrides win over every default above (and, in MLTP, over
+    # the dual warm-start recipe functions.warmstart.warm_start_ipopt_opts, which
+    # is applied only to a dual-seeded resolve, never to a cold solve).
+    ctx.ipopt_overrides = dict(ipopt_overrides or {})
+    ipopt.update(ctx.ipopt_overrides)
+    hess = str(ipopt.get("hessian_approximation", "exact")).strip().lower()
+    if hess != "exact":
+        warnings.warn(f"IPOPT hessian_approximation={hess!r}: the MLTP is tuned for the "
+                      "exact Hessian; a quasi-Newton Hessian converges far more slowly on "
+                      "this NLP and can change the local optimum found.")
     ctx.opts = {"ipopt": ipopt}
     ctx.opts["_hsl_dir"] = hsl_dir          # consumed + stripped by _make_solver
+
+    # ---- casadi Function options ------------------------------------------
+    # Both are opt-in; functions/casadi_opts.fn_opts reads ctx.cse / ctx.jit.
+    # cse=True (or MLTP_CSE=1) turns on common-subexpression elimination.
+    # jit=True (or MLTP_JIT=1) JIT-compiles the symbolic Functions; it needs
+    # gcc/clang/cl on PATH and otherwise warns once and runs without JIT.
+    ctx.jit = bool(jit)
+    ctx.cse = bool(cse)
 
     # ---- rate limits and regularisation -----------------------------------
     c = _build_c()

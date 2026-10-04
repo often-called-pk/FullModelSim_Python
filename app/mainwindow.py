@@ -28,7 +28,7 @@ CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
 AEROS = ["Static", "Active_RW", "Active", "AALB"]
 TYRES = ["CombinedSlip", "PureSlip"]
 SOLVERS = ["ma57", "ma97", "ma27", "mumps"]
-_PATH_ROLE = 256  # Qt.ItemDataRole.UserRole — stores the plot's filesystem path on the list item
+_PATH_ROLE = 256  # Qt.ItemDataRole.UserRole, stores the plot's filesystem path on the list item
 
 
 def _spin(value, lo, hi, step=1.0, decimals=4):
@@ -43,7 +43,7 @@ def _spin(value, lo, hi, step=1.0, decimals=4):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("FullModelSim — MLTP")
+        self.setWindowTitle("FullModelSim, MLTP")
         self._runner = SolveRunner(self)
         self._runner.output.connect(self._append_log)
         self._runner.finished.connect(self._on_finished)
@@ -369,7 +369,8 @@ class MainWindow(QMainWindow):
 
     def _show_results(self, rc):
         mat = results.result_mat_path(rc.output_dir, rc.circuit, rc.AeroConfig,
-                                      rc.ATD, rc.Electric_4Motors)
+                                      rc.ATD, rc.Electric_4Motors,
+                                      rc.tyre_set, rc.mesh)
         try:
             summ = results.parse_summary(mat)
             e = summ["energy_kWh"]
@@ -379,7 +380,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.summary.setText(f"Results unreadable: {exc}")
         pdir = results.plot_dir(rc.output_dir, rc.circuit, rc.AeroConfig,
-                                rc.ATD, rc.Electric_4Motors)
+                                rc.ATD, rc.Electric_4Motors,
+                                rc.tyre_set, rc.mesh)
         self.plot_list.clear()
         for p in results.list_plots(pdir):
             it = QListWidgetItem(os.path.basename(p))

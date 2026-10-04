@@ -2,11 +2,14 @@
 
 Solves the full Minimum Lap Time Problem with the 23-state model:
 
-    userOpts -> warm start (MLTP_initial or importfile) -> vehModel
-    -> build OCP (objective + config-dependent path constraints)
-    -> direct-collocation transcription -> IPOPT (MUMPS) -> postprocess -> save .mat
+    userOpts -> vehModel -> build OCP (objective + config-dependent path
+    constraints) -> warm start (7-state MLTP_initial, an init .mat, or a previous
+    full result) -> direct-collocation transcription -> IPOPT (ma57 by default,
+    MUMPS fallback) -> postprocess -> save .mat
 
-The optimal solution is written to Results/<circuit>_<config>.mat. The saved
+The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
+tyre set / mesh request appends _<tyre_set> / _mesh<Mesh>, see
+functions.importfile.result_stem). The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
 re-solving. Plotly figures are produced by plotSDI.py.
@@ -14,14 +17,19 @@ re-solving. Plotly figures are produced by plotSDI.py.
 
 import os
 import time
+import warnings
 import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
 
 import casadi as ca
 
+from functions.casadi_opts import fn_opts
 from functions.context import Ctx
-from functions.importfile import importfile
+from functions.importfile import importfile, result_stem
+from functions.mesh import solution_knots, mesh_opts_record
+from functions.warmstart import (resolve_source, guesses_from_full, nlp_structure,
+                                 plan_full_warm_start, nlp_record)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       interp_inputs, compute_time,
@@ -31,10 +39,13 @@ from vehModel import vehModel
 from MLTP_initial import MLTP_initial
 
 
-def _interp_to(grid_new, row):
-    """Linear interpolation of an init signal (uniform grid) onto N+1 points."""
+def _interp_to(grid_new, row, grid_old=None):
+    """Linear interpolation of an init signal onto the points ``grid_new``.
+    ``grid_old`` = the signal's own abscissae (physical arc length of its
+    knots); None keeps the legacy assumption of a uniform grid on [0, 1]."""
     row = np.asarray(row, dtype=float).reshape(-1)
-    grid_old = np.linspace(0.0, 1.0, row.size)
+    if grid_old is None:
+        grid_old = np.linspace(0.0, 1.0, row.size)
     return np.interp(grid_new, grid_old, row)
 
 
@@ -93,14 +104,36 @@ def build_path_constraints(ca, m, pt):
     return hnames, h, h_lb, h_ub
 
 
-def warmstart_guesses(ctx, m, init_x, init_u, N):
+def warmstart_guesses(ctx, m, init_x, init_u, s_knot, s_knot_init=None):
     """Warm-start guesses for the 23-state NLP, interpolated from the 7-state
-    data.init plus neutral/static seeds for the suspension and tyre states."""
+    data.init plus neutral/static seeds for the suspension and tyre states.
+
+    The init signals are interpolated by PHYSICAL arc length, so either grid may
+    be non-uniform (curvature mesh) and the two may have different N:
+      s_knot      : target knots, disc["s_knot"] (N = len(s_knot) - 1)
+      s_knot_init : knots of the init solution, solution_knots(init) =
+                    init.s_full[::OPT_d+1]; None -> uniform over the target span.
+    On identical grids the knot guesses equal the init values exactly. A scalar
+    ``s_knot`` is the legacy call (N, both grids taken as uniform on [0, 1])."""
     vp = ctx.vp
-    grid = np.linspace(0.0, 1.0, N + 1)
-    vx_0 = _interp_to(grid, init_x[0]); vy_0 = _interp_to(grid, init_x[1])
-    r_0 = _interp_to(grid, init_x[2]); n_0 = _interp_to(grid, init_x[3])
-    eps_0 = _interp_to(grid, init_x[4])
+    n_src = np.shape(init_x)[1]
+    if np.ndim(s_knot) == 0:                      # legacy: warmstart_guesses(..., N)
+        N = int(s_knot)
+        grid, grid_src = np.linspace(0.0, 1.0, N + 1), None
+    else:
+        grid = np.asarray(s_knot, dtype=float).reshape(-1)
+        N = grid.size - 1
+        grid_src = (np.linspace(grid[0], grid[-1], n_src) if s_knot_init is None
+                    else np.asarray(s_knot_init, dtype=float).reshape(-1))
+        if grid_src.size != n_src:
+            raise ValueError(f"s_knot_init has {grid_src.size} points for {n_src} init knots")
+
+    def _at(row):
+        return _interp_to(grid, row, grid_src)
+
+    vx_0 = _at(init_x[0]); vy_0 = _at(init_x[1])
+    r_0 = _at(init_x[2]); n_0 = _at(init_x[3])
+    eps_0 = _at(init_x[4])
     Om_fl_0 = vx_0 / vp.Rw_f; Om_fr_0 = vx_0 / vp.Rw_f
     Om_rl_0 = vx_0 / vp.Rw_r; Om_rr_0 = vx_0 / vp.Rw_r
     z0 = np.zeros(N + 1)
@@ -113,9 +146,9 @@ def warmstart_guesses(ctx, m, init_x, init_u, N):
                          zt_fl_0, zt_fr_0, zt_rl_0, zt_rr_0])
     x0 = x0_phys / m.x_s[:, None]
 
-    T_brake_0 = _interp_to(grid, init_u[1])
-    delta_0 = _interp_to(grid, init_u[2])
-    T_motor_0 = _interp_to(grid, init_u[0])
+    T_brake_0 = _at(init_u[1])
+    delta_0 = _at(init_u[2])
+    T_motor_0 = _at(init_u[0])
     u0_rows = []
     for key in ctx.input_keys:
         if key.startswith("T_motor"):
@@ -133,9 +166,49 @@ def warmstart_guesses(ctx, m, init_x, init_u, N):
     return {"x0": x0, "u0": u0, "xc0": xc0}
 
 
+def warmstart_guesses_full(ctx, m, src, disc):
+    """Primal warm-start guesses for the 23-state NLP from a previous 23-state
+    result ``src`` (loaded data, or ctx.data of an earlier MLTP call). Valid
+    across N / OPT_d / mesh / config changes: knot states and inputs are
+    interpolated by physical s (source knots = s_full[::OPT_d+1]) onto the new
+    knots, collocation states from the source x_full onto the new collocation
+    points, inputs matched by channel name. No duals."""
+    return guesses_from_full(src, disc["s_knot"], disc["s_col"], ctx.input_keys,
+                             m.x_s, m.u_s)
+
+
+def warmstart_full(ctx, m, src, disc, nh, use_duals=True):
+    """Warm start from a previous full 23-state result: (guesses, warm, mode).
+    Identical NLP structure (sizes, input_keys, collocation grid; setup / tyre
+    values may differ, that is the sweep case) -> warm carries the saved w_opt
+    (+ lam_g/lam_x and the IPOPT warm-start recipe unless use_duals=False);
+    otherwise warm=None and the s-interpolated guesses are the (primal-only)
+    start. A source solved with another tyre set is no start at all:
+    (None, None, "cold"), the caller falls back to the 7-state init."""
+    expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh),
+                    input_keys=list(ctx.input_keys), s_full=disc["s_full"],
+                    x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"))
+    warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
+                                            ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
+    if mode == "cold":
+        print(f"[MLTP] warm start ignored: {note}; running the 7-state init")
+        return None, None, mode
+    print(f"[MLTP] warm start from a full result: {note} -> {mode}")
+    return warmstart_guesses_full(ctx, m, src, disc), warm, mode
+
+
 def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
          AeroConfig="Static", ATD="On", Electric_4Motors="Off", TyreModel="CombinedSlip",
-         save=True, plot=True, results_dir="Results", plots_dir="Plots", **useropts_kwargs):
+         save=True, plot=True, results_dir="Results", plots_dir="Plots",
+         warm_start_duals=True, **useropts_kwargs):
+    """Solve the full 23-state MLTP. ``warm_start`` may be None (solve the 7-state
+    init first), a path to an init file (data.init), a path to a previous full
+    result .mat, or the ctx / ctx.data of an earlier MLTP() call (chain without
+    disk I/O). A full result of identical NLP structure is re-injected with its
+    primal AND dual solution (IPOPT warm start; set ``warm_start_duals=False``
+    for primal only); a structurally different one is interpolated by s. A full
+    result solved with another tyre set (no tyre_set field = CopyB) is ignored:
+    the 7-state init is solved instead and the warm start is recorded as 'cold'."""
     t0 = time.time()
     elapsed = {}
 
@@ -145,19 +218,19 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
     vp, pt = ctx.vp, ctx.pt
 
-    # ---- warm start (data.init) ------------------------------------------
+    # ---- warm start: data.init (7-state) or a previous full result -------
+    src_full = None                     # previous 23-state result, if given
+    init = None
     if warm_start is None:
-        ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
-                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False,
-                                **useropts_kwargs)
-        init = ctx_init.data.init
-        init_x = np.asarray(init.x_opt, dtype=float)
-        init_u = np.asarray(init.u_opt, dtype=float)
+        ws_mode = "cold"                # 7-state init solved below
     else:
-        loaded = importfile(warm_start)
-        init = loaded["data"].init
-        init_x = np.asarray(init.x_opt, dtype=float)
-        init_u = np.asarray(init.u_opt, dtype=float)
+        ws_kind, ws_src = resolve_source(warm_start, loader=importfile)
+        if ws_kind == "init":
+            ws_mode = "init7"
+            init = ws_src
+        else:
+            ws_mode = "full"
+            src_full = ws_src
     elapsed["init"] = time.time() - t0
 
     # ---- full model -------------------------------------------------------
@@ -166,19 +239,39 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
 
     # ---- OCP: dynamics + objective ---------------------------------------
     L = m.sf
-    f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv], [m.dx, L], ["x", "u", "pv"], ["dx", "L"])
-    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"])
+    f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv], [m.dx, L], ["x", "u", "pv"], ["dx", "L"],
+                        fn_opts(ctx))
+    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
 
     # ---- OCP: path constraints (friction circle + powertrain) ------------
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
-    h_eq = ca.Function("h_eq", [m.x, m.u, m.pv], [h], ["x", "u", "pv"], ["h"])
+    h_eq = ca.Function("h_eq", [m.x, m.u, m.pv], [h], ["x", "u", "pv"], ["h"], fn_opts(ctx))
 
     # ---- discretisation ---------------------------------------------------
-    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d)
+    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,
+                      mesh=getattr(ctx, "mesh", "uniform"),
+                      mesh_opts=getattr(ctx, "mesh_opts", None))
     N = disc["N"]
 
     # ---- warm-start guesses ----------------------------------------------
-    guesses = warmstart_guesses(ctx, m, init_x, init_u, N)
+    warm = None                         # primal/dual seeds from a full result
+    if src_full is not None:
+        guesses, warm, ws_mode = warmstart_full(ctx, m, src_full, disc, len(hnames),
+                                                use_duals=warm_start_duals)
+        if ws_mode == "cold":
+            src_full = None
+    if src_full is None:                # 7-state init, interpolated by arc length
+        if init is None:
+            t_init = time.time()
+            ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
+                                    ATD=ATD, Electric_4Motors=Electric_4Motors, save=False,
+                                    **useropts_kwargs)
+            init = ctx_init.data.init
+            elapsed["init"] += time.time() - t_init
+        init_x = np.asarray(init.x_opt, dtype=float)
+        init_u = np.asarray(init.u_opt, dtype=float)
+        guesses = warmstart_guesses(ctx, m, init_x, init_u, disc["s_knot"],
+                                    solution_knots(init, init_x.shape[1]))
 
     reg = {"ru": ctx.ru.reshape(-1), "rdu": ctx.rdu.reshape(-1), "rdu2": ctx.rdu2.reshape(-1)}
 
@@ -186,10 +279,20 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     res = build_and_solve_nlp(
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
         ctx.duk_lb, ctx.duk_ub, ctx.Xi, ctx.Xf,
-        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts)
+        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, warm=warm)
     sol = res["sol"]
     ctx.solve_stats = res["solver"].stats()
     elapsed["solve"] = time.time() - t0 - elapsed["init"]
+    winfo = res["warm_info"]
+    if warm is not None:                # what the transcription actually used
+        ws_mode = ("full+duals" if winfo["duals"] else
+                   "full-primal" if winfo["x0"] else "full-interp")
+    elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
+    elapsed["warm_start"] = ws_mode
+    elapsed["duals"] = bool(winfo["duals"])
+    if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, len(hnames)):
+        warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
+                      f"transcription ({res['structure']}): dual re-injection is unreliable")
 
     # ---- postprocess: collect + reconstruct ------------------------------
     w_opt = np.array(sol["x"]).reshape(-1)
@@ -232,7 +335,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                      ("Om_motor_fl", m.Om_motor_fl), ("Om_motor_fr", m.Om_motor_fr),
                      ("Om_motor_rl", m.Om_motor_rl), ("Om_motor_rr", m.Om_motor_rr)]
     labels = [k for k, _ in veh_syms]
-    f_veh = ca.Function("f_veh", [m.x, m.u, m.pv], [s for _, s in veh_syms])
+    f_veh = ca.Function("f_veh", [m.x, m.u, m.pv], [s for _, s in veh_syms], fn_opts(ctx))
     vv = f_veh(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None], disc["pv_knot"])
     vehicle = {labels[i]: np.array(vv[i]).reshape(-1) for i in range(len(labels))}
 
@@ -260,18 +363,32 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         "constraints": constraints, "input_keys": list(ctx.input_keys),
         "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d, "circuit": circuit,
         "AeroConfig": AeroConfig, "ATD": ctx.ATD, "EM4": ctx.Electric_4Motors,
+        # collocation mesh and tyre set this solution was computed with
+        # (mesh_opts: savemat-safe copy, {} when none were given)
+        "mesh": getattr(ctx, "mesh", "uniform"),
+        "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
+        "mesh_opts": mesh_opts_record(getattr(ctx, "mesh_opts", None)),
+        "tyre_set": getattr(ctx, "tyre_set", "MF205"),
+        "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
+        # primal + dual NLP solution, so a later solve can be warm-started
+        # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
+        "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
     ctx.data = SimpleNamespace(**data)
 
     if save:
         os.makedirs(results_dir, exist_ok=True)
         cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
-        out_path = os.path.join(results_dir, f"{circuit}_{cfg}.mat")
+        stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
+                           getattr(ctx, "mesh_requested", "auto"))
+        out_path = os.path.join(results_dir, f"{stem}.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved optimal solution -> {out_path}")
 
     print(f"[MLTP] circuit={circuit}  config={AeroConfig}/ATD={ctx.ATD}/EM4={ctx.Electric_4Motors}  "
-          f"N={N}  lap time = {t_opt[-1]:.3f} s  (init {elapsed['init']:.1f}s, solve {elapsed['solve']:.1f}s)")
+          f"N={N}  lap time = {t_opt[-1]:.3f} s  (init {elapsed['init']:.1f}s, solve {elapsed['solve']:.1f}s)  "
+          f"IPOPT iters={elapsed['ipopt_iters']} [{ctx.solve_stats.get('return_status', '?')}]  "
+          f"warm start={ws_mode}  duals={'yes' if elapsed['duals'] else 'no'}")
 
     if plot:
         try:

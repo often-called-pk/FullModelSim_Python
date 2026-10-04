@@ -20,8 +20,11 @@ from types import SimpleNamespace
 
 import casadi as ca
 
+from functions.casadi_opts import fn_opts
 from functions.context import Ctx
-from functions.importfile import importfile
+from functions.importfile import load_solution, result_stem
+from functions.mesh import solution_knots, mesh_opts_record
+from functions.warmstart import nlp_record, get_field
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       compute_time, reconstruct_track)
@@ -57,26 +60,43 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     # ---- warm start -------------------------------------------------------
     if warm_start is None:
         ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
-                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False)
+                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False,
+                                **useropts_kwargs)
         init = ctx_init.data.init
     else:
-        init = importfile(warm_start)["data"].init
-    init_x = np.asarray(init.x_opt, dtype=float)
-    init_u = np.asarray(init.u_opt, dtype=float)
+        if isinstance(warm_start, (str, os.PathLike)):
+            init = load_solution(os.fspath(warm_start))
+        else:
+            init = get_field(warm_start, "data", warm_start)
+            init = get_field(init, "init", init)
+        x_in = get_field(init, "x_opt")
+        if np.ndim(x_in) != 2 or np.shape(x_in)[0] != 7:
+            raise ValueError("optimise_design needs a 7-state init file or a ctx from "
+                             "MLTP_initial (init.x_opt with 7 rows); a 23-state result "
+                             "is not accepted here yet")
+    init_x = np.asarray(get_field(init, "x_opt"), dtype=float)
+    init_u = np.asarray(get_field(init, "u_opt"), dtype=float)
 
     # ---- full model (symbolic in the promoted parameters) -----------------
     vehModel(ctx)
     m = ctx.m23
 
     L = m.sf
-    f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv, P], [m.dx, L], ["x", "u", "pv", "P"], ["dx", "L"])
-    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"])
+    f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv, P], [m.dx, L], ["x", "u", "pv", "P"], ["dx", "L"],
+                        fn_opts(ctx))
+    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
-    h_eq = ca.Function("h_eq", [m.x, m.u, m.pv, P], [h], ["x", "u", "pv", "P"], ["h"])
+    h_eq = ca.Function("h_eq", [m.x, m.u, m.pv, P], [h], ["x", "u", "pv", "P"], ["h"],
+                       fn_opts(ctx))
 
-    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d)
+    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,
+                      mesh=getattr(ctx, "mesh", "uniform"),
+                      mesh_opts=getattr(ctx, "mesh_opts", None))
     N = disc["N"]
-    guesses = warmstart_guesses(ctx, m, init_x, init_u, N)
+    # init interpolated by arc length (its grid may differ, e.g. a loaded init
+    # file solved with other options)
+    guesses = warmstart_guesses(ctx, m, init_x, init_u, disc["s_knot"],
+                                solution_knots(init, init_x.shape[1]))
     reg = {"ru": ctx.ru.reshape(-1), "rdu": ctx.rdu.reshape(-1), "rdu2": ctx.rdu2.reshape(-1)}
 
     param = {"sym": P, "lb": np.array(p_lb), "ub": np.array(p_ub), "x0": np.array(p_x0)}
@@ -104,12 +124,23 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         "track": {k: v for k, v in track.items()}, "input_keys": list(ctx.input_keys),
         "optimal_params": optimal_params, "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d,
         "circuit": circuit, "AeroConfig": AeroConfig, "ATD": ctx.ATD, "EM4": ctx.Electric_4Motors,
+        "mesh": getattr(ctx, "mesh", "uniform"),
+        "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
+        "mesh_opts": mesh_opts_record(getattr(ctx, "mesh_opts", None)),
+        "tyre_set": getattr(ctx, "tyre_set", "MF205"),
+        "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
+        # primal + dual NLP solution (w ends with the nP design parameters, so
+        # structure.n_param = nP); saved for later chaining, not re-injected here
+        "nlp": nlp_record(res, res["solver"].stats(), m.x_s, m.u_s,
+                          "cold" if warm_start is None else "init7"),
     }
     ctx.data = SimpleNamespace(**data)
 
     if save:
         os.makedirs(results_dir, exist_ok=True)
-        out_path = os.path.join(results_dir, f"{circuit}_{tag}.mat")
+        out_path = os.path.join(results_dir, result_stem(
+            circuit, tag, getattr(ctx, "tyre_set", "MF205"),
+            getattr(ctx, "mesh_requested", "auto")) + ".mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved -> {out_path}")
 
