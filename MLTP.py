@@ -49,35 +49,35 @@ def _interp_to(grid_new, row, grid_old=None):
     return np.interp(grid_new, grid_old, row)
 
 
-def build_path_constraints(ca, m, pt):
-    """Config-dependent path constraints (friction circles + powertrain limits).
-    Returns (hnames, h_expr, h_lb, h_ub). Shared by MLTP and the optim variants."""
-    def rho(fx, fy, mux, muy, fz):
-        return ca.sqrt((fx / (mux * fz))**2 + (fy / (muy * fz))**2)
-    rho_lim_fl = rho(m.fx_fl, m.fy_fl, m.mu_fl_x, m.mu_fl_y, m.fz_fl)
-    rho_lim_fr = rho(m.fx_fr, m.fy_fr, m.mu_fr_x, m.mu_fr_y, m.fz_fr)
-    rho_lim_rl = rho(m.fx_rl, m.fy_rl, m.mu_rl_x, m.mu_rl_y, m.fz_rl)
-    rho_lim_rr = rho(m.fx_rr, m.fy_rr, m.mu_rr_x, m.mu_rr_y, m.fz_rr)
+def build_path_constraints(ca, m, pt, TyreModel=None):
+    """Config-dependent path constraints, ported from MLTP.m's ``switch TyreModel``.
+    Returns (hnames, h_expr, h_lb, h_ub). Shared by MLTP and the optim variants.
+
+    ``TyreModel`` defaults to the one the model was built with (m.TyreModel):
+      'CombinedSlip' (default, the only case MATLAB's MLTP runs): powertrain rows
+          only, motor_power, motor_rpm, BrTh_1 (+ ATD_eq with ATD On) or the 12
+          per-motor rows with EM4 (nh = 3 / 4 / 12); the combined-slip Magic
+          Formula itself bounds the tyre forces.
+      'PureSlip': the four friction circles rho_lim_fl..rr in [0, 1] first, then
+          the same rows (nh = 7 / 8 / 16)."""
+    if TyreModel is None:
+        TyreModel = getattr(m, "TyreModel", "CombinedSlip")
+    if TyreModel not in ("CombinedSlip", "PureSlip"):
+        raise ValueError(f"TyreModel must be 'CombinedSlip' or 'PureSlip', got {TyreModel!r}")
 
     if pt.EM4 == 0:
         BrTh_1 = (m.T_motor_n * m.T_brake_n) / 1e-3
         motor_power = (pt.Pmax - m.Om_motor * m.T_motor) / pt.Pmax
         motor_rpm = (pt.OMmax - m.Om_motor) / pt.OMmax
-        if pt.ATD == 0:
-            hnames = ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
-                      "motor_power", "motor_rpm", "BrTh_1"]
-            h = ca.vertcat(rho_lim_fl, rho_lim_fr, rho_lim_rl, rho_lim_rr,
-                           motor_power, motor_rpm, BrTh_1)
-            h_lb = np.array([0, 0, 0, 0, 0, 0, -1.0])
-            h_ub = np.array([1, 1, 1, 1, 1, 1, 1.0])
-        else:
-            ATD_eq = 1 - (m.ATD_FL + m.ATD_FR + m.ATD_RL + m.ATD_RR)
-            hnames = ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
-                      "motor_power", "motor_rpm", "BrTh_1", "ATD_eq"]
-            h = ca.vertcat(rho_lim_fl, rho_lim_fr, rho_lim_rl, rho_lim_rr,
-                           motor_power, motor_rpm, BrTh_1, ATD_eq)
-            h_lb = np.array([0, 0, 0, 0, 0, 0, -1.0, -1e-3])
-            h_ub = np.array([1, 1, 1, 1, 1, 1, 1.0, 1e-3])
+        hnames = ["motor_power", "motor_rpm", "BrTh_1"]
+        h = [motor_power, motor_rpm, BrTh_1]
+        h_lb = [0, 0, -1.0]
+        h_ub = [1, 1, 1.0]
+        if pt.ATD == 1:
+            hnames.append("ATD_eq")
+            h.append(1 - (m.ATD_FL + m.ATD_FR + m.ATD_RL + m.ATD_RR))
+            h_lb.append(-1e-3)
+            h_ub.append(1e-3)
     else:
         BrTh_fl = (m.T_motor_fl_n * m.T_brake_n) / 1e-3
         BrTh_fr = (m.T_motor_fr_n * m.T_brake_n) / 1e-3
@@ -91,17 +91,28 @@ def build_path_constraints(ca, m, pt):
         mr_fr = (pt.OMmax - m.Om_motor_fr) / pt.OMmax
         mr_rl = (pt.OMmax - m.Om_motor_rl) / pt.OMmax
         mr_rr = (pt.OMmax - m.Om_motor_rr) / pt.OMmax
-        hnames = ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr",
-                  "motor_power_fl", "motor_power_fr", "motor_power_rl", "motor_power_rr",
+        hnames = ["motor_power_fl", "motor_power_fr", "motor_power_rl", "motor_power_rr",
                   "motor_rpm_fl", "motor_rpm_fr", "motor_rpm_rl", "motor_rpm_rr",
                   "BrTh_fl", "BrTh_fr", "BrTh_rl", "BrTh_rr"]
-        h = ca.vertcat(rho_lim_fl, rho_lim_fr, rho_lim_rl, rho_lim_rr,
-                       mp_fl, mp_fr, mp_rl, mp_rr, mr_fl, mr_fr, mr_rl, mr_rr,
-                       BrTh_fl, BrTh_fr, BrTh_rl, BrTh_rr)
-        h_lb = np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0, -1, -1, -1])
-        h_ub = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1.0, 1, 1, 1])
+        h = [mp_fl, mp_fr, mp_rl, mp_rr, mr_fl, mr_fr, mr_rl, mr_rr,
+             BrTh_fl, BrTh_fr, BrTh_rl, BrTh_rr]
+        h_lb = [0, 0, 0, 0, 0, 0, 0, 0, -1.0, -1, -1, -1]
+        h_ub = [1, 1, 1, 1, 1, 1, 1, 1, 1.0, 1, 1, 1]
+
+    if TyreModel == "PureSlip":                 # friction circles, ahead of the rest
+        def rho(fx, fy, mux, muy, fz):
+            return ca.sqrt((fx / (mux * fz))**2 + (fy / (muy * fz))**2)
+        hnames = ["rho_lim_fl", "rho_lim_fr", "rho_lim_rl", "rho_lim_rr"] + hnames
+        h = [rho(m.fx_fl, m.fy_fl, m.mu_fl_x, m.mu_fl_y, m.fz_fl),
+             rho(m.fx_fr, m.fy_fr, m.mu_fr_x, m.mu_fr_y, m.fz_fr),
+             rho(m.fx_rl, m.fy_rl, m.mu_rl_x, m.mu_rl_y, m.fz_rl),
+             rho(m.fx_rr, m.fy_rr, m.mu_rr_x, m.mu_rr_y, m.fz_rr)] + h
+        h_lb = [0, 0, 0, 0] + h_lb
+        h_ub = [1, 1, 1, 1] + h_ub
+
+    h = ca.vertcat(*h)
     assert len(hnames) == h.shape[0], "Number of path constraints not consistent"
-    return hnames, h, h_lb, h_ub
+    return hnames, h, np.array(h_lb, dtype=float), np.array(h_ub, dtype=float)
 
 
 def warmstart_guesses(ctx, m, init_x, init_u, s_knot, s_knot_init=None):
@@ -243,7 +254,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                         fn_opts(ctx))
     f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
 
-    # ---- OCP: path constraints (friction circle + powertrain) ------------
+    # ---- OCP: path constraints (powertrain; + friction circles if PureSlip) ----
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
     h_eq = ca.Function("h_eq", [m.x, m.u, m.pv], [h], ["x", "u", "pv"], ["h"], fn_opts(ctx))
 
@@ -276,9 +287,10 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     reg = {"ru": ctx.ru.reshape(-1), "rdu": ctx.rdu.reshape(-1), "rdu2": ctx.rdu2.reshape(-1)}
 
     # ---- build + solve NLP -----------------------------------------------
+    # input-rate bounds: m.duk_* = ctx.duk_* / u_s (the NLP bounds normalised rates)
     res = build_and_solve_nlp(
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
-        ctx.duk_lb, ctx.duk_ub, ctx.Xi, ctx.Xf,
+        m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,
         ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, warm=warm)
     sol = res["sol"]
     ctx.solve_stats = res["solver"].stats()

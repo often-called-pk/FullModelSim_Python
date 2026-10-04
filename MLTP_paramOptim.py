@@ -102,7 +102,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     param = {"sym": P, "lb": np.array(p_lb), "ub": np.array(p_ub), "x0": np.array(p_x0)}
     res = build_and_solve_nlp(
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
-        ctx.duk_lb, ctx.duk_ub, ctx.Xi, ctx.Xf,
+        m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,     # rate bounds / u_s (normalised)
         ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, param=param)
     sol = res["sol"]
 

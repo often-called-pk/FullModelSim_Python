@@ -28,12 +28,29 @@ whose curvature is noise around zero. "Zero up to rounding" is judged against th
 track itself: if |k| held at its peak over the whole lap would turn the car by less
 than _NEGLIGIBLE (1e-6) rad the track is straight and both terms are dropped; if
 dk/ds held at its peak over the whole lap would change k by less than _NEGLIGIBLE
-of its peak the curvature is constant and the dk/ds term is dropped. A percentile
-at or below its noise floor falls back to the max, as for exact zeros, so noise on
-the straights of a track with one real corner does not rescale the corner. Noise
-ABOVE these floors is data, not rounding: on a track whose corners cover less than
-(100 - pct) percent of its length the percentile is then set by that noise and the
-corners can saturate at ds_min.
+of its peak the curvature is constant and the dk/ds term is dropped.
+
+The percentile has to measure the features, not the background between them: on
+a track whose corners cover less than (100 - pct) percent of its length it lands
+on the straights. It is therefore replaced by the max (its term then peaks at a,
+or b, on the tightest feature) when it is at or below the noise floor above
+(exact zeros, rounding) or below _NOISE_REL (1e-3) of the max. The relative test
+catches what the tiny floors (1e-9 1/m for |k| on a 1 km lap) let through: 1e-6
+rounding on the straights would otherwise become k_ref / dk_ref, put O(1) noise
+into M there and pin the corners at ds_min; with the test such a track gets its
+exact-zero mesh up to O(noise / peak) (the knots move ~3 mm for 1e-6 noise next
+to the 0.08 1/m hairpin in test_transcription.py). It also catches a low pct
+landing in the smoothing tails next to exact-zero straights (at OPT_ds = 30,
+pct = 75 on ZigZag or pct = 50 on VirtualTrack, which would otherwise pin 33 / 11
+intervals at ds_min). The fallback is the max, not a percentile of the samples
+above the cut, because the max is what exact zeros already get: any other choice
+would make the mesh depend on whether the straights hold zeros or noise. A
+percentile at or above _NOISE_REL of the max is data and is kept. At the default
+pct and OPT_ds = 15 / 30 / 45 no shipped circuit has a percentile between its
+floor and that cut (the lowest one above its floor, ZigZag's |dk/ds| at
+OPT_ds = 15, is ~5% of its max), so their meshes are unchanged, while a
+background of 1e-3 of the peak or more (e.g. measured curvature on real
+straights) still sets the scale.
 
 Smoothing. k is resampled onto a uniform fine grid and smoothed with a centred,
 edge-normalised moving average `smooth_window` metres wide (default OPT_ds)
@@ -77,6 +94,8 @@ DS_MAX_FRAC = 2.5        # default ds_max = DS_MAX_FRAC * OPT_ds
 _MAX_GRID = 200001       # cap on the fine monitor grid size
 _NEGLIGIBLE = 1e-6       # rounding-noise level: turning in rad over the lap (|k|), or
                          # curvature change as a fraction of peak |k| over the lap (dk/ds)
+_NOISE_REL = 1e-3        # a percentile under this fraction of its signal's max is set by
+                         # background noise between a few real features: _ref uses the max
 
 
 # ----------------------------------------------------------------------------
@@ -106,12 +125,16 @@ def _box_smooth(x, n):
 
 
 def _ref(x, pct, floor=0.0):
-    """Scale of a non-negative signal: its pct-th percentile; if that is at or below
-    ``floor`` (zero or rounding noise), its max; if even that is at or below
-    ``floor``, 0.0 (the signal is numerically zero and its monitor term is dropped)."""
+    """Scale of a non-negative signal: its pct-th percentile, unless that percentile
+    measures the background instead of the features, i.e. it is at or below ``floor``
+    (zero or rounding noise) or below _NOISE_REL of the max (noise above the floor
+    between a few real features); then its max, the same scale for both. If even the
+    max is at or below ``floor``, 0.0 (the signal is numerically zero and its monitor
+    term is dropped)."""
     r = float(np.percentile(x, pct))
-    if not r > floor:
-        r = float(np.max(x))
+    x_max = float(np.max(x))
+    if not (r > floor and r >= _NOISE_REL * x_max):
+        r = x_max
     return r if r > floor else 0.0
 
 
@@ -160,7 +183,8 @@ def monitor(s, k, OPT_ds, a=A_DEFAULT, b=B_DEFAULT, smooth_window=None,
     # Rounding-noise floors, judged against the track itself (module docstring,
     # "Normalisation"): a lap-long turn under _NEGLIGIBLE rad is a straight, so dk/ds
     # is noise too; a lap-long change of k under _NEGLIGIBLE of its peak is constant
-    # curvature. Without them _ref would rescale float noise to O(1).
+    # curvature. Without them _ref would rescale float noise to O(1). _ref also
+    # replaces a percentile under _NOISE_REL of the max (noise between sparse corners).
     k_ref = _ref(K, pct, _NEGLIGIBLE / L)
     dk_ref = _ref(DK, pct, _NEGLIGIBLE * float(np.max(K)) / L) if k_ref > 0.0 else 0.0
     M = np.ones_like(sg)

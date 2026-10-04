@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from functions.transcription import (discretise, unpack_solution,
                                       reconstruct_x_full, reconstruct_track,
                                       interp_inputs)
-from functions.mesh import curvature_mesh, mesh_stats, solution_knots
+from functions.mesh import curvature_mesh, mesh_stats, monitor, solution_knots
 
 def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
@@ -171,6 +171,29 @@ for amp in (1e-17, 1e-13):
     ok(f"{amp:g} noise on the straights leaves the one-corner mesh unchanged",
        np.allclose(curvature_mesh(s_h, k_one + amp * rng_n.standard_normal(s_h.size), OPT_ds_h),
                    sk_one, rtol=0, atol=1e-6))
+# noise ABOVE the absolute floors (1e-6 / L ~ 8e-10 1/m on this lap) but far below the
+# corner sets the 90th percentile; the relative guard (_NOISE_REL) then uses the max, as
+# for exact zeros, instead of rescaling the noise to O(1) and pinning the corner at ds_min
+_, _, inf_one = monitor(s_h, k_one, OPT_ds_h)
+for amp in (1e-9, 1e-6):
+    k_nz = k_one + amp * rng_n.standard_normal(s_h.size)
+    sk_nz = curvature_mesh(s_h, k_nz, OPT_ds_h)
+    _, _, inf_nz = monitor(s_h, k_nz, OPT_ds_h)
+    ok(f"{amp:g} noise (above the floors) on the straights: one-corner mesh within 1 cm of the "
+       "exact-zero one, corner not pinned at ds_min, k_ref / dk_ref set by the corner",
+       np.max(np.abs(sk_nz - sk_one)) < 1e-2
+       and np.diff(sk_nz).min() > 0.25 * OPT_ds_h + 1.0
+       and abs(inf_nz["k_ref"] / inf_one["k_ref"] - 1.0) < 1e-3
+       and abs(inf_nz["dk_ref"] / inf_one["dk_ref"] - 1.0) < 1e-3)
+_, _, inf_lo = monitor(s_h, k_one + 1e-6, OPT_ds_h)      # background ~1e-5 of the peak
+_, _, inf_hi = monitor(s_h, k_one + 2e-3, OPT_ds_h)      # background ~2e-2 of the peak: data
+_, _, inf_h = monitor(s_h, k_h, OPT_ds_h)                # corners over > 10% of the lap
+ok("percentile guard: a background under 1e-3 of the peak gives k_ref = max, one above it "
+   "keeps its 90th percentile, and so do corners covering > 10% of the lap",
+   inf_lo["k_ref"] == inf_lo["K"].max()
+   and inf_hi["k_ref"] == np.percentile(inf_hi["K"], 90) and abs(inf_hi["k_ref"] - 2e-3) < 1e-12
+   and inf_h["k_ref"] == np.percentile(inf_h["K"], 90)
+   and inf_h["dk_ref"] == np.percentile(inf_h["DK"], 90))
 sk20 = curvature_mesh(s_h, k_h, OPT_ds_h, N=20)
 ok("explicit N honoured (mean spacing L/N)",
    sk20.size == 21 and abs(np.diff(sk20).mean() - 60.0) < 1e-9)

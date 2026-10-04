@@ -9,7 +9,8 @@ The tyre set ``ctx.mf`` comes from vehParams' ``tyre_set`` (default "MF205"; leg
 "CopyB" has pKy4=0); the model is tyre-set agnostic. The DATA_AA aero polynomials
 come from ``ctx.aero`` and the linear camber-gain coefficients from ``ctx.cg``.
 Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``,
-``TyreModel='CombinedSlip'``) are exposed as arguments with the same defaults.
+``TyreModel='CombinedSlip'``) are exposed as arguments with the same defaults;
+``m.TyreModel`` also selects MLTP.build_path_constraints' row set, as in MLTP.m.
 
 There are NO aux variables (ny = 0): the load transfers are produced by the
 suspension/tyre states, not by algebraic decision variables.
@@ -172,6 +173,15 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     u_lim = np.vstack([lr for (_, _, lr) in u_list])
     u_min, u_max = u_lim[:, 0], u_lim[:, 1]
     nu = u.shape[0]
+
+    # rate-of-input limits: userOpts gives them per second in physical units (Nm/s,
+    # rad/s, deg/s, 1/s, order = ctx.input_keys = u); the NLP bounds the rate of the
+    # NORMALISED inputs, so divide by u_s as vehModel.m L377-379 does. Steering uses
+    # this model's own scale delta_max, i.e. the documented 0.1 rad/s; vehModel.m
+    # divides by delta_s = pi/8 leaked from vehModel_initial.m (0.156 rad/s).
+    duk_ub = np.asarray(ctx.duk_ub, dtype=float).reshape(-1) / u_s
+    duk_lb = np.asarray(ctx.duk_lb, dtype=float).reshape(-1) / u_s
+    assert nu == duk_ub.size == duk_lb.size, "Rate limits (ctx.input_keys) do not match the inputs"
 
     # ===================== variable parameter ==============================
     kappa = SX.sym("kappa")
@@ -559,6 +569,8 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     m.dx, m.sf = dx, sf
     m.x_s, m.u_s = x_s, u_s
     m.x_min, m.x_max, m.u_min, m.u_max = x_min, x_max, u_min, u_max
+    m.duk_lb, m.duk_ub = duk_lb, duk_ub          # normalised rate bounds for the NLP
+    m.TyreModel = TyreModel                      # MLTP.build_path_constraints follows it
     # raw signals
     m.vx, m.vy, m.r, m.n, m.eps = vx, vy, r, n, eps
     m.zs, m.theta, m.phi = zs, theta, phi
