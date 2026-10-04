@@ -8,9 +8,9 @@ resulting NLP with **IPOPT** (shipped inside the CasADi wheel).
 
 There are two ways to use it:
 
-1. **Python scripts** — `MLTP.py`, `MLTP_initial.py`, and the co-optimisation
+1. **Python scripts**, `MLTP.py`, `MLTP_initial.py`, and the co-optimisation
    wrappers; deliverables are `.mat` result files and Plotly HTML figures.
-2. **FullModelSim desktop app** — a PySide6 GUI frozen to a standalone Windows
+2. **FullModelSim desktop app**, a PySide6 GUI frozen to a standalone Windows
    `.exe` (PyInstaller) that runs on a machine with **no Python installed**.
 
 > Deep architecture/internals live in [`CLAUDE.md`](CLAUDE.md). This README is
@@ -28,18 +28,18 @@ There are two ways to use it:
 | Desktop GUI app (`app/`) | ✅ working |
 | Standalone Windows `.exe` (PyInstaller) | ✅ builds & runs; verified end-to-end |
 | Coin-HSL inside the frozen exe (`sys._MEIPASS`) | ✅ verified (`ma57`, self-contained) |
-| Automated test suite (15 files, casadi-free core) | ✅ 15/15 |
+| Automated test suite (21 files, mostly casadi-free) | ✅ 21/21 |
 
 The frozen build has been verified on the dev machine end-to-end (Sturn solve on
 `ma57` from the bundled Coin-HSL → `Optimal Solution Found`, results + plots
 written). A literal **clean-VM run** (a machine with no Python/casadi/HSL) remains
-the gold-standard final acceptance check — see [`build/README.md`](build/README.md).
+the gold-standard final acceptance check, see [`build/README.md`](build/README.md).
 
 ---
 
 ## Setup
 
-Everything assumes the **repo root as working directory** — all paths are
+Everything assumes the **repo root as working directory**, all paths are
 relative (`Circuits/`, `Data/`, `Results/`, `Plots/`). Use the in-repo venv:
 
 ```powershell
@@ -56,7 +56,7 @@ pip install -r requirements.txt           # casadi, numpy, scipy, plotly, kaleid
 
 ### A) Run a solve from Python
 
-The scripts have **no argparse/CLI** — their `__main__` block calls the function
+The scripts have **no argparse/CLI**, their `__main__` block calls the function
 with hardcoded args. Either edit the `__main__` call or import and call with
 kwargs:
 
@@ -79,7 +79,7 @@ to `Plots/<circuit>/<config>/`.
 **Circuits.** Real tracks live as `.mat` files in `Circuits/` (e.g. `BCN` →
 `Barcelona_circuit.mat`, plus the `BCN_S1/S2/S3` sector splits); any other name
 (`Straight`, `Hairpin`, `Sturn`, `Circle`, `ZigZag`, `ZigZagMirror`,
-`VirtualTrack`) is **synthetic** — its curvature is generated analytically, no
+`VirtualTrack`) is **synthetic**, its curvature is generated analytically, no
 `.mat` needed.
 
 ### B) Run the desktop GUI (development)
@@ -120,7 +120,7 @@ with the `COINHSL_DIR` environment variable, or rely on the seeded default in
 PyInstaller root (`sys._MEIPASS`).
 
 If no working Coin-HSL library is found, the solve **transparently falls back to
-MUMPS** (bundled, needs no external library) — a solve never crashes on a missing
+MUMPS** (bundled, needs no external library), a solve never crashes on a missing
 DLL. Choose the solver per call (`MLTP(circuit='BCN', linear_solver='ma97')` or
 `'mumps'`), and benchmark them with:
 
@@ -132,7 +132,7 @@ python bench_linear_solver.py
 
 ## Tests
 
-There is **no pytest** — the 15 `test_*.py` files are plain scripts whose asserts
+There is **no pytest**, the 21 `test_*.py` files are plain scripts whose asserts
 run at module top level. Run a file directly; the finest selectable unit is a
 whole file. Run the full suite (each in turn):
 
@@ -140,9 +140,12 @@ whole file. Run the full suite (each in turn):
 foreach ($f in Get-ChildItem test_*.py) { python $f.Name }
 ```
 
-These cover the **casadi-free numerical/config core** plus the app's
-config/serialisation/results layer. They do **not** run the full symbolic models
-(which need CasADi + IPOPT). Smoke-test the symbolic model with:
+These cover the numerical/config core (collocation, mesh, warm start, QSS screener),
+plus the app's config/serialisation/results layer. Most need no casadi (18 of the 21
+pass with it blocked); `test_casadi_opts.py`, `test_hsl.py` and `test_mltp_params.py`
+import casadi, and `test_screen.py` builds the 23-state `vehModel` for its CasADi
+anchors when casadi is present (it needs the tracked `Data/DATA_AA.mat`). No test
+solves the 23-state NLP with IPOPT. Smoke-test the symbolic model with:
 
 ```powershell
 python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"

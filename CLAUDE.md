@@ -8,62 +8,86 @@ A Python port of a MATLAB **Minimum-Lap-Time-Problem (MLTP)** framework for a 4-
 electric race car (`FullModel_4EM_Suspension_FullTyre`). It poses the racing line as an
 optimal-control problem in the **space (track arc-length) domain**, transcribes it with
 **direct Legendre collocation**, and solves the resulting NLP with **IPOPT** (shipped inside
-the CasADi wheel, using the **MUMPS** linear solver). There is no application/server — the
-deliverables are top-level scripts you run, `.mat` result files, and Plotly HTML figures.
+the CasADi wheel; linear solver HSL **ma57** by default, **MUMPS** as the automatic fallback).
+There is no server: the deliverables are top-level scripts you run, `.mat` result files and
+Plotly HTML figures, plus a PySide6 desktop app (`app/`, `headless_solve.py`, `build/`) that
+drives the same solve.
 
 ## Environment & commands
 
-Everything assumes the **repo root as working directory** — all paths are relative
+Everything assumes the **repo root as working directory**: all paths are relative
 (`Circuits/`, `Data/`, `Results/`, `Plots/`). Use the in-repo venv:
 
 ```powershell
 venv\Scripts\Activate.ps1        # PowerShell; or call venv\Scripts\python.exe directly
-pip install -r requirements.txt  # casadi, numpy, scipy, plotly, kaleido (kaleido optional)
+pip install -r requirements.txt  # casadi, numpy, scipy, plotly, kaleido (optional), PySide6, pyinstaller
 ```
 
-**Running a solve.** The scripts have **no argparse/sys.argv** — their `__main__` block calls
+**Running a solve.** The scripts have **no argparse/sys.argv**; their `__main__` block calls
 the function with hardcoded args (`circuit='Sturn'`, `vi=60.0`). To change circuit/config,
-either edit the `__main__` call or import and call with kwargs:
+either edit the `__main__` call or import and call with kwargs. Extra kwargs of `MLTP()` and
+`MLTP_screen()` are forwarded to `userOpts` (`vp_overrides`, `tyre_set`, `OPT_ds`, `mesh`,
+`screening`, `linear_solver`, `ipopt_overrides`, ...):
 
 ```powershell
 python MLTP_initial.py                                   # 7-state warm-start solve
 python MLTP.py                                           # full 23-state solve
+python MLTP_screen.py                                    # QSS lap-time estimate (no NLP)
 python -c "from MLTP import MLTP; MLTP(circuit='BCN', AeroConfig='Static', ATD='On', Electric_4Motors='Off', TyreModel='CombinedSlip')"
 python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit='Sturn')"
 ```
 
-**Using Coin-HSL (HSL linear solver).** The solve defaults to IPOPT's HSL `ma57`
-solver. Provide a Coin-HSL library (the MinGW/`libgfortran5` `CoinHSL_jll` build
-matches the casadi wheel's ABI) by setting `COINHSL_DIR` to its `bin/` folder, or
-rely on the seeded default in `functions/hsl.py`. The directory is registered on
-the Windows DLL path and probed once; if HSL can't load, `_make_solver` falls
-back to MUMPS with a warning (a solve never crashes on a missing DLL). `ma57`
-runs with MC64 auto-scaling (`ma57_automatic_scaling`, set automatically in
-`functions/hsl.py`) so it converges on the stiff 23-state problem, where unscaled
-MA57 can stall. Choose the solver per call: `MLTP(circuit='BCN',
-linear_solver='ma97')` or `linear_solver='mumps'`. Benchmark them with `python
-bench_linear_solver.py`, which reports a per-iteration linear-solver cost (the
-apples-to-apples metric — MA57 factorises ~4–5× faster per IPOPT iteration than
-MUMPS; total wall-clock depends on how many iterations each takes on this
-nonconvex problem).
+**Using Coin-HSL (HSL linear solver).** The solve defaults to IPOPT's HSL `ma57`. Provide a
+Coin-HSL library (the MinGW/`libgfortran5` `CoinHSL_jll` build matches the casadi wheel's ABI)
+by setting `COINHSL_DIR` to its `bin/` folder, or rely on the seeded default in
+`functions/hsl.py`. The directory is registered on the Windows DLL path and probed once; if HSL
+can't load, `_make_solver` falls back to MUMPS with a warning (a solve never crashes on a
+missing DLL). `ma57` runs with MC64 auto-scaling (`ma57_automatic_scaling='yes'`, set
+automatically in `functions/hsl.py`) so it converges on the stiff 23-state problem, where
+unscaled MA57 can stall. Choose the solver per call: `MLTP(circuit='BCN', linear_solver='ma97')`
+or `linear_solver='mumps'`. `python bench_linear_solver.py` reports a per-iteration
+linear-solver cost (the apples-to-apples metric: MA57 factorises ~4-5x faster per IPOPT
+iteration than MUMPS; total wall-clock also depends on the iteration count each takes).
 
-**Tests.** There is **no pytest/unittest** — the four `test_*.py` files are plain scripts whose
-assertions run at module top level (no `if __name__ == '__main__'` block). Run a file directly;
-there is no test runner and the finest selectable unit is a **whole file** (the first failing
-assert aborts that file). There is no "run all" command — run each in turn:
+**CasADi options (CSE / JIT / symbol type).** Every symbolic `ca.Function` is built with
+`fn_opts(ctx)` (`functions/casadi_opts.py`); all of these are opt-in.
+CSE: `MLTP_CSE=1` or `userOpts(cse=True)`; it changes the IPOPT path on the path-sensitive
+23-state NLP and gains only ~1% wall time, since MA57 factorisation dominates.
+JIT: `userOpts(jit=True)` (e.g. `MLTP(circuit='BCN', jit=True)`) or env `MLTP_JIT=1`; needs
+gcc/clang/cl on PATH, else it warns once and builds without JIT.
+Symbols: SX by default; `MLTP_SYM_TYPE=MX` (or `build_and_solve_nlp(sym_type='MX')`) builds the
+NLP ~15x faster but evaluates the Jacobian/Hessian ~8x slower and takes a different IPOPT path.
+
+**Tests.** There is **no pytest/unittest** and no runner script in the repo: the `test_*.py`
+files (21 today) are plain scripts whose assertions run at module top level (no
+`if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
+failing assert aborts that file). Run one directly, or loop over all (each exits non-zero on failure):
 
 ```powershell
-python test_foundation.py        # casadi-free helpers: collocation, geometry, simpleMA, Powertrain constants
-python test_transcription.py     # discretise/pack/unpack round-trip, column-major (order='F') packing
-python test_save_load.py         # solution .mat save -> load_solution round-trip (incl. warm-start nesting)
-python test_params_useropts.py   # vehParams (Copy-B tyre set) + userOpts config branching
+python test_foundation.py        # one file
+foreach ($f in Get-ChildItem test_*.py) { "== $($f.Name)"; python $f.Name; if ($LASTEXITCODE) { "FAILED: $($f.Name)" } }
 ```
 
-These four cover the **casadi-free numerical/config core only** — they do **not** exercise
-`vehModel.py` / `MLTP.py` (which need CasADi + IPOPT). Smoke-test the symbolic models with:
+- `test_foundation.py`: casadi-free helpers (collocation, geometry, simpleMA, Powertrain constants)
+- `test_transcription.py`: `discretise`, `order='F'` pack/unpack, curvature mesh, warm-start interpolation
+- `test_save_load.py`: result `.mat` -> `load_solution` round-trip (init nesting, `data.nlp`, config fields)
+- `test_params_useropts.py`: `vehParams` (MF205 default, legacy CopyB) + `userOpts` branching and `mesh` (`auto` 2000 m rule) / `screening` / `tyre_set`
+- `test_useropts_solveropts.py`: `userOpts` solver/collocation kwargs and defaults
+- `test_vp_overrides.py`: `vp_overrides` propagation; unknown keys raise
+- `test_warmstart.py`: `functions/warmstart.py` (structure check, interpolation, source planning)
+- `test_screen.py`: QSS screen (analytic cases, BCN march, `screen_sweep`; CasADi anchors vs `vehModel` if casadi is present)
+- `test_casadi_opts.py`: CSE/JIT opt-in and JIT fallback (needs casadi)
+- `test_hsl.py`: HSL path resolution, opts rewriting, MUMPS fallback (needs casadi: it solves toy NLPs through IPOPT; the real-DLL checks run only if Coin-HSL is found)
+- `test_mltp_params.py`: `MLTP` signature checks (imports casadi, no solve)
+- App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
+
+No test solves the 23-state NLP. `test_runconfig.py` / `test_results.py` write scratch files into
+the repo root unless `CLAUDE_JOB_DIR_TMP` is set. Smoke-test the symbolic models (CasADi needed),
+and a real solve (~40 s, default MF205 tyre), with:
 
 ```powershell
 python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
+python -c "from MLTP import MLTP; MLTP(circuit='Sturn', save=False, plot=False)"
 ```
 
 ## Architecture (the big picture)
@@ -83,16 +107,32 @@ Key namespaces hung off `ctx`: `ctx.vp` (vehicle params, flat), `ctx.pt` (powert
 conditions), and the result models `ctx.m7` / `ctx.m23` / `ctx.data`.
 
 ### Two-stage solve
-1. **`MLTP_initial.py`** builds a simplified **7-state bicycle model** (`vehModel_initial` →
+1. **`MLTP_initial.py`** builds a simplified **7-state bicycle model** (`vehModel_initial` ->
    `ctx.m7`, nx=7/nu=3/ny=1, lumped Magic-Formula tyre) and solves a reduced OCP to produce a
    warm start, saved as `Results/init_<circuit>.mat` (`data.init`).
-2. **`MLTP.py`** builds the **full 23-state model** (`vehModel` → `ctx.m23`) and solves the real
+2. **`MLTP.py`** builds the **full 23-state model** (`vehModel` -> `ctx.m23`) and solves the real
    problem, saving `Results/<circuit>_<config>.mat`. If `warm_start=None`, `MLTP()` calls
    `MLTP_initial(save=False)` itself and interpolates the 7-state solution onto the 23-state grid
-   via `warmstart_guesses()`.
+   **by arc length** via `warmstart_guesses()` (the two grids may differ in N and mesh).
 
 `MLTP.py` also owns the only definition of `build_path_constraints()` (config-dependent
 friction-circle + powertrain constraints; the count changes with EM4/ATD).
+
+### Warm starts and sweeps
+`MLTP(warm_start=...)` takes an init `.mat` (7-state `data.init`), a full result `.mat`, or an
+in-memory `ctx` / `ctx.data` (chain solves without disk I/O). Every full result stores `data.nlp`
+(`w_opt`, `lam_g`, `lam_x`, `structure`, `x_s`/`u_s`, IPOPT status). If the new NLP's **structure**
+matches (sizes, `input_keys`, collocation grid `s_full`; setup/tyre values such as `vp_overrides`
+may differ, which is the sweep case) the saved primal AND duals are re-injected with IPOPT's
+warm-start recipe (`warmstart.warm_start_ipopt_opts()`, used only on a dual-seeded resolve, never
+cold; explicit `ipopt_overrides` still win; `warm_start_duals=False` seeds the primal only).
+Otherwise (N, `OPT_d`, mesh or config changed) the old result is interpolated onto the new knots by
+arc length (primal only). The mode (`cold | init7 | full+duals | full-primal | full-interp`) is
+printed and stored in `data.nlp.warm_start`. Measured on Sturn (N=18, ma57; five-coefficient MF205
+proxy): a cold solve takes 257 iterations / 32.5 s; an identical resolve with duals 0 iterations /
+4.7 s (primal-only 30); +3% `alpha_RW` takes 11 iterations warm vs 364 cold, +3% `mb` 32 vs 327.
+Full `tyre_set='MF205'` re-check, +3% mass: 10 warm, 109 primal-only, 505 cold. Iteration counts
+are path dependent. A `MLTP_paramOptim` result has `n_param` > 0, so it seeds by interpolation only.
 
 ### Co-optimization wrappers
 - **`MLTP_paramOptim.py`** promotes static design parameters (`vp` fields) to constant-over-lap
@@ -101,38 +141,104 @@ friction-circle + powertrain constraints; the count changes with EM4/ATD).
   `brkB, Tdist, alpha_FL/FR/RW/TW`.
 - **`MLTP_TyreOptim.py`** is a thin wrapper over `optimise_design()` promoting only `Fz0_shift`.
 
-### The transcription engine — `functions/transcription.py`
-Shared by all MLTP scripts. `discretise(track, OPT_ds, OPT_d)` builds the Legendre collocation
-grid (defaults from `userOpts.py`: step `OPT_ds=30` m, degree `OPT_d=3`, `OPT_uinter='linear'`);
-`build_and_solve_nlp(...)` assembles the CasADi NLP — decision vector
+### Fast QSS screening tier (`MLTP_screen.py` + `functions/ggv.py`)
+A numpy-only quasi-steady g-g-v lap-time ESTIMATE (7 ms Sturn, 30 ms BCN per setup once `ctx`
+exists; +3.9% Sturn / +11.1% BCN vs the corrected-tyre (MF205 lateral) NLP lap) for ranking setups.
+**Not an optimum**: fixed centreline (n = 0, track width unused), point mass, no transients.
+`python MLTP_screen.py` or `MLTP_screen(circuit='BCN', vp_overrides={...})` -> `Results/<circuit>_<cfg>_qss.mat`
+(`data.fidelity='qss'`, profile on the NLP `s_full` grid + `data.envelope`);
+`screen_sweep(circuit, [ov1, ov2, ...])` is the DoE hook. Two separable stages:
+`build_envelope(ctx)` (per-speed tyre/aero/powertrain limits, ~5 ms), then `march(env, s, k, vi)`
+(apex speeds + Heun forward/backward pass, `ds_fine=1` m). Default `load_model='vehModel'`
+reproduces the 23-state model's quasi-steady loads, quirks included (tyre-load sum
+`ms*g + 4*mus*g`, aero split by `l_r/L`, mass `ms`); `'nominal'` is the textbook `m*g`/`Wfl0`
+basis. Active aero is evaluated at the static wing angles; `test_screen.py` anchors mu, aero and
+loads against vehModel. The screen uses the intended `mu_y` peak; the legacy `tyre_set='CopyB'`
+zeroes vehModel's cornering stiffness (see the tyre bullet below), so compare the screen only with
+NLPs on the default MF205 set.
+
+### The transcription engine: `functions/transcription.py`
+Shared by all MLTP scripts. `discretise(track, OPT_ds, OPT_d, mesh='uniform', mesh_opts=None,
+s_knot=None)` builds the Legendre collocation grid (defaults from `userOpts.py`: step
+`OPT_ds=30` m, degree `OPT_d=3`, `OPT_uinter='linear'`; knot placement: see Collocation mesh);
+`build_and_solve_nlp(..., warm=None, sym_type=None)` assembles the CasADi NLP, decision vector
 `w = [Xk; Uk; (Yk); Xkj (; P)]` packed **column-major (`order='F'`)**, collocation defect +
 endpoint continuity, path constraints, time-domain input-rate limits, `Xi/Xf` boundary bounds
-(**`NaN` = free state**), objective `J = Σ Qk·B·dsk` + regularisation — then calls
-`nlpsol('ipopt')`. `_make_solver()` **selects the configured `linear_solver`**: it uses HSL
-(`ma*`) when a working Coin-HSL DLL is found (via the `COINHSL_DIR` env var or a
-seeded default, registered on the Windows DLL path and probed once), otherwise
-it transparently falls back to `mumps` — so a solve never crashes on a missing
-HSL DLL. Default is `ma57`. After the solve: `unpack_solution`,
-`reconstruct_x_full`, `interp_inputs`, `compute_time`, `reconstruct_track`.
+(**`NaN` = free state**), objective `J = Σ Qk·B·dsk` + regularisation, then calls
+`nlpsol('ipopt')`. Besides `sol` it returns `w_opt`, `lam_g`, `lam_x`, `structure` (the sizes a
+later solve must match to re-inject them) and `warm_info`. `_make_solver()` **selects the
+configured `linear_solver`** (HSL `ma*` if a Coin-HSL DLL loads, else `mumps`; see Using
+Coin-HSL). After the solve: `unpack_solution`, `reconstruct_x_full`, `interp_inputs`,
+`compute_time`, `reconstruct_track`.
 
-### Configuration — `userOpts.py`
+### Collocation mesh
+`userOpts(mesh='auto' | 'uniform' | 'curvature', mesh_opts={...})` (default `'auto'`; any other
+value raises `ValueError`). `'auto'` is resolved in `userOpts` once the track is loaded: to
+`'curvature'` when the track length (`track.s[-1] - track.s[0]`) is >= 2000 m (BCN-size circuits),
+else `'uniform'` (Sturn and the other short synthetic tracks); an explicit `'uniform'` or
+`'curvature'` always overrides. `ctx.mesh` holds the resolved value (what `discretise` receives),
+`ctx.mesh_requested` the requested one. `'curvature'` uses `functions/mesh.curvature_mesh`
+(numpy only): the same N = round(L/`OPT_ds`) knots (or `mesh_opts={'N': ...}`) are placed by
+equidistributing `M = 1 + a|k|/k_ref + b|dk/ds|/dk_ref`, so corners and their entry/exit get
+denser knots and straights sparser (spacing within [0.25, 2.5] x `OPT_ds`). `k_ref` / `dk_ref`
+are the `pct`-th percentiles (90) of the track's own smoothed |k| and |dk/ds|; a signal that is
+zero up to float rounding (a straight, a constant-radius circle's dk/ds, curvature noise around
+zero; judged as under 1e-6 rad of turning, or under 1e-6 of peak |k| of curvature change, over
+the whole lap) drops its term, so such tracks get the uniform mesh. `mesh_opts` keys:
+`a, b, ds_min, ds_max, smooth_window, N, pct, grid_ds` (a = b = 1 by default). `'auto'` only
+redistributes the knots and does not change N (still round(L/`OPT_ds`)), so BCN at the default
+`OPT_ds=30` gets a curvature mesh with N=155, the same interval count as before. Measured with
+the default call (ma57, `tyre_set='MF205'`), `'auto'` on BCN took 614 iterations, a 116.523 s lap
+and 566 s solve against 852 iterations, 117.42 s and 968 s for the documented uniform N=155 run
+(five-coefficient proxy tyre), i.e. 1.7x wall at equal N, and its 7-state init now converges
+(1072 iterations, Optimal; the uniform-mesh init had ended `Error_In_Step_Computation`). ZigZag
+(`'auto'` resolves to curvature, N=79): `Solve_Succeeded`, 481 iterations, 56.216 s; Jarama and
+Spa also resolve to curvature under `'auto'` and are unmeasured. The gain at equal N is also
+accuracy (Sturn N=18,
+five-coefficient MF205 proxy, lap error vs the fine `OPT_ds=15` reference: uniform +0.72% in 257
+iterations, curvature +0.16% in 240). The measured BCN 2.5x speedup compared curvature at
+`OPT_ds=45` (N=103: 117.40 s, 497 iterations, 392 s wall) with uniform at `OPT_ds=30` (N=155:
+117.42 s, 852 iterations, 968 s wall), so to get the interval reduction pass `OPT_ds=45`
+(or larger) together with the curvature mesh, e.g. `MLTP(circuit='BCN', OPT_ds=45)`. Results record
+`data.mesh` / `data.mesh_opts`. A new mesh changes `s_full`, so a result saved on another
+mesh (e.g. an older uniform-mesh BCN result) seeds by interpolation (no dual re-injection).
+
+### Configuration: `userOpts.py`
 Builds `ctx`: calls `Powertrain`+`vehParams`, loads or **synthesizes** the track, sets `Xi/Xf`,
 collocation options, the IPOPT options dict, and the config switches the models branch on
 (`vp.ActAero`, `pt.ATD`, `pt.EM4`). Circuit selection: `_REAL_CIRCUITS` maps names to `.mat`
-files in `Circuits/` (`BCN` → `Barcelona_circuit.mat`, the sector splits `BCN_S1`/`BCN_S2`/`BCN_S3`,
+files in `Circuits/` (`BCN` -> `Barcelona_circuit.mat`, the sector splits `BCN_S1`/`BCN_S2`/`BCN_S3`,
 plus `Jarama`, `Spa`, `BCNAssetto`); any other name is treated as **synthetic** and its curvature
 is generated analytically by `_synthetic_curvature` (`Straight`, `Hairpin`, `Sturn`, `Circle`,
-`ZigZag`, `ZigZagMirror`, `VirtualTrack`) — no `.mat` needed. Guard: if `ATD` **and**
+`ZigZag`, `ZigZagMirror`, `VirtualTrack`), no `.mat` needed. Guard: if `ATD` **and**
 `Electric_4Motors` are both `On`, it forces `ATD=Off` with a warning.
+Other kwargs: `vp_overrides` (vehParams primaries + Pacejka coefficients), `tyre_set` (default
+`'MF205'`; `'CopyB'` is the legacy set, see the tyre bullet), `OPT_ds` / `OPT_d` / `OPT_e`, `mesh`
+(default `'auto'`, see Collocation mesh) / `mesh_opts`, `max_iter` / `tol`, `linear_solver` /
+`hsl_dir`, `cse` / `jit` (opt-in), `screening`, and `ipopt_overrides` (dict of any IPOPT options,
+merged last so it beats every default, the screening preset and the warm-start recipe; a non-exact
+`hessian_approximation` warns). Kept on `ctx.mesh` (resolved), `ctx.mesh_requested`,
+`ctx.mesh_opts`, `ctx.tyre_set`, `ctx.screening`, `ctx.ipopt_overrides`, `ctx.cse`, `ctx.jit`.
 
 ### Helpers (`functions/`)
 - **Solver-side:** `collocation.py` (Legendre points/coeffs; CasADi-native with a numpy fallback),
   `simpleMA.py` (pre-solve curvature smoothing), `importfile.py` (`.mat` I/O, `mat_to_namespace`,
-  `load_solution` warm-start unwrap), `context.py` (`Ctx`).
+  `load_solution` warm-start unwrap), `context.py` (`Ctx`), `hsl.py` (Coin-HSL dir, probe, MUMPS
+  fallback), `casadi_opts.py` (`fn_opts`: CSE/JIT), `warmstart.py` (dual warm-start recipe,
+  NLP-structure check, warm-start source resolution, `nlp_record`), `mesh.py` (`curvature_mesh`,
+  `solution_knots`, `mesh_opts_record`), `ggv.py` (QSS envelope + march).
 - **Post-processing only** (reached via `reconstruct_track` *after* the solve): `curv2cart.py`
-  (s,k → cartesian centreline), `cartPath.py` (lateral offset `n` → racing line), `trackLimits.py`
+  (s,k -> cartesian centreline), `cartPath.py` (lateral offset `n` -> racing line), `trackLimits.py`
   (boundary polylines), `rotatePoint2D.py` (used only inside `curv2cart`).
 - **`plotSDI.py`** writes Plotly HTML to `Plots/<circuit>/<config>/`; called from `MLTP()` when `plot=True`.
+
+### Windows app (`app/`, `headless_solve.py`, `build/`)
+PySide6 GUI (`python -m app.main`) around the same solve: `MainWindow` collects a `RunConfig`
+(`app/runconfig.py`; the speed options `mesh`/`mesh_opts`/`tyre_set`/`screening` have no widget
+yet), writes a `cfg.json` and runs `headless_solve.py cfg.json` (frozen: `<exe> --headless
+cfg.json`) as a subprocess. `headless_solve.build_solve_kwargs(cfg, resource_root)` maps cfg ->
+`MLTP(**kwargs)`: forward a new `userOpts` kwarg there and add the matching `RunConfig` field.
+Packaging notes: `build/README.md`.
 
 ### I/O directories
 `Circuits/` (real track `.mat`), `Data/DATA_AA.mat` (aero coefficients, **required for a real
@@ -155,9 +261,37 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   [0/1/2/4 active-aero inputs per vp.ActAero] + delta (steering, last)`. "4EM" = four per-corner
   motors; "Suspension" = heave/pitch/roll + 4 unsprung + 4 tyre-deflection states; "FullTyre" =
   full Pacejka 5.2 combined-slip on both axes from `ctx.mf`.
-- **Two distinct tyre models coexist** — don't conflate: full Pacejka 5.2 `ctx.mf` (~60 coeffs,
+- **Two distinct tyre models coexist**, don't conflate: full Pacejka 5.2 `ctx.mf` (~60 coeffs,
   used by `vehModel.py`) vs. the simplified 8-param `vp.tyre` (used **only** by `vehModel_initial.py`).
-- **`vehModel_initial.py` is NOT obsolete** — it's the deliberately reduced warm-start model.
+- **Default tyre set is `tyre_set='MF205'`; the legacy `'CopyB'` set has zero cornering stiffness.**
+  `'MF205'` (a `userOpts` / `MLTP` / `MLTP_screen` kwarg, or `vehParams(ctx, tyre_set=...)`) is the lateral
+  set MATLAB actually runs, `MF_205_60R15_V91` (nine lateral values, e.g. `pKy4 = 2.0`, `pKy1 = 20.505`).
+  `'CopyB'` is the legacy shipped set (Copy B), kept to reproduce old results: its lateral block (pEy1, pKy1,
+  pKy4, pKy5, pKy6, pVy1-4) is the MATLAB `Test` case (`vehParams.m` ~279-346), where `pKy4 = 0` makes `Kya`,
+  and so the slip-driven lateral tyre force, identically zero in `vehModel` (the NLP corners by drifting);
+  the rest of the set matches `MF_205_60R15_V91`. Sturn, N=18: Copy-B gives a 25.57 s lap in 3209 IPOPT iterations
+  (~250 s), MF205 gives 18.01 s in 489 iterations (~35 s of solve on an idle machine); MATLAB gets
+  18.008-18.022 s. The benchmark runs in `docs/phase1_findings_2026-10-04.md` used a five-coefficient subset of
+  MF205 (`pEy1, pKy1, pKy4, pKy5, pVy1`) as a proxy; it takes 257 iterations for 18.016 s, so quote 257 only for
+  that proxy. The owner flipped the default from CopyB to MF205 on 2026-10-04 (every earlier Python result came
+  from a zero-cornering-stiffness car; reproduce one with `tyre_set='CopyB'`). `vp_overrides` apply on top of
+  either set. Results record `data.tyre_set`.
+- **Solver facts (measured on Sturn/BCN with ma57).** MA57 factorisation dominates wall time (~90%) and
+  NLP function evaluation is only ~10%, so per-evaluation tweaks (CSE, JIT, `f_dyn.map`, tyre tabulation) gain
+  a few percent at most; the levers are the IPOPT iteration count (warm start + duals, mesh, tolerances) and
+  the number of factorisations. The 23-state NLP is **path-sensitive**: a 1-ulp Hessian change (CSE on) or the
+  MX route can land IPOPT on a different local optimum, so validate a solver change by oracle-function
+  equivalence or against a fine reference, never by expecting identical iterates or lap times. Keep
+  `ma57_automatic_scaling='yes'` (default; without MC64 MA57 stalls, e.g. on `VirtualTrack`). The IPOPT
+  defaults are near-best: L-BFGS, monotone mu, `nlp_scaling_method='none'` and MUMPS all measured worse.
+  `userOpts(screening=True)` loosens five tolerances (`userOpts.SCREENING_IPOPT`: `tol=1e-3`,
+  `acceptable_tol=1e-2`, `dual_inf_tol=1e-2`, `constr_viol_tol=1e-3`, `compl_inf_tol=1e-3`). It is a looser
+  stopping rule, not a guaranteed saving: on Sturn five matched pairs moved -41% to +16% in iterations
+  (196 vs 257 with the five-coefficient MF205 proxy, 290 vs 489 with `tyre_set='MF205'`; the other three
+  proxy pairs gave +16%, -7% and +0.3%) for lap changes of -4 to +20 ms, and iteration counts on this
+  NLP swing up to +-40% under 1-ulp perturbations. Use it for ranking sweeps, not final numbers; it
+  replaces the `tol` argument and an explicit `ipopt_overrides` still wins.
+- **`vehModel_initial.py` is NOT obsolete**: it's the deliberately reduced warm-start model.
   `vehModel.py` is the canonical full model.
 - **Wheel-radius / gear quirk (intentional, do not "fix").** `Powertrain` sets `vp.Rw=0.3142857`
   and derives `vp.gear` from it; `vehParams` then overwrites `vp.Rw=0.355` but deliberately does
@@ -168,9 +302,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   in `userOpts.py`, so code calling `Powertrain(ctx)` without `userOpts` lacks those attributes.
 - **Missing `DATA_AA.mat` does not raise** in `vehParams` (it warns and falls back to placeholder
   `Cd`/`Cl`), but `vehModel(ctx)` raises `RuntimeError` if `ctx.aero is None`.
-- **Units are SI by convention only (not enforced)** — except some aero AoA and camber/toe fields
+- **Units are SI by convention only (not enforced)**, except some aero AoA and camber/toe fields
   stored in **degrees** (with separate `*_rad` companions). Mixing the deg vs rad field is an easy bug.
-- **The root `__init__.py` is stale/broken** — it imports `.importfile`/`.collocation`/`.context`,
+- **The root `__init__.py` is stale/broken**: it imports `.importfile`/`.collocation`/`.context`,
   which live under `functions/`, not the root, so importing the repo root as a package raises
   `ImportError`. The working package init is `functions/__init__.py`. Import submodules directly
   (e.g. `from functions.importfile import load_solution`); the tests do.
