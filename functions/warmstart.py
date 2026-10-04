@@ -21,6 +21,11 @@ of O(1000). Everything here is casadi-free (unit-tested by test_warmstart.py):
                            primal-only fallback when the structure differs: a
                            previous 23-state result interpolated by physical s.
   nlp_record()             the data["nlp"] dict saved with every result.
+  extend_full_start()      [w_opt; P0], [lam_x; 0], lam_g: a plain full solve's
+                           vectors extended by the static design parameters
+                           that MLTP_paramOptim appends to w (no new constraint).
+  plan_design_warm_start() plan_full_warm_start for such a design problem: the
+                           source must match it except for the appended P block.
 """
 
 import os
@@ -346,3 +351,87 @@ def nlp_record(res, stats=None, x_s=None, u_s=None, warm_start="cold"):
     if u_s is not None:
         rec["u_s"] = vec(u_s)
     return rec
+
+
+def extend_full_start(src_record, nP, P0):
+    """Start vectors for a design problem (MLTP_paramOptim / MLTP_TyreOptim: the
+    plain 23-state NLP with nP static parameters appended to the decision
+    vector, w = [Xk; Uk; (Yk); Xkj; P], and no extra constraint) from the
+    data.nlp record ``src_record`` of a plain full solve of the same structure.
+    Returns (w0, lam_x0, lam_g0):
+
+      w0     = [w_opt ; P0]           P0: where P starts (optimise_design: the
+                                      current vp values, i.e. the setup the
+                                      source was solved with unless overridden)
+      lam_x0 = [lam_x ; zeros(nP)]    the bound multipliers of P start at 0
+      lam_g0 = lam_g                  P adds no constraint: n_g is unchanged
+
+    lam_x0 / lam_g0 are None when the record has no lam_x / lam_g. Raises
+    ValueError if len(P0) != nP, if w_opt does not have the record's n_w
+    entries, or if the record already ends with design parameters
+    (structure.n_param > 0, a co-optimisation result: its trajectory belongs to
+    its own optimal P, so it is not a [w; P0] start)."""
+    P0 = vec(P0)
+    if P0.size != int(nP):
+        raise ValueError(f"extend_full_start: {P0.size} start values for {int(nP)} design parameters")
+    st = as_dict(get_field(src_record, "structure"))
+    n_src = int(st.get("n_param", 0) or 0)
+    if n_src:
+        raise ValueError(f"extend_full_start: the source NLP already carries {n_src} design "
+                         "parameter(s) (structure.n_param > 0); extend a plain full solve")
+    w = vec(get_field(src_record, "w_opt"))
+    if st.get("n_w") is not None and w.size != int(st["n_w"]):
+        raise ValueError(f"extend_full_start: w_opt has {w.size} entries, structure.n_w = {int(st['n_w'])}")
+    lam_x, lam_g = get_field(src_record, "lam_x"), get_field(src_record, "lam_g")
+    w0 = np.concatenate([w, P0])
+    lam_x0 = None if lam_x is None else np.concatenate([vec(lam_x), np.zeros(P0.size)])
+    lam_g0 = None if lam_g is None else vec(lam_g)
+    return w0, lam_x0, lam_g0
+
+
+def plan_design_warm_start(src, expected, P0, use_duals=True, ipopt_overrides=None):
+    """plan_full_warm_start for a design problem (MLTP_paramOptim.optimise_design).
+
+    ``expected`` describes the target NLP: nlp_structure(..., n_param=nP) plus
+    input_keys / s_full / x_s / u_s / tyre_set, as MLTP.warmstart_full builds
+    it, i.e. a plain 23-state NLP with nP = len(P0) static parameters appended
+    to w. The source is checked against that NLP WITHOUT its P block (n_w - nP,
+    n_param = 0; same nx, nu, ny, N, OPT_d, n_g, input_keys and collocation
+    grid): a plain MLTP result of that structure matches, and its saved vectors
+    are extended by extend_full_start (P starts at P0 with zero bound
+    multipliers, lam_g as is). Returns (warm, mode, note) with the modes of
+    plan_full_warm_start:
+
+      None, "cold"           another tyre set: no usable start at all
+      None, "full-interp"    no data.nlp, or another structure (N, OPT_d, mesh,
+                             config, path rows, or a co-optimisation source
+                             that carries its own P block): s-interpolated
+                             primal guesses only
+      {x0}, "full-primal"    match, use_duals=False: x0 = [w_opt; P0]
+      {x0, lam_g0, lam_x0, ipopt}, "full+duals"
+                             match: [w_opt; P0], lam_g, [lam_x; 0] and the
+                             IPOPT warm-start recipe (+ ipopt_overrides)"""
+    P0 = vec(P0)
+    nP = int(get_field(expected, "n_param", 0) or 0)
+    if nP != P0.size:
+        raise ValueError(f"plan_design_warm_start: expected n_param = {nP}, "
+                         f"got {P0.size} design-parameter start values")
+    base = dict(as_dict(expected), n_w=int(get_field(expected, "n_w")) - nP, n_param=0)
+    warm, mode, note = plan_full_warm_start(src, base, use_duals=use_duals,
+                                            ipopt_overrides=ipopt_overrides)
+    if warm is None:
+        st = as_dict(get_field(get_field(src, "nlp"), "structure"))
+        n_src = int(st.get("n_param", 0) or 0)
+        if mode == "full-interp" and n_src:
+            note += (f"; the source is a co-optimisation result with its own {n_src} design "
+                     "parameter(s), only a plain full result re-injects")
+        return warm, mode, note
+    try:                                # e.g. a damaged record: w_opt length != n_w
+        w0, lam_x0, lam_g0 = extend_full_start(get_field(src, "nlp"), nP, P0)
+    except ValueError as exc:
+        return None, "full-interp", f"saved NLP vectors not usable ({exc})"
+    warm["x0"] = w0
+    if "lam_g0" in warm:
+        warm["lam_g0"], warm["lam_x0"] = lam_g0, lam_x0
+    note += f"; + {nP} design parameter(s) appended at their start values (bound multipliers 0)"
+    return warm, mode, note

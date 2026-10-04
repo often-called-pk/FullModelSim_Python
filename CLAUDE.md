@@ -140,6 +140,10 @@ proxy; pre-fix NLP, see the constraint-set bullet): a cold solve takes 257 itera
 identical resolve with duals 0 iterations / 4.7 s (primal-only 30); +3% `alpha_RW` takes 11 iterations warm vs 364 cold, +3% `mb` 32 vs 327.
 Full `tyre_set='MF205'` re-check, +3% mass: 10 warm, 109 primal-only, 505 cold. Iteration counts
 are path dependent. A `MLTP_paramOptim` result has `n_param` > 0, so it seeds by interpolation only.
+`optimise_design(warm_start=...)` (`MLTP_paramOptim`, `MLTP_TyreOptim`) takes the same full MLTP result: if it is the design NLP minus
+the appended P block (`warmstart.plan_design_warm_start`) it starts from `[w_opt; P0]` (P0 = current vp values), `lam_g`, `[lam_x; 0]`
+(`extend_full_start`), else `full-interp` / `cold` as above; mode in `ctx.elapsed` and `data.nlp` (`test_paramoptim_warmstart.py`). Sturn,
+default params, ma57: 5 iterations to 18.0080 s from the 179-iteration 18.0086 s result (primal-only 26, same point) vs 220 to 18.2439 s from the 7-state init.
 
 ### Co-optimization wrappers
 - **`MLTP_paramOptim.py`** promotes static design parameters (`vp` fields) to constant-over-lap
