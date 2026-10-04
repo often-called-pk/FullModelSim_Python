@@ -5,11 +5,11 @@ unsprung-mass and four tyre-deflection states, full Pacejka 5.2 Magic Formula
 (pure + combined slip, both axes, with camber), active aerodynamics, and the
 single-motor / ATD / four-motor (EM4) powertrain branches.
 
-The selected tyre coefficient set is read from ``ctx.mf`` (Copy B, per the user's
-confirmation), the DATA_AA aero polynomials from ``ctx.aero``, and the linear
-camber-gain coefficients from ``ctx.cg``. Hard-coded model switches in the MATLAB
-(``Steering='NA'``, ``CamberGain='Off'``, ``TyreModel='CombinedSlip'``) are exposed
-as arguments with the same defaults.
+The tyre set ``ctx.mf`` comes from vehParams' ``tyre_set`` (default "MF205"; legacy
+"CopyB" has pKy4=0); the model is tyre-set agnostic. The DATA_AA aero polynomials
+come from ``ctx.aero`` and the linear camber-gain coefficients from ``ctx.cg``.
+Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``,
+``TyreModel='CombinedSlip'``) are exposed as arguments with the same defaults.
 
 There are NO aux variables (ny = 0): the load transfers are produced by the
 suspension/tyre states, not by algebraic decision variables.

@@ -3,8 +3,16 @@
 Phase 1 builds a dict of primary (typed-in) inputs and merges any
 ``vp_overrides`` into it; phase 2 computes every derived quantity from the
 merged primaries, so an override of any primary propagates correctly. With no
-overrides the result is byte-for-byte identical to the original hardcoded
-values (Copy-B tyre set; Rw overwritten to 0.355 with gear left on 0.3142857).
+overrides and ``tyre_set="CopyB"`` the result is byte-for-byte identical to the
+original hardcoded values (Rw overwritten to 0.355 with gear left on 0.3142857).
+
+Tyre set: ``vehParams(ctx, tyre_set=...)`` selects the Pacejka coefficient set.
+"MF205" (default) is the MATLAB-run lateral set: the lateral values of the case
+vehParams.m actually selects ('MF_205_60R15_V91'). "CopyB" is the legacy
+shipped set with MATLAB 'Test'-case lateral coefficients (pKy4 = 0, i.e. zero
+cornering stiffness), kept for reproducing old results. ``vp_overrides`` are
+applied last, on top of either set.
+``ctx.mf_overrides``: sorted mf keys ``vp_overrides`` changed vs the base set ([] if none).
 """
 import os
 import warnings
@@ -48,7 +56,14 @@ def default_primaries():
 
 
 def _default_mf():
-    """Pacejka 5.2 coefficients (MF_205_60R15_V91, lateral block = Copy B)."""
+    """Pacejka 5.2 coefficients, "CopyB" set (legacy; base for "MF205").
+
+    Longitudinal and combined-slip blocks equal the MATLAB case
+    'MF_205_60R15_V91'; the lateral block (pEy1, pKy1, pKy4, pKy5, pKy6, pVy1-4)
+    equals the MATLAB 'Test' case (vehParams.m lines 279-346), whose pKy4 = 0
+    makes the cornering stiffness identically zero in vehModel. See
+    ``_MF205_OVERRIDES`` / ``vehParams(tyre_set="MF205")``.
+    """
     return SimpleNamespace(
         pCx1=1.6055, pDx1=1.1703, pDx2=-0.081328, pDx3=0.0,
         pEx1=0.53409, pEx2=-0.019956, pEx3=0.18089, pEx4=0.0,
@@ -73,8 +88,32 @@ def _default_mf():
 PRIMARY_KEYS = frozenset(default_primaries())
 MF_KEYS = frozenset(vars(_default_mf()))
 
+# ---- selectable tyre coefficient sets ---------------------------------------
+# "MF205" (default) = _default_mf() with the nine coefficients below replaced
+# by the values of the MATLAB case 'MF_205_60R15_V91' (vehParams.m lines
+# 176-193), i.e. the case that `tire = 'MF_205_60R15_V91'` (vehParams.m line
+# 141) actually selects. Every other coefficient already agrees with that case.
+# "CopyB" = _default_mf() unchanged (legacy shipped set, pKy4 = 0; kept for
+# reproducing old results). Comments give the Copy-B value.
+TYRE_SETS = ("CopyB", "MF205")
 
-def vehParams(ctx, data_dir="Data", vp_overrides=None):
+_MF205_OVERRIDES = {
+    "pEy1": 0.33443,        # Copy B:  0.15
+    "pKy1": 20.505,         # Copy B: -20.505
+    "pKy4": 2.0,            # Copy B:  0.0  (zero cornering stiffness)
+    "pKy5": 0.0,            # Copy B:  0.002
+    "pKy6": 0.0,            # Copy B: -0.002
+    "pVy1": 0.026365,       # Copy B:  0.0
+    "pVy2": -0.0062119,     # Copy B:  0.0
+    "pVy3": -0.41389,       # Copy B:  0.0
+    "pVy4": -0.048038,      # Copy B:  0.08
+}
+
+
+def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
+    if tyre_set not in TYRE_SETS:
+        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
+
     if not hasattr(ctx, "vp") or ctx.vp is None:
         ctx.vp = SimpleNamespace()
     vp = ctx.vp
@@ -155,10 +194,15 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None):
             f"DATA_AA.mat not found at '{aa_path}'. Aerodynamic coefficients are "
             "unset; place DATA_AA.mat in the Data/ folder before a real run.")
 
-    # ---- Pacejka 5.2 coefficients (+ mf overrides) ------------------------
+    # ---- Pacejka 5.2 coefficients: tyre set, then mf overrides on top ------
     ctx.mf = _default_mf()
+    if tyre_set == "MF205":
+        for k, v in _MF205_OVERRIDES.items():
+            setattr(ctx.mf, k, v)
+    ctx.mf_overrides = sorted(k for k, v in mf_over.items() if v != getattr(ctx.mf, k))
     for k, v in mf_over.items():
         setattr(ctx.mf, k, v)
+    ctx.tyre_set = tyre_set
 
     # ---- simplified Pacejka used by the 7-state init model ----------------
     vp.tyre = SimpleNamespace(

@@ -1,10 +1,10 @@
-"""app/vp_params.py — presentation registry for the Setup-tab vehicle-parameter
+"""app/vp_params.py, presentation registry for the Setup-tab vehicle-parameter
 editor. Pure Python (no Qt). Parameter *values* come from vehParams; this module
 only describes how each parameter is labelled, ranged, and edited.
 """
 from dataclasses import dataclass
 
-from vehParams import default_primaries, _default_mf, PRIMARY_KEYS, MF_KEYS
+from vehParams import default_primaries, _default_mf, _MF205_OVERRIDES, TYRE_SETS, PRIMARY_KEYS, MF_KEYS
 
 
 @dataclass
@@ -19,9 +19,14 @@ class ParamMeta:
     kind: str = "spin"          # "spin" -> QDoubleSpinBox, "sci" -> ScientificField
 
 
-def all_vp_defaults():
-    """Full adjustable parameter set (primaries + Pacejka mf) as a flat dict."""
-    return {**default_primaries(), **vars(_default_mf())}
+def all_vp_defaults(tyre_set="MF205"):
+    """Full adjustable parameter set (primaries + Pacejka mf for `tyre_set`) as a flat dict."""
+    if tyre_set not in TYRE_SETS:
+        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
+    mf = dict(vars(_default_mf()))
+    if tyre_set == "MF205":
+        mf.update(_MF205_OVERRIDES)
+    return {**default_primaries(), **mf}
 
 
 def fmt_sci(x):
@@ -56,8 +61,8 @@ PARAM_GROUPS = [
     ("Camber & Toe", ["gamma_fl", "gamma_rl", "toe_front", "toe_rear"]),
     ("Aero & Environment", ["rho", "g", "Cd", "Cl"]),
     ("Numerical", ["eps_x", "eps_y", "eps_K"]),
-    ("Pacejka 5.2 — longitudinal", _PACEJKA_LONG),
-    ("Pacejka 5.2 — lateral", _PACEJKA_LAT),
+    ("Pacejka 5.2, longitudinal", _PACEJKA_LONG),
+    ("Pacejka 5.2, lateral", _PACEJKA_LAT),
 ]
 
 META = {
@@ -128,7 +133,7 @@ META = {
 
 def meta_for(key):
     """Annotated metadata, or a generic scientific-notation fallback (used by
-    every Pacejka mf coefficient — wide range, no rounding)."""
+    every Pacejka mf coefficient, wide range, no rounding)."""
     if key in META:
         return META[key]
     return ParamMeta(label=key, unit="", tooltip=key,
