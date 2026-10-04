@@ -3,8 +3,11 @@
 `to_dict`/`from_dict` persist the full GUI state. `write_cfg` emits the JSON the
 headless solve consumes: run-config fields, the five top-level solver/collocation
 options, the four speed/fidelity options (mesh, mesh_opts, tyre_set, screening;
-no GUI widget yet, settable from a saved RunConfig / cfg.json), and a single
-merged `vp_overrides` dict (vp diff-from-default + any expert config file).
+mesh and tyre_set have Advanced-tab combos, mesh_opts and screening have no GUI
+widget yet and are settable from a saved RunConfig / cfg.json), and a single
+merged `vp_overrides` dict (vp diff-from-default). An expert config file is written
+into a default-seeded vp at construction; given an explicit vp it only contributes
+keys absent from vp.
 """
 import json
 from dataclasses import dataclass, asdict, field
@@ -47,15 +50,23 @@ class RunConfig:
     def __post_init__(self):
         if self.vp is None:
             self.vp = all_vp_defaults(self.tyre_set)
+            if self.expert_config:
+                with open(self.expert_config) as fh:
+                    expert = json.load(fh)
+                unknown = set(expert) - PRIMARY_KEYS - MF_KEYS
+                if unknown:
+                    raise ValueError(f"Unknown vehParams override keys: {sorted(unknown)}")
+                self.vp.update(expert)
 
     def vp_overrides(self):
         ov = {}
         if self.expert_config:
             with open(self.expert_config) as fh:
-                ov.update(json.load(fh))            # expert is the base layer
+                expert = json.load(fh)
+            ov.update({k: v for k, v in expert.items() if k not in self.vp})   # expert fills only keys absent from vp
         defaults = all_vp_defaults(self.tyre_set)
         _MISSING = object()
-        for k, v in self.vp.items():                 # GUI diff overrides expert
+        for k, v in self.vp.items():                 # a key held by vp is decided by vp alone
             if v != defaults.get(k, _MISSING):
                 ov[k] = v
         unknown = set(ov) - PRIMARY_KEYS - MF_KEYS

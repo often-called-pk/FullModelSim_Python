@@ -42,7 +42,7 @@ if not os.path.exists(os.path.join(HERE, "Data", "DATA_AA.mat")):   # pragma: no
     sys.exit(0)
 
 from functions.context import Ctx
-from functions.transcription import build_and_solve_nlp
+from functions.transcription import build_and_solve_nlp, discretise
 from userOpts import userOpts
 from vehModel import vehModel
 from vehModel_initial import vehModel_initial
@@ -246,5 +246,36 @@ if plotSDI is not None:
     ok("neither available: nothing to plot", plotSDI.friction_usage(dict(N=2, s_full=np.arange(9.0))) == {})
     ok("plot_friction draws one trace per tyre for a CombinedSlip result",
        len(plotSDI.plot_friction(d_cs).data) == 4)
+    ok("plot_friction y-axis label is neutral: rho is a diagnostic under CombinedSlip, not an enforced bound",
+       plotSDI.plot_friction(d_cs).layout.yaxis.title.text == "friction usage rho (1 = friction ellipse)")
+
+# =============================================================================
+print("5. plotSDI._knot_grid: true knots s_full[::OPT_d+1] on a curvature mesh (uniform grid only without OPT_d)")
+if plotSDI is not None:
+    s_t = np.linspace(0.0, 1200.0, 601)
+    k_t = np.zeros_like(s_t)
+    k_t[(s_t >= 300) & (s_t <= 360)] = 0.08
+    k_t[(s_t >= 800) & (s_t <= 900)] = -0.03
+    trk_t = SimpleNamespace(s=s_t, k=k_t)
+    for D_t in (3, 2):
+        d_t = discretise(trk_t, 30, D_t, mesh="curvature")
+        N_t, sf_t = d_t["N"], d_t["s_full"]
+        uni = np.linspace(sf_t[0], sf_t[-1], N_t + 1)
+        ok(f"OPT_d={D_t}: the curvature mesh is non-uniform (some knot is > 1 m off the uniform grid)",
+           d_t["mesh"] == "curvature" and sf_t.size == (D_t + 1) * N_t + 1
+           and np.max(np.abs(sf_t[::D_t + 1] - uni)) > 1.0)
+        for kind, d_ in (("namespace", SimpleNamespace(s_full=sf_t, N=N_t, OPT_d=D_t)),
+                         ("dict", dict(s_full=sf_t, N=N_t, OPT_d=D_t))):
+            sk_, sf_ = plotSDI._knot_grid(d_)
+            ok(f"OPT_d={D_t}, {kind}: _knot_grid knots = s_full[::OPT_d+1] = the mesh's s_knot, s_full unchanged",
+               np.array_equal(sk_, sf_t[::D_t + 1]) and np.array_equal(sk_, d_t["s_knot"])
+               and np.array_equal(sf_, sf_t))
+        ok(f"OPT_d={D_t}, no OPT_d saved (old file): _knot_grid falls back to the uniform grid",
+           np.array_equal(plotSDI._knot_grid(SimpleNamespace(s_full=sf_t, N=N_t))[0], uni))
+        fig_u = plotSDI.plot_inputs(SimpleNamespace(s_full=sf_t, N=N_t, OPT_d=D_t, input_keys=["T_motor"],
+                                                    u_opt=np.zeros((1, N_t + 1))))
+        x_u = np.asarray(fig_u.data[0].x, dtype=float)
+        ok(f"OPT_d={D_t}: plot_inputs (like every per-knot channel) is drawn at the true knots",
+           x_u.shape == (N_t + 1,) and np.allclose(x_u, d_t["s_knot"]))
 
 print("\nALL MLTP constraint TESTS PASSED")

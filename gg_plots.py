@@ -358,8 +358,12 @@ def vehicle_gg_from_solution(data):
             pass
     s_full = _field(data, "s_full")
     if s_full is not None:
+        from functions.mesh import solution_knots
         sf = np.asarray(s_full, float).reshape(-1)
-        out["s"] = np.linspace(sf[0], sf[-1], n)
+        s_knot = solution_knots(data, n)
+        if s_knot is None:
+            s_knot = np.linspace(sf[0], sf[-1], n)
+        out["s"] = s_knot
     return out
 
 

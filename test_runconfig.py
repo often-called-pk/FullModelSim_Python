@@ -69,15 +69,34 @@ ok("old JSON with full CopyB vp and no tyre_set key reproduces the stored vp",
 ok("old CopyB-valued vp under default MF205 becomes the nine explicit overrides",
    rc_old.vp_overrides() == {k: cb[k] for k in _MF205_OVERRIDES} and len(rc_old.vp_overrides()) == 9)
 
-# expert-file merge: expert provides mb + pKy1; GUI vp value overrides expert's brkB
+# expert-file merge: the table (rc.vp) alone decides every key it holds; the expert file
+# only contributes keys absent from it
 expert = {"mb": 2000.0, "pKy1": -19.0, "brkB": 0.5}
 epath = os.path.join(TMP, "_expert.json"); json.dump(expert, open(epath, "w"))
 vp2 = dict(all_vp_defaults()); vp2["brkB"] = 0.7
 rc2 = RunConfig(expert_config=epath, vp=vp2)
 ov = rc2.vp_overrides()
-ok("expert mb present", ov["mb"] == 2000.0)
-ok("expert mf key present", ov["pKy1"] == -19.0)
+ok("full table: expert mb does not override a table value at its default", "mb" not in ov)
+ok("full table: expert mf key does not override a table value at its default", "pKy1" not in ov)
 ok("GUI vp overrides expert brkB", ov["brkB"] == 0.7)
+ok("full table: the table edit is the only override", ov == {"brkB": 0.7})
+ok("an explicit vp is not rewritten by the expert file",
+   rc2.vp["mb"] == all_vp_defaults()["mb"] and rc2.vp["pKy1"] == all_vp_defaults()["pKy1"] and rc2.vp["brkB"] == 0.7)
+vp_sp = {k: v for k, v in vp2.items() if k not in ("mb", "pKy1")}
+ov_sp = RunConfig(expert_config=epath, vp=vp_sp).vp_overrides()
+ok("expert-only primary key absent from the table still passes through", ov_sp["mb"] == 2000.0)
+ok("expert-only mf key absent from the table still passes through", ov_sp["pKy1"] == -19.0)
+ok("sparse table: table brkB still overrides expert brkB", ov_sp["brkB"] == 0.7)
+rc_e = RunConfig(expert_config=epath)
+ok("default vp + expert file: the expert values are written into rc.vp", rc_e.vp == {**all_vp_defaults(), **expert})
+ok("default vp + expert file: vp_overrides() carries exactly the expert values", rc_e.vp_overrides() == expert)
+epath_k = os.path.join(tempfile.mkdtemp(), "_expert_pky4.json"); json.dump({"pKy4": 2.0}, open(epath_k, "w"))
+rc_kd = RunConfig(tyre_set="CopyB", expert_config=epath_k)
+ok("default vp under CopyB: the table shows the expert pKy4 == 2.0, so the override is visible",
+   rc_kd.vp["pKy4"] == 2.0 and rc_kd.vp_overrides() == {"pKy4": 2.0})
+rc_k = RunConfig(tyre_set="CopyB", expert_config=epath_k, vp=all_vp_defaults("CopyB"))
+ok("CopyB table shows pKy4 == 0.0 with an expert pKy4 == 2.0 loaded", rc_k.vp["pKy4"] == 0.0)
+ok("expert pKy4 does not override the CopyB table value the user sees", "pKy4" not in rc_k.vp_overrides())
 
 # unknown key in expert file raises
 bad = os.path.join(TMP, "_bad.json"); json.dump({"not_a_param": 1.0}, open(bad, "w"))
@@ -87,6 +106,12 @@ try:
 except ValueError:
     raised = True
 ok("unknown expert key raises", raised)
+raised_ev = False
+try:
+    RunConfig(expert_config=bad, vp=dict(all_vp_defaults())).vp_overrides()
+except ValueError:
+    raised_ev = True
+ok("unknown expert key raises through vp_overrides() with an explicit vp", raised_ev)
 
 # unknown key inside the vp dict raises a friendly ValueError (not KeyError)
 vp_bad = dict(all_vp_defaults()); vp_bad["bogus_key"] = 1.0

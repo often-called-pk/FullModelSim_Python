@@ -7,7 +7,7 @@ Inspector. Plotly has no SDI equivalent, so this module reproduces the same
   * racing line coloured by velocity (with track boundaries + centreline)
   * speed & longitudinal/lateral acceleration vs distance
   * per-wheel tyre forces (fx, fy, fz)
-  * friction-circle usage (rho_lim path constraints)
+  * friction-circle usage (rho_lim rows with PureSlip, else from the tyre forces)
   * suspension: heave / pitch / roll
   * powertrain: wheel torques, motor power & speed, cumulative energy
   * control inputs
@@ -66,9 +66,13 @@ def _resolve_data(source):
 
 
 def _knot_grid(data):
+    from functions.mesh import solution_knots
     s_full = _arr(_get(data, "s_full"))
     N = int(_get(data, "N", (s_full.size - 1) // (int(_get(data, "OPT_d", 3)) + 1)))
-    return np.linspace(s_full[0], s_full[-1], N + 1), s_full
+    s_knot = solution_knots(data, N + 1)
+    if s_knot is None:
+        s_knot = np.linspace(s_full[0], s_full[-1], N + 1)
+    return s_knot, s_full
 
 
 # --------------------------------------------------------------------------- 
@@ -157,17 +161,33 @@ def plot_tyre_forces(data):
     return fig
 
 
+def friction_usage(data):
+    """Per-tyre friction-circle usage rho = sqrt((fx/(mu_x*fz))^2 + (fy/(mu_y*fz))^2)
+    at the knots, {name: array}. The rho_lim_* path-constraint rows when the solve
+    had them (TyreModel='PureSlip'); otherwise (CombinedSlip, no such rows) the same
+    formula on the saved data.vehicle tyre channels, named rho_fl..rr."""
+    con = _as_dict(_get(data, "constraints"))
+    out = {k: _arr(v) for k, v in con.items() if k.startswith("rho_lim")}
+    if out:
+        return out
+    veh = _as_dict(_get(data, "vehicle"))
+    for w in ("fl", "fr", "rl", "rr"):
+        keys = (f"fx_{w}", f"fy_{w}", f"fz_{w}", f"mu_{w}_x", f"mu_{w}_y")
+        if all(k in veh for k in keys):
+            fx, fy, fz, mux, muy = (_arr(veh[k]) for k in keys)
+            out[f"rho_{w}"] = np.sqrt((fx / (mux * fz))**2 + (fy / (muy * fz))**2)
+    return out
+
+
 def plot_friction(data):
     s_knot, _ = _knot_grid(data)
-    con = _as_dict(_get(data, "constraints"))
     fig = go.Figure()
-    for key in con:
-        if key.startswith("rho_lim"):
-            fig.add_trace(go.Scatter(x=s_knot, y=_arr(con[key]), name=key))
+    for key, rho in friction_usage(data).items():
+        fig.add_trace(go.Scatter(x=s_knot, y=rho, name=key))
     fig.add_hline(y=1.0, line=dict(color="#e24b4a", dash="dash"),
                   annotation_text="grip limit")
     fig.update_layout(template="plotly_white", title="Friction-circle usage",
-                      xaxis_title="s [m]", yaxis_title="rho (≤ 1)")
+                      xaxis_title="s [m]", yaxis_title="friction usage rho (1 = friction ellipse)")
     return fig
 
 

@@ -28,7 +28,34 @@ CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
 AEROS = ["Static", "Active_RW", "Active", "AALB"]
 TYRES = ["CombinedSlip", "PureSlip"]
 SOLVERS = ["ma57", "ma97", "ma27", "mumps"]
+TYRE_SETS = ["MF205", "CopyB"]              # vehParams tyre_set names, default first
+MESHES = ["auto", "uniform", "curvature"]   # userOpts mesh choices, default first
 _PATH_ROLE = 256  # Qt.ItemDataRole.UserRole, stores the plot's filesystem path on the list item
+
+TYRE_SET_TIP = (
+    "MF205 = MATLAB-run set (default); CopyB = legacy shipped set with pKy4=0 "
+    "(zero cornering stiffness), kept to reproduce old results. The Setup tab's "
+    "Pacejka defaults, Reset and changed-value highlighting follow this choice.")
+MESH_TIP = (
+    "Collocation knot placement. auto = curvature-weighted knots for laps >= 2000 m, "
+    "uniform otherwise. uniform = equally spaced knots; curvature = always "
+    "curvature-weighted (same number of knots).")
+
+# Setup rows the full model ignores (vehModel.py, powertrain torque split). ATD on:
+# the wheel-torque split comes from the four ATD inputs, so the fixed brake bias and
+# drive-torque distribution are both unused. 4 Motors on: each wheel gets its own motor
+# torque plus T_brake * brkB, so only the Tdist drive split is unused. ATD_INERT_KEYS is
+# the superset, i.e. every row _update_inert_params manages.
+ATD_INERT_KEYS = ("brkB", "Tdist")
+EM4_INERT_KEYS = ("Tdist",)
+ATD_INERT_TIP = (
+    "Inactive while ATD is on: the full model takes the wheel-torque split from the "
+    "four ATD inputs, so this value is ignored (only the 7-state warm-start model "
+    "still reads it).")
+EM4_INERT_TIP = (
+    "Inactive while 4 Motors is on: the full model drives each wheel from its own "
+    "motor torque, so this value is ignored (only the 7-state warm-start model "
+    "still reads it).")
 
 
 def _spin(value, lo, hi, step=1.0, decimals=4):
@@ -38,6 +65,12 @@ def _spin(value, lo, hi, step=1.0, decimals=4):
     s.setDecimals(decimals)
     s.setValue(value)
     return s
+
+
+def _tipped_label(text, tip):
+    lbl = QLabel(text)
+    lbl.setToolTip(tip)
+    return lbl
 
 
 class MainWindow(QMainWindow):
@@ -50,11 +83,23 @@ class MainWindow(QMainWindow):
         self._defaults = RunConfig()
         self._active_rc = None
 
+        # Build order matters: the Setup table seeds its defaults from the Tyre set
+        # combo (Advanced tab) and its brkB/Tdist rows follow the ATD and 4 Motors
+        # boxes (Main tab). The tabs are still shown in the order Main, Setup,
+        # Output, Advanced.
+        main_tab = self._build_main_tab()
+        advanced_tab = self._build_advanced_tab()
+        setup_tab = self._build_setup_tab()
+        output_tab = self._build_output_tab()
         tabs = QTabWidget()
-        tabs.addTab(self._build_main_tab(), "Main")
-        tabs.addTab(self._build_setup_tab(), "Setup")
-        tabs.addTab(self._build_output_tab(), "Output")
-        tabs.addTab(self._build_advanced_tab(), "Advanced")
+        tabs.addTab(main_tab, "Main")
+        tabs.addTab(setup_tab, "Setup")
+        tabs.addTab(output_tab, "Output")
+        tabs.addTab(advanced_tab, "Advanced")
+
+        self.atd.toggled.connect(self._update_inert_params)
+        self.em4.toggled.connect(self._update_inert_params)
+        self._update_inert_params()          # ATD starts on, so brkB/Tdist start inert
 
         self.run_btn = QPushButton("Run")
         self.cancel_btn = QPushButton("Cancel")
@@ -103,9 +148,12 @@ class MainWindow(QMainWindow):
 
     def _build_setup_tab(self):
         self.vp_spins = {}            # key -> QDoubleSpinBox | ScientificField
+        self.vp_labels = {}           # key -> QLabel (row caption)
         self._sections = {}           # title -> CollapsibleSection
         self._section_keys = {}       # title -> [keys]
-        defaults = all_vp_defaults()
+        defaults = self._vp_defaults()
+        self._seeded_tyre_set = self._tyre_set()    # tyre set the table defaults were last seeded for
+        self.tyre_set.currentTextChanged.connect(self._on_tyre_set_changed)
 
         container = QWidget()
         vlay = QVBoxLayout(container)
@@ -130,6 +178,7 @@ class MainWindow(QMainWindow):
                 field.valueChanged.connect(lambda _v=None, k=key: self._on_param_changed(k))
                 self.vp_spins[key] = field
                 lbl = QLabel(m.label); lbl.setToolTip(m.tooltip or m.label)
+                self.vp_labels[key] = lbl
                 sec.addRow(lbl, field)
             sec.set_expanded(title == "Balance & Aero")
             sec.reset_requested.connect(lambda t=title: self._reset_section(t))
@@ -155,9 +204,36 @@ class MainWindow(QMainWindow):
         field.setToolTip(m.tooltip or m.label)
         return field
 
+    # ---- tyre set: the table defaults follow the Tyre set combo ------------
+    def _tyre_set(self):
+        return self.tyre_set.currentText()
+
+    def _vp_defaults(self):
+        """Full vp default dict of the currently selected tyre set."""
+        return all_vp_defaults(self._tyre_set())
+
+    def _on_tyre_set_changed(self, new_set):
+        """Re-seed the Setup table for the newly selected tyre set. A field still at
+        the previous set's default takes the new set's default; a field the user
+        edited (differs from the previous default) keeps its value and is then
+        flagged against the new defaults like any other edit."""
+        old = all_vp_defaults(self._seeded_tyre_set)
+        new = all_vp_defaults(new_set)
+        for k, field in self.vp_spins.items():
+            if old[k] == new[k]:
+                continue                     # not tyre-set dependent
+            try:
+                at_old_default = float(field.value()) == float(old[k])
+            except ValueError:               # half-typed text: treat as an edit, leave it
+                continue
+            if at_old_default:
+                field.setValue(float(new[k]))
+        self._seeded_tyre_set = new_set
+        self._refresh_all_changed()
+
     # ---- changed-from-default highlighting --------------------------------
     def _on_param_changed(self, key):
-        defaults = all_vp_defaults()
+        defaults = self._vp_defaults()
         self._set_field_changed_style(self.vp_spins[key], self._is_changed(key, defaults))
         for title, keys in self._section_keys.items():
             if key in keys:
@@ -178,12 +254,12 @@ class MainWindow(QMainWindow):
 
     def _update_section_badge(self, title, defaults=None):
         if defaults is None:
-            defaults = all_vp_defaults()
+            defaults = self._vp_defaults()
         n = sum(1 for k in self._section_keys[title] if self._is_changed(k, defaults))
         self._sections[title].set_changed_count(n)
 
     def _refresh_all_changed(self):
-        defaults = all_vp_defaults()
+        defaults = self._vp_defaults()
         for k in self.vp_spins:
             self._set_field_changed_style(self.vp_spins[k], self._is_changed(k, defaults))
         for title in self._section_keys:
@@ -191,13 +267,13 @@ class MainWindow(QMainWindow):
 
     # ---- reset / preset ---------------------------------------------------
     def _reset_all_params(self):
-        defaults = all_vp_defaults()
+        defaults = self._vp_defaults()
         for k, field in self.vp_spins.items():
             field.setValue(float(defaults[k]))
         self._refresh_all_changed()
 
     def _reset_section(self, title):
-        defaults = all_vp_defaults()
+        defaults = self._vp_defaults()
         for k in self._section_keys[title]:
             self.vp_spins[k].setValue(float(defaults[k]))
         self._refresh_all_changed()
@@ -272,6 +348,8 @@ class MainWindow(QMainWindow):
     def _build_advanced_tab(self):
         w = QWidget(); form = QFormLayout(w)
         self.solver = QComboBox(); self.solver.addItems(SOLVERS)
+        self.tyre_set = QComboBox(); self.tyre_set.addItems(TYRE_SETS)
+        self.tyre_set.setToolTip(TYRE_SET_TIP)
         self.warm_start = QLineEdit(); self.warm_start.setPlaceholderText("(auto warm start)")
         ws_btn = QPushButton("…"); ws_btn.clicked.connect(self._pick_warm)
         ws = QWidget(); wl = QHBoxLayout(ws); wl.setContentsMargins(0, 0, 0, 0)
@@ -281,6 +359,7 @@ class MainWindow(QMainWindow):
         ex = QWidget(); el = QHBoxLayout(ex); el.setContentsMargins(0, 0, 0, 0)
         el.addWidget(self.expert); el.addWidget(ex_btn)
         form.addRow("Linear solver", self.solver)
+        form.addRow(_tipped_label("Tyre set", TYRE_SET_TIP), self.tyre_set)
         form.addRow("Warm start .mat", ws)
         form.addRow("Expert config .json", ex)
 
@@ -290,11 +369,14 @@ class MainWindow(QMainWindow):
         self.opt_ds = QDoubleSpinBox(); self.opt_ds.setRange(1.0, 500.0)
         self.opt_ds.setSingleStep(1.0); self.opt_ds.setDecimals(2)
         self.opt_ds.setValue(30.0); self.opt_ds.setSuffix(" m")
+        self.mesh = QComboBox(); self.mesh.addItems(MESHES)
+        self.mesh.setToolTip(MESH_TIP)
         self.opt_d = QSpinBox(); self.opt_d.setRange(1, 6); self.opt_d.setValue(3)
         self.opt_e = ScientificField(); self.opt_e.setValue(1e-2)
         self.tol = ScientificField(); self.tol.setValue(1e-4)
         gform.addRow("Max iterations", self.max_iter)
         gform.addRow("Collocation step", self.opt_ds)
+        gform.addRow(_tipped_label("Mesh", MESH_TIP), self.mesh)
         gform.addRow("Polynomial degree", self.opt_d)
         gform.addRow("Path-constraint slack", self.opt_e)
         gform.addRow("IPOPT tolerance", self.tol)
@@ -313,9 +395,31 @@ class MainWindow(QMainWindow):
     def atd_enabled(self):           # test hook
         return self.atd.isEnabled()
 
+    def inert_vp_keys(self):
+        """Setup parameters the full model ignores for the current config. 4 Motors
+        wins over ATD (userOpts forces ATD off when both are on) and leaves only
+        Tdist inert; otherwise ATD on makes both brkB and Tdist inert."""
+        if self.em4.isChecked():
+            return set(EM4_INERT_KEYS)
+        return set(ATD_INERT_KEYS) if self.atd.isChecked() else set()
+
+    def _update_inert_params(self, _checked=None):
+        """Grey out (and explain, via tooltip) the Setup rows that are inert."""
+        inert = self.inert_vp_keys()
+        why = EM4_INERT_TIP if self.em4.isChecked() else ATD_INERT_TIP
+        for key in ATD_INERT_KEYS:
+            is_inert = key in inert
+            m = meta_for(key)
+            base = m.tooltip or m.label
+            tip = f"{base}. {why}" if is_inert else base
+            for w in (self.vp_spins[key], self.vp_labels[key]):
+                w.setEnabled(not is_inert)
+                w.setToolTip(tip)
+
     # ---- collect / run ----------------------------------------------------
     def collect_runconfig(self):
-        defaults = all_vp_defaults()
+        tyre_set = self._tyre_set()
+        defaults = all_vp_defaults(tyre_set)
         vp = {}
         for k, field in self.vp_spins.items():
             try:
@@ -341,6 +445,8 @@ class MainWindow(QMainWindow):
             OPT_d=self.opt_d.value(),
             OPT_e=float(self.opt_e.value()),
             tol=float(self.tol.value()),
+            mesh=self.mesh.currentText(),
+            tyre_set=tyre_set,
             vp=vp,
         )
 
