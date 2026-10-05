@@ -153,6 +153,32 @@ the appended P block (`warmstart.plan_design_warm_start`) it starts from `[w_opt
 (`extend_full_start`), else `full-interp` / `cold` as above; mode in `ctx.elapsed` and `data.nlp` (`test_paramoptim_warmstart.py`). Sturn,
 default params, ma57: 5 iterations to 18.0080 s from the 179-iteration 18.0086 s result (primal-only 26, same point) vs 220 to 18.2439 s from the 7-state init.
 
+### Multi-fidelity ladder (`functions/ladder.py`)
+`MLTP(ladder=...)` builds every cold start (no or a refused `warm_start`, refine's cold retry) from a chain of
+tiers: `const` (constant guesses), `qss` (the screen's g-g-v march, `qss_profile`, 10-40 ms), `m7`, `m23`.
+`'auto'` (default) = `ladder.AUTO_LADDER` = `'legacy'` (const -> m7 -> m23, the old path); `'qss7'` = qss -> m7
+-> m23 (`MLTP_initial(seed='qss')`); `'qss23'` = qss -> m23; anything else, or a QSS ladder with a 7-state init
+`warm_start`, raises `ValueError`. Seeds: the QSS speed plus the motor or brake torque that holds its
+acceleration; m7 adds a steady turn (r = v k, slips from the inverted Magic Formula, steer), m23 stays
+laterally neutral (vy = r = n = `OPT_e`, eps = delta = 0, chassis quasi-static). QSS rungs default
+`ma57_pre_alloc` to 3.0 (else `Insufficient_Memory`); `data['ladder']` records each rung's cost.
+`homotopy=True` (= `(1.2, 1.1, 1.0)`; default None) solves once per tyre-friction scale (`pDx1, pDx2, pDy1,
+pDy2`), step 1 like a plain call, later steps warm with duals; refine, save and plot act on the last step
+(`data['homotopy']`). Measured (vi = 60, idle, ma57, MF205; 7-state + 23-state iterations, total wall, lap):
+
+| | `legacy` | `qss7` | `qss23` |
+|---|---|---|---|
+| Sturn, N=18 | 250 + 179, 20.0 s, 18.0086 s | 255 + 626, 55.5 s, +3 ms (same branch) | 166, 14.9 s, +12 ms (near) |
+| BCN, N=155 | 1072 + 247, 305 s, 116.4408 s | 840 + 188, 301 s, +1 ms (same branch) | 313, 292 s, +27 ms (slower) |
+
+With vi at 60 and 1-2 mm/s off (5 Sturn / 3 BCN starts; cold scatter ~0.01 s) the 23-state medians were Sturn
+213 / 343 / 221 and BCN 247 / 188 / 234 (legacy / qss7 / qss23); one Sturn start per ladder went wrong (legacy
++1.02 s, qss23 +0.60 s, qss7 `max_iter`) and all qss23 BCN laps were 13-33 ms slow. So `'legacy'` stays the
+default: no QSS seed gives the 1.5-3x the roadmap expected (qss7 trims BCN iterations by a fifth, not its wall,
+and is fragile on Sturn; qss23 only saves the 7-state solve: -25% wall on Sturn, -4% on BCN). Use `'qss23'` for
+a quick screening-grade cold start, `homotopy=True` when a cold solve fails: EM4 Sturn (ATD Off) runs legacy to
+`max_iter` 6000, homotopy converges in 250 + 165 + 65 + 70 iterations (35 s, 16.611 s; qss23: 1092, 16.663 s).
+
 ### Co-optimization wrappers
 - **`MLTP_paramOptim.py`** promotes static design parameters (`vp` fields) to constant-over-lap
   decision variables and solves them **jointly** with the racing line. Its `optimise_design(param_specs, tag, ...)`
