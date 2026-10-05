@@ -138,5 +138,111 @@ def screen_sweep(circuit, overrides_list, vi=60.0, AeroConfig="Static", ATD="On"
     return results
 
 
+def _screen_rows(args):
+    """Chunk worker of screen_batch (module level so a spawn pool can pickle it).
+
+    args = (circuit, [(i, overrides), ...], call) with call = dict(vi,
+    AeroConfig, ATD, Electric_4Motors, load_model, ds_fine, base, useropts).
+    Every row runs screen_sweep's body verbatim (fresh Ctx, userOpts with
+    {**base, **overrides}, build_envelope, march; nothing is shared between
+    rows), so its lap is bitwise screen_sweep's. A row is isolated: an
+    exception, a non-finite lap, or a march that hit ggv's numerical speed
+    floor (a non-physical setup such as a negative mass or zero grip, which a
+    drivable car never reaches) gives lap nan and the error text.
+    Returns [(i, lap_time, vi_feasible, error or None, [warning texts]), ...]."""
+    from functions import ggv as _ggv
+    v_floor = float(getattr(_ggv, "_V_FLOOR", 0.1))
+    circuit, items, call = args
+    vi, base, kw = call["vi"], call["base"], call["useropts"]
+    out = []
+    for i, ov in items:
+        lap, feasible, err = float("nan"), False, None
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            try:
+                merged = {**base, **dict(ov or {})}
+                ctx = Ctx()
+                userOpts(ctx, circuit=circuit, vi=vi, AeroConfig=call["AeroConfig"], ATD=call["ATD"],
+                         Electric_4Motors=call["Electric_4Motors"], vp_overrides=merged, **kw)
+                env = build_envelope(ctx, load_model=call["load_model"])
+                prof = march(env, ctx.track.s, ctx.track.k, vi, ds_fine=call["ds_fine"])
+                lap, feasible = prof["lap_time"], bool(prof["vi_feasible"])
+                if not np.isfinite(lap):
+                    err = f"non-finite QSS lap time {lap!r}"
+                elif float(np.min(prof["v"])) <= v_floor:
+                    err = (f"non-physical setup: the QSS march hit its {v_floor:g} m/s speed "
+                           f"floor (lap {lap:.1f} s)")
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+        if err is not None:
+            lap, feasible = float("nan"), False
+        out.append((i, float(lap), feasible, err, [str(w.message) for w in rec]))
+    return out
+
+
+def screen_batch(circuit, overrides_list, vi=60.0, AeroConfig="Static", ATD="On",
+                 Electric_4Motors="Off", load_model="vehModel", ds_fine=1.0, workers=1,
+                 chunk=None, **useropts_kwargs):
+    """screen_sweep for a design-of-experiments batch: the same laps (each row
+    runs screen_sweep's body verbatim, so they are bitwise equal), plus row
+    isolation, captured warnings and an optional process pool.
+
+    Arguments as in screen_sweep: a base vp_overrides in **useropts_kwargs is
+    merged under every entry of overrides_list; the other kwargs go to userOpts.
+    workers=1 loops in this process. workers > 1 runs contiguous chunks of
+    ``chunk`` rows (default ceil(n / (4*workers))) of _screen_rows in a spawn
+    ProcessPoolExecutor (BLAS pinned to one thread in the children) and
+    reassembles them by index; the laps do not depend on workers or chunk. With
+    workers > 1, call it from `python -c`, a module function or a script whose
+    top-level code sits under `if __name__ == "__main__":` (Windows spawn
+    re-imports the main script in every worker).
+
+    A row whose setup raises, gives a non-finite lap or makes the march hit its
+    speed floor (non-physical, e.g. mb=-100) gets status 'invalid', lap nan and
+    the error text; the other rows are unaffected. Warnings raised while
+    screening are captured per row (catch_warnings(record=True)) and returned
+    de-duplicated instead of being printed.
+
+    Returns {'lap_time': float64 (n,), 'vi_feasible': bool (n,), 'status':
+    ['ok' | 'invalid'], 'error': [str | None], 'warnings': [str], 'wall_s'}."""
+    t0 = time.perf_counter()
+    if isinstance(workers, bool) or int(workers) != workers or int(workers) < 1:
+        raise ValueError(f"workers must be a positive integer, got {workers!r}")
+    if chunk is not None and (isinstance(chunk, bool) or int(chunk) != chunk or int(chunk) < 1):
+        raise ValueError(f"chunk must be None or a positive integer, got {chunk!r}")
+    workers = int(workers)
+    base = dict(useropts_kwargs.pop("vp_overrides", None) or {})
+    call = dict(vi=vi, AeroConfig=AeroConfig, ATD=ATD, Electric_4Motors=Electric_4Motors,
+                load_model=load_model, ds_fine=ds_fine, base=base, useropts=dict(useropts_kwargs))
+    items = [(i, dict(ov or {})) for i, ov in enumerate(overrides_list)]
+    n = len(items)
+    if workers == 1 or n <= 1:
+        rows = _screen_rows((circuit, items, call))
+    else:
+        import importlib
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
+        from functions.sweep import blas_single_thread
+        size = int(chunk) if chunk is not None else max(1, -(-n // (4 * workers)))
+        parts = [items[a:a + size] for a in range(0, n, size)]
+        # referenced through the importable module name (not __main__), so the
+        # children can unpickle it even when this file runs as a script
+        worker_fn = importlib.import_module("MLTP_screen")._screen_rows
+        with blas_single_thread(), ProcessPoolExecutor(
+                max_workers=min(workers, len(parts)), mp_context=mp.get_context("spawn")) as ex:
+            rows = [r for part in ex.map(worker_fn, [(circuit, p, call) for p in parts])
+                    for r in part]
+    lap = np.full(n, np.nan)
+    feasible = np.zeros(n, dtype=bool)
+    status, error, msgs = ["ok"] * n, [None] * n, []
+    for i, lap_i, feas_i, err_i, warn_i in rows:
+        lap[i], feasible[i], error[i] = lap_i, feas_i, err_i
+        if err_i is not None:
+            status[i] = "invalid"
+        msgs.extend(warn_i)
+    return {"lap_time": lap, "vi_feasible": feasible, "status": status, "error": error,
+            "warnings": list(dict.fromkeys(msgs)), "wall_s": time.perf_counter() - t0}
+
+
 if __name__ == "__main__":
     MLTP_screen(circuit="Sturn", vi=60.0)
