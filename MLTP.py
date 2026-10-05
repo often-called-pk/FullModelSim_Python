@@ -3,9 +3,10 @@
 Solves the full Minimum Lap Time Problem with the 23-state model:
 
     userOpts -> vehModel -> build OCP (objective + config-dependent path
-    constraints) -> warm start (7-state MLTP_initial, an init .mat, or a previous
-    full result) -> direct-collocation transcription -> IPOPT (ma57 by default,
-    MUMPS fallback) -> postprocess -> save .mat
+    constraints) -> warm start (the cold-start ladder of functions/ladder.py:
+    constant or QSS seed -> 7-state MLTP_initial, or the QSS profile directly;
+    an init .mat; or a previous full result) -> direct-collocation transcription
+    -> IPOPT (ma57 by default, MUMPS fallback) -> postprocess -> save .mat
 
 The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
 tyre set / mesh request appends _<tyre_set> / _mesh<Mesh>, see
@@ -28,6 +29,9 @@ import casadi as ca
 from functions.casadi_opts import fn_opts
 from functions.context import Ctx
 from functions.importfile import importfile, result_stem
+from functions.ladder import (quasi_static_states, resolve_ladder, qss_profile, seed_m23,
+                              friction_overrides, homotopy_schedule, ladder_record,
+                              homotopy_record, MA57_PRE_ALLOC)
 from functions.mesh import solution_knots, mesh_opts_record
 from functions.refine import (refine_options, run_refinement, defect_errors, state_rows,
                               interval_polynomials, eval_states, nlp_inputs, refine_record)
@@ -118,19 +122,10 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
     return hnames, h, np.array(h_lb, dtype=float), np.array(h_ub, dtype=float)
 
 
-def quasi_static_states(vp, vx):
-    """Physical seeds of the 18 states after eps (rows 5-22 of the 23-state vector:
-    Om_fl, Om_fr, Om_rl, Om_rr, the ten suspension / unsprung states, zt_fl..zt_rr)
-    for the speeds ``vx`` [m/s]: rolling wheels (Om = vx / Rw_f, vx / Rw_r),
-    suspension at rest (0) and the static tyre deflections W0 / kt. Shared by
-    warmstart_guesses (7-state init) and warmstart_refined (mesh refinement)."""
-    vx = np.asarray(vx, dtype=float).reshape(-1)
-    n = vx.size
-    z0 = np.zeros(n)
-    return np.vstack([vx / vp.Rw_f, vx / vp.Rw_f, vx / vp.Rw_r, vx / vp.Rw_r,
-                      z0, z0, z0, z0, z0, z0, z0, z0, z0, z0,
-                      (vp.Wfl0 / vp.kt) * np.ones(n), (vp.Wfr0 / vp.kt) * np.ones(n),
-                      (vp.Wrl0 / vp.kt) * np.ones(n), (vp.Wrr0 / vp.kt) * np.ones(n)])
+# quasi_static_states (rows 5-22 seeded from vx: rolling wheels, suspension at rest,
+# static tyre deflections) lives in functions/ladder.py and is imported above, so
+# MLTP.quasi_static_states is the object warmstart_guesses, warmstart_refined and
+# ladder.seed_m23 share.
 
 
 def warmstart_guesses(ctx, m, init_x, init_u, s_knot, s_knot_init=None):
@@ -252,7 +247,7 @@ def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
 def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
          AeroConfig="Static", ATD="On", Electric_4Motors="Off", TyreModel="CombinedSlip",
          save=True, plot=True, results_dir="Results", plots_dir="Plots",
-         warm_start_duals=True, refine=None, **useropts_kwargs):
+         warm_start_duals=True, refine=None, ladder="auto", homotopy=None, **useropts_kwargs):
     """Solve the full 23-state MLTP. ``warm_start`` may be None (solve the 7-state
     init first), a path to an init file (data.init), a path to a previous full
     result .mat, or the ctx / ctx.data of an earlier MLTP() call (chain without
@@ -278,9 +273,28 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     data['refine'] (functions.refine.refine_record); once a refinement pass was
     solved, data.mesh = data.mesh_requested = ctx.mesh_requested = 'adaptive', so
     the result saves as <stem>_meshAdaptive, and data.nlp.warm_start is 'refine'
-    ('init7' after a cold retry)."""
+    ('init7' after a cold retry).
+
+    ``ladder`` (functions/ladder.py) picks the fidelity ladder that builds every cold
+    start (warm_start=None, a full result refused for its tyre set, refine's cold
+    retry): 'auto' (default, = ladder.AUTO_LADDER = 'legacy'), 'legacy' (constant
+    guesses -> 7-state init -> 23-state), 'qss7' (QSS speed profile -> 7-state init
+    -> 23-state) or 'qss23' (QSS profile straight into the 23-state NLP, no 7-state
+    solve); anything else raises ValueError before any solve, as does an explicit
+    'qss7' / 'qss23' together with a 7-state init warm_start (the init replaces the
+    lower rungs). A non-legacy ladder also sets IPOPT's ma57_pre_alloc to
+    ladder.MA57_PRE_ALLOC unless ipopt_overrides give one. data['ladder'] records
+    the ladder and what its lower rungs cost (ladder.ladder_record). ``homotopy``
+    (default None: off) is a tyre-friction continuation for a cold solve that fails:
+    a schedule of friction scales ending in 1.0, e.g. (1.2, 1.1, 1.0) (True = that
+    default), each step an MLTP solve with pDx1, pDx2, pDy1, pDy2 scaled
+    (ladder.friction_overrides on top of the caller's vp_overrides); step 1 starts
+    cold through the ladder (or from warm_start), every later step from the previous
+    step's result (full + duals); refine, save and plot apply to the last step only,
+    which is exactly the caller's problem. data['homotopy'] records each step."""
     t0 = time.time()
     elapsed = {}
+    hom_steps = useropts_kwargs.pop("_homotopy_steps", None)    # set by a homotopy's last step
 
     # ---- setup + config ---------------------------------------------------
     ctx = Ctx()
@@ -288,21 +302,54 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
     vp, pt = ctx.vp, ctx.pt
     ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
+    lname, chain = resolve_ladder(ladder)       # cold-start ladder (ValueError if unknown)
+    sched = None if homotopy is None or homotopy is False else homotopy_schedule(homotopy)
+    if lname != "legacy":               # QSS rungs: MA57 reallocation failed twice from them
+        ctx.opts["ipopt"].setdefault("ma57_pre_alloc", MA57_PRE_ALLOC)
 
     # ---- warm start: data.init (7-state) or a previous full result -------
     src_full = None                     # previous 23-state result, if given
     init = None
     if warm_start is None:
-        ws_mode = "cold"                # 7-state init solved below
+        ws_mode = "cold"                # built below by the ladder
     else:
         ws_kind, ws_src = resolve_source(warm_start, loader=importfile)
         if ws_kind == "init":
+            if ladder not in (None, "auto", "legacy"):
+                raise ValueError(f"ladder={ladder!r} with a 7-state init warm_start: the init "
+                                 "replaces the lower rungs; pass ladder='auto' or warm_start=None")
             ws_mode = "init7"
             init = ws_src
         else:
             ws_mode = "full"
             src_full = ws_src
     elapsed["init"] = time.time() - t0
+
+    # ---- friction homotopy (homotopy=...): one solve per scale, the last = this problem
+    if sched is not None:
+        base_ov = useropts_kwargs.get("vp_overrides")
+        steps, prev, c = [], warm_start, None
+        for i, scale in enumerate(sched):
+            last = i == len(sched) - 1
+            kw = dict(useropts_kwargs, vp_overrides=friction_overrides(ctx.mf, scale, base_ov))
+            if last:
+                kw["_homotopy_steps"] = list(steps)
+            t1 = time.time()
+            c = MLTP(circuit=circuit, vi=vi, ni=ni, warm_start=prev, AeroConfig=AeroConfig,
+                     ATD=ATD, Electric_4Motors=Electric_4Motors, TyreModel=TyreModel,
+                     save=save and last, plot=plot and last, results_dir=results_dir,
+                     plots_dir=plots_dir, warm_start_duals=warm_start_duals,
+                     refine=refine if last else None, ladder=ladder, homotopy=None, **kw)
+            print(f"[MLTP] homotopy step {i + 1}/{len(sched)}: friction x{scale:g} -> "
+                  f"{c.elapsed['ipopt_iters']} iterations [{c.solve_stats.get('return_status', '?')}], "
+                  f"lap {float(c.data.lap_time):.4f} s ({time.time() - t1:.1f} s)")
+            steps.append(dict(scale=scale, iters=c.elapsed["ipopt_iters"],
+                              status=str(c.solve_stats.get("return_status", "unknown")),
+                              lap=float(c.data.lap_time), wall=time.time() - t1,
+                              warm_start=c.elapsed.get("warm_start", "?"),
+                              m7_iters=(getattr(c.data, "ladder", None) or {}).get("m7_iters", -1)))
+            prev = c
+        return c
 
     # ---- full model -------------------------------------------------------
     vehModel(ctx, TyreModel=TyreModel)
@@ -325,17 +372,46 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     N = disc["N"]
 
     # ---- warm-start guesses ----------------------------------------------
+    ladder_rec = ladder_record(lname, chain)    # rungs below m23 run by this call
+    elapsed["ladder"] = lname
+    prof = None                                 # QSS profile of a qss -> m23 ladder (cached)
+
     def _init_guesses(disc_):
-        """Guesses on disc_ from the 7-state init, interpolated by arc length (the
-        init is solved here, once, unless one was passed in)."""
-        nonlocal init
+        """Cold-start guesses on disc_ from the ladder's rung below m23: the QSS
+        profile (ladder.seed_m23; computed once) or the 7-state init interpolated by
+        arc length (solved here, once, seeded by chain[0], unless one was passed in)."""
+        nonlocal init, prof
+        if init is None and chain[-2] == "qss":
+            t_q = time.time()
+            if prof is None:
+                prof = qss_profile(ctx)
+                ladder_rec["qss_lap_s"] = float(prof["lap_time"])
+            g = seed_m23(ctx, m, disc_, prof, ctx.input_keys)
+            dt = time.time() - t_q
+            if not np.isfinite(ladder_rec["qss_wall_s"]):
+                ladder_rec["qss_wall_s"] = dt
+            elapsed["init"] += dt
+            return g
         if init is None:
             t_init = time.time()
             ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
                                     ATD=ATD, Electric_4Motors=Electric_4Motors, save=False,
-                                    **useropts_kwargs)
+                                    seed=chain[0], **useropts_kwargs)
             init = ctx_init.data.init
-            elapsed["init"] += time.time() - t_init
+            dt = time.time() - t_init
+            elapsed["init"] += dt
+            el7 = getattr(ctx_init, "elapsed", None) or {}
+            q7 = getattr(ctx_init, "qss_profile", None)
+            if q7 is not None:
+                ladder_rec["qss_lap_s"] = float(q7["lap_time"])
+                ladder_rec["qss_wall_s"] = float(el7.get("qss", np.nan))
+            ladder_rec.update(m7_iters=int(el7.get("ipopt_iters", -1)),
+                              m7_status=str(el7.get("return_status", "unknown")),
+                              m7_lap_s=float(getattr(init, "lap_time", np.nan)),
+                              m7_wall_s=dt - float(el7.get("qss", 0.0)))
+            if el7 and ladder_rec["m7_status"] not in GOOD_STATUS:
+                print(f"[MLTP] note: the 7-state init ended {ladder_rec['m7_status']} after "
+                      f"{ladder_rec['m7_iters']} iterations; continuing from it (data['ladder'])")
         init_x = np.asarray(init.x_opt, dtype=float)
         init_u = np.asarray(init.u_opt, dtype=float)
         return warmstart_guesses(ctx, m, init_x, init_u, disc_["s_knot"],
@@ -347,7 +423,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                                                 use_duals=warm_start_duals)
         if ws_mode == "cold":
             src_full = None
-    if src_full is None:                # 7-state init, interpolated by arc length
+    if src_full is None:                # cold start through the ladder (or the given init)
         guesses = _init_guesses(disc)
 
     reg = {"ru": ctx.ru.reshape(-1), "rdu": ctx.rdu.reshape(-1), "rdu2": ctx.rdu2.reshape(-1)}
@@ -527,6 +603,13 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
+    data["ladder"] = dict(ladder_rec)   # cold-start ladder + what its lower rungs cost (metadata)
+    if hom_steps is not None:           # last step of MLTP(homotopy=...): the record of every step
+        data["homotopy"] = homotopy_record(list(hom_steps) + [dict(
+            scale=1.0, iters=elapsed["ipopt_iters"],
+            status=str(ctx.solve_stats.get("return_status", "unknown")), lap=float(t_opt[-1]),
+            wall=time.time() - t0, warm_start=ws_mode, m7_iters=ladder_rec["m7_iters"])])
+        elapsed["homotopy"] = data["homotopy"]
     if ropts is not None:               # adaptive mesh refinement record
         data["refine"] = refine_record(refine_log, ropts, refine_stop,
                                        getattr(ctx, "mesh", "uniform"))
@@ -548,6 +631,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                f"N={N}  lap time = {t_opt[-1]:.3f} s  (init {elapsed['init']:.1f}s, solve {elapsed['solve']:.1f}s)  "
                f"IPOPT iters={elapsed['ipopt_iters']} [{ctx.solve_stats.get('return_status', '?')}]  "
                f"warm start={ws_mode}  duals={'yes' if elapsed['duals'] else 'no'}")
+    if lname != "legacy":
+        summary += f"  ladder={lname}"
     if ropts is not None:
         chain_N = "->".join(str(e["N"]) for e in accepted) or str(N)
         chain_eta = "->".join(f"{e['eta_max']:.3f}" for e in accepted) or "n/a"

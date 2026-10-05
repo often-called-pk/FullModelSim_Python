@@ -8,6 +8,12 @@ for the full model. Pipeline:
 
 The optimal solution is written to Results/init_<circuit>.mat as a struct
 ``data.init`` that MLTP.py reloads (via importfile) to seed the 23-state solve.
+
+``seed`` picks the rung below this one (functions/ladder.py): 'const' (default, the
+constant guesses of MLTP_initial.m: vx = vi, T_drive 0.85 Tmax, zero steer) or 'qss'
+(ladder.seed_m7 from the QSS speed profile ladder.qss_profile; also sets IPOPT's
+ma57_pre_alloc to ladder.MA57_PRE_ALLOC unless given). ctx.elapsed / ctx.solve_stats
+and data.init (seed, ipopt_iters, return_status) record the solve.
 """
 
 import os
@@ -20,6 +26,7 @@ import casadi as ca
 from functions.casadi_opts import fn_opts
 from functions.context import Ctx
 from functions.importfile import result_stem
+from functions.ladder import SEEDS, MA57_PRE_ALLOC, qss_profile, seed_m7
 from userOpts import userOpts
 from vehModel_initial import vehModel_initial
 from functions.transcription import (discretise, build_and_solve_nlp,
@@ -36,7 +43,9 @@ def _ns_to_dict(track):
 
 
 def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
-                 results_dir="Results", **useropts_kwargs):
+                 results_dir="Results", seed="const", **useropts_kwargs):
+    if seed not in SEEDS:
+        raise ValueError(f"seed must be one of {SEEDS}, got {seed!r}")
     t0 = time.time()
     elapsed = {}
 
@@ -79,24 +88,34 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     N = disc["N"]
     elapsed["setup"] = time.time() - t0
 
-    # ---- initial guesses (constant) --------------------------------------
-    vx_0 = vi * np.ones(N + 1)
-    vy_0 = OPT_e * np.ones(N + 1)
-    r_0 = OPT_e * np.ones(N + 1)
-    n_0 = OPT_e * np.ones(N + 1)
-    eps_0 = np.zeros(N + 1)
-    Om_f_0 = vx_0 / vp.Rw
-    Om_r_0 = vx_0 / vp.Rw
-    Tdrive_0 = 0.85 * pt.Tmax * np.ones(N + 1)
-    Tbrake_0 = np.zeros(N + 1)
-    delta_0 = np.zeros(N + 1)
-    ltx_0 = np.zeros((m.ny, N + 1))
+    t_q = time.time()
+    if seed == "qss":
+        # ---- initial guesses from the QSS speed profile (ladder rung 0) ---
+        prof = qss_profile(ctx)
+        guesses = seed_m7(ctx, m, disc, prof)
+        ctx.qss_profile = prof
+        ctx.opts["ipopt"].setdefault("ma57_pre_alloc", MA57_PRE_ALLOC)
+        elapsed["qss"] = time.time() - t_q
+    else:
+        # ---- initial guesses (constant) ----------------------------------
+        vx_0 = vi * np.ones(N + 1)
+        vy_0 = OPT_e * np.ones(N + 1)
+        r_0 = OPT_e * np.ones(N + 1)
+        n_0 = OPT_e * np.ones(N + 1)
+        eps_0 = np.zeros(N + 1)
+        Om_f_0 = vx_0 / vp.Rw
+        Om_r_0 = vx_0 / vp.Rw
+        Tdrive_0 = 0.85 * pt.Tmax * np.ones(N + 1)
+        Tbrake_0 = np.zeros(N + 1)
+        delta_0 = np.zeros(N + 1)
+        ltx_0 = np.zeros((m.ny, N + 1))
 
-    x0 = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, Om_f_0, Om_r_0]) / m.x_s[:, None]
-    u0 = np.vstack([Tdrive_0, Tbrake_0, delta_0]) / m.u_s[:, None]
-    y0 = ltx_0 / m.y_s[:, None]
-    xc0 = np.kron(x0[:, :-1], np.ones((1, ctx.OPT_d)))     # nx x (N*d)
-    guesses = {"x0": x0, "u0": u0, "y0": y0, "xc0": xc0}
+        x0 = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, Om_f_0, Om_r_0]) / m.x_s[:, None]
+        u0 = np.vstack([Tdrive_0, Tbrake_0, delta_0]) / m.u_s[:, None]
+        y0 = ltx_0 / m.y_s[:, None]
+        xc0 = np.kron(x0[:, :-1], np.ones((1, ctx.OPT_d)))     # nx x (N*d)
+        guesses = {"x0": x0, "u0": u0, "y0": y0, "xc0": xc0}
+        elapsed["qss"] = 0.0
 
     reg = {"ru": ctx.ru_init.reshape(-1),
            "rdu": ctx.rdu_init.reshape(-1),
@@ -110,7 +129,11 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         m.duk_lb_init, m.duk_ub_init, ctx.Xi_init, ctx.Xf_init,
         ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts)
     sol = res["sol"]
-    elapsed["solve"] = time.time() - t0 - elapsed["setup"]
+    elapsed["solve"] = time.time() - t0 - elapsed["setup"] - elapsed["qss"]
+    ctx.solve_stats = res["solver"].stats()
+    elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
+    elapsed["return_status"] = str(ctx.solve_stats.get("return_status", "unknown"))
+    elapsed["seed"] = seed
 
     # ---- postprocess: collect + reconstruct ------------------------------
     w_opt = np.array(sol["x"]).reshape(-1)
@@ -154,6 +177,10 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mesh": getattr(ctx, "mesh", "uniform"),
         "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
+        # how this init was solved (metadata: the rung below it, IPOPT outcome)
+        "seed": seed,
+        "ipopt_iters": elapsed["ipopt_iters"],
+        "return_status": elapsed["return_status"],
     }
     from types import SimpleNamespace
     ctx.data = SimpleNamespace(init=SimpleNamespace(**init))
@@ -168,7 +195,9 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
 
     print(f"[MLTP_initial] circuit={circuit}  N={N}  "
           f"lap time = {t_opt[-1]:.3f} s  "
-          f"(setup {elapsed['setup']:.1f}s, solve {elapsed['solve']:.1f}s)")
+          f"(setup {elapsed['setup']:.1f}s, solve {elapsed['solve']:.1f}s)"
+          + (f"  seed=qss (profile + seed {elapsed['qss']:.2f}s)" if seed == "qss" else ""))
+    ctx.elapsed = elapsed
     return ctx
 
 

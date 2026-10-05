@@ -116,6 +116,7 @@ _CODE_FILES = ("MLTP.py", "MLTP_initial.py", "MLTP_screen.py", "MLTP_paramOptim.
                "functions/mesh.py", "functions/collocation.py", "functions/casadi_opts.py",
                "functions/hsl.py", "functions/simpleMA.py", "functions/importfile.py",
                "functions/context.py", "functions/refine.py", "functions/sweep.py",
+               "functions/ladder.py",
                "functions/curv2cart.py", "functions/cartPath.py", "functions/trackLimits.py",
                "functions/rotatePoint2D.py")
 # in the closure but never run by a sweep task (every MLTP call passes plot=False)

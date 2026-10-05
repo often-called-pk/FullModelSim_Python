@@ -59,7 +59,7 @@ Symbols: SX by default; `MLTP_SYM_TYPE=MX` (or `build_and_solve_nlp(sym_type='MX
 NLP ~15x faster but evaluates the Jacobian/Hessian ~8x slower and takes a different IPOPT path.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `test_*.py`
-files (27 today) are plain scripts whose assertions run at module top level (no
+files (28 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Run one directly, or loop over all (each exits non-zero on failure):
 
@@ -83,13 +83,14 @@ foreach ($f in Get-ChildItem test_*.py) { "== $($f.Name)"; python $f.Name; if ($
 - `test_mltp_constraints.py`: `build_path_constraints` per `TyreModel` / config vs `MLTP.m`, input-rate bounds divided by `u_s`, what `MLTP()` / `MLTP_paramOptim` hand to `build_and_solve_nlp` (captured, no solve), `plotSDI.friction_usage`
 - `test_paramoptim_warmstart.py`: `optimise_design(warm_start=...)` from a full 23-state result (`extend_full_start`, the `plan_design_warm_start` modes `full+duals` / `full-primal` / `full-interp` / `cold`, what `MLTP_paramOptim` / `MLTP_TyreOptim` hand to `build_and_solve_nlp` captured by a stand-in, one real solve capped at `max_iter=5`; sections 3-4 need casadi + `Data/DATA_AA.mat`)
 - `test_refine.py`: `functions/refine.py` (defect indicator exact for polynomial solutions, O(h^(d+1)), localised; the NLP's input arithmetic pinned by one tiny real solve; `refine_knots`, `run_refinement` stop reasons, options, record round trip) and the `MLTP(refine=...)` wiring with a stand-in solver (casadi + `Data/DATA_AA.mat`, no 23-state solve)
+- `test_ladder.py`: `functions/ladder.py` (ladder registry, `homotopy_schedule`, exact-mu `friction_overrides`, the longitudinal torque rules, `qss_profile` = the screen's march, `seed_m7` / `seed_m23` on the real model scales across configs and meshes incl. the Xi-box clip) and the wiring: `MLTP_initial(seed='const')` guesses bit-identical to the legacy constants, `MLTP(ladder=...)` / `MLTP(homotopy=...)` with stand-ins, one real Sturn solve capped at `max_iter=5` (~17 s; sections 4-10 need casadi + `Data/DATA_AA.mat`)
 - `test_setup_sweep.py`: `setup_sweep.py`, `functions/sweep.py` and `MLTP_screen.screen_batch` (Sobol/LHS design, shortlist, bridges, rank metrics, `screen_batch == screen_sweep` exactly incl. a worker pool, a casadi-blocked child run, field classification; section 5 is a ~1 min real Sturn mini-sweep in a child process: hub check at 0 iterations, resume, determinism, `SweepError`s)
 - `test_vehmodel_matlab.py`: `vehModel.py` vs `vehModel.m` reference values and the inherited model quirks (casadi + `Data/DATA_AA.mat`)
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
 
-Only two files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min)
-and `test_paramoptim_warmstart.py` (section 4, capped at `max_iter=5`); the others use stand-ins,
-toy NLPs or no solve. `test_runconfig.py` / `test_results.py` write scratch files into
+Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
+`test_paramoptim_warmstart.py` (section 4) and `test_ladder.py` (section 9), both capped at
+`max_iter=5`; the others use stand-ins, toy NLPs or no solve. `test_runconfig.py` / `test_results.py` write scratch files into
 the repo root unless `CLAUDE_JOB_DIR_TMP` is set. Smoke-test the symbolic models (CasADi needed),
 and a real solve (~20 s, default MF205 tyre), with:
 
@@ -121,7 +122,9 @@ conditions), and the result models `ctx.m7` / `ctx.m23` / `ctx.data`.
 2. **`MLTP.py`** builds the **full 23-state model** (`vehModel` -> `ctx.m23`) and solves the real
    problem, saving `Results/<circuit>_<config>.mat`. If `warm_start=None`, `MLTP()` calls
    `MLTP_initial(save=False)` itself and interpolates the 7-state solution onto the 23-state grid
-   **by arc length** via `warmstart_guesses()` (the two grids may differ in N and mesh).
+   **by arc length** via `warmstart_guesses()` (the two grids may differ in N and mesh). That is
+   the default `ladder='legacy'`; `ladder='qss7'` / `'qss23'` seed from the QSS speed profile
+   instead (see Multi-fidelity ladder).
 
 `MLTP.py` also owns the only definition of `build_path_constraints()`, ported from `MLTP.m`'s
 `switch TyreModel` (it follows the model's `m.TyreModel`). With the default `'CombinedSlip'` there
@@ -274,7 +277,9 @@ merged last so it beats every default, the screening preset and the warm-start r
   `load_solution` warm-start unwrap), `context.py` (`Ctx`), `hsl.py` (Coin-HSL dir, probe, MUMPS
   fallback), `casadi_opts.py` (`fn_opts`: CSE/JIT), `warmstart.py` (dual warm-start recipe,
   NLP-structure check, warm-start source resolution, `nlp_record`), `mesh.py` (`curvature_mesh`,
-  `solution_knots`, `mesh_opts_record`), `ggv.py` (QSS envelope + march), `refine.py` (adaptive
+  `solution_knots`, `mesh_opts_record`), `ggv.py` (QSS envelope + march), `ladder.py` (multi-fidelity
+  ladder: tier registry, `resolve_ladder`, QSS seeds `seed_m7` / `seed_m23`, `quasi_static_states`,
+  the friction homotopy hook; numpy only, see Multi-fidelity ladder), `refine.py` (adaptive
   mesh refinement: defect indicator, knot bisection, the refinement loop; see Collocation mesh).
 - **Post-processing only** (reached via `reconstruct_track` *after* the solve): `curv2cart.py`
   (s,k -> cartesian centreline), `cartPath.py` (lateral offset `n` -> racing line), `trackLimits.py`
