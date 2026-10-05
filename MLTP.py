@@ -9,7 +9,8 @@ Solves the full Minimum Lap Time Problem with the 23-state model:
 
 The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
 tyre set / mesh request appends _<tyre_set> / _mesh<Mesh>, see
-functions.importfile.result_stem). The saved
+functions.importfile.result_stem; an adaptively refined solve, refine=..., saves
+as _meshAdaptive). The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
 re-solving. Plotly figures are produced by plotSDI.py.
@@ -28,8 +29,10 @@ from functions.casadi_opts import fn_opts
 from functions.context import Ctx
 from functions.importfile import importfile, result_stem
 from functions.mesh import solution_knots, mesh_opts_record
+from functions.refine import (refine_options, run_refinement, defect_errors, state_rows,
+                              interval_polynomials, eval_states, nlp_inputs, refine_record)
 from functions.warmstart import (resolve_source, guesses_from_full, nlp_structure,
-                                 plan_full_warm_start, nlp_record)
+                                 plan_full_warm_start, nlp_record, GOOD_STATUS)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       interp_inputs, compute_time,
@@ -115,6 +118,21 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
     return hnames, h, np.array(h_lb, dtype=float), np.array(h_ub, dtype=float)
 
 
+def quasi_static_states(vp, vx):
+    """Physical seeds of the 18 states after eps (rows 5-22 of the 23-state vector:
+    Om_fl, Om_fr, Om_rl, Om_rr, the ten suspension / unsprung states, zt_fl..zt_rr)
+    for the speeds ``vx`` [m/s]: rolling wheels (Om = vx / Rw_f, vx / Rw_r),
+    suspension at rest (0) and the static tyre deflections W0 / kt. Shared by
+    warmstart_guesses (7-state init) and warmstart_refined (mesh refinement)."""
+    vx = np.asarray(vx, dtype=float).reshape(-1)
+    n = vx.size
+    z0 = np.zeros(n)
+    return np.vstack([vx / vp.Rw_f, vx / vp.Rw_f, vx / vp.Rw_r, vx / vp.Rw_r,
+                      z0, z0, z0, z0, z0, z0, z0, z0, z0, z0,
+                      (vp.Wfl0 / vp.kt) * np.ones(n), (vp.Wfr0 / vp.kt) * np.ones(n),
+                      (vp.Wrl0 / vp.kt) * np.ones(n), (vp.Wrr0 / vp.kt) * np.ones(n)])
+
+
 def warmstart_guesses(ctx, m, init_x, init_u, s_knot, s_knot_init=None):
     """Warm-start guesses for the 23-state NLP, interpolated from the 7-state
     data.init plus neutral/static seeds for the suspension and tyre states.
@@ -145,16 +163,8 @@ def warmstart_guesses(ctx, m, init_x, init_u, s_knot, s_knot_init=None):
     vx_0 = _at(init_x[0]); vy_0 = _at(init_x[1])
     r_0 = _at(init_x[2]); n_0 = _at(init_x[3])
     eps_0 = _at(init_x[4])
-    Om_fl_0 = vx_0 / vp.Rw_f; Om_fr_0 = vx_0 / vp.Rw_f
-    Om_rl_0 = vx_0 / vp.Rw_r; Om_rr_0 = vx_0 / vp.Rw_r
-    z0 = np.zeros(N + 1)
-    zt_fl_0 = (vp.Wfl0 / vp.kt) * np.ones(N + 1)
-    zt_fr_0 = (vp.Wfr0 / vp.kt) * np.ones(N + 1)
-    zt_rl_0 = (vp.Wrl0 / vp.kt) * np.ones(N + 1)
-    zt_rr_0 = (vp.Wrr0 / vp.kt) * np.ones(N + 1)
-    x0_phys = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, Om_fl_0, Om_fr_0, Om_rl_0, Om_rr_0,
-                         z0, z0, z0, z0, z0, z0, z0, z0, z0, z0,
-                         zt_fl_0, zt_fr_0, zt_rl_0, zt_rr_0])
+    # Om = vx / Rw, suspension 0, zt = W0 / kt
+    x0_phys = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, quasi_static_states(vp, vx_0)])
     x0 = x0_phys / m.x_s[:, None]
 
     T_brake_0 = _at(init_u[1])
@@ -208,10 +218,41 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True):
     return warmstart_guesses_full(ctx, m, src, disc), warm, mode
 
 
+def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
+    """Primal seeds {x0, u0, xc0} (scaled) for a refined mesh ``disc_new`` from the
+    previous pass's converged solution ``prev_sol`` = (Xk, Uk, Xkj), scaled (w_opt
+    unpacked with unit scales), on ``prev_disc`` (the 'reseed' of MLTP(refine=...)):
+
+      vx, vy, r, n, eps   the previous state polynomials at the new knots and
+                          collocation points (exact at the kept knots of a nested mesh)
+      inputs              the previous NLP's own in-interval arithmetic at the new
+                          knots (functions.refine.nlp_inputs; exact at the kept knots,
+                          so ATD / aero rows carry over)
+      Om, suspension, zt  re-seeded quasi-statically from vx, as warmstart_guesses
+                          seeds the 7-state init (Om = vx/Rw, 0, W0/kt)
+
+    Primal only. Interpolating all 23 states instead (guesses_from_full,
+    'full-interp') leaves stiff-state defects of order |lambda| h delta: IPOPT
+    had not converged after 1885-2964 iterations on Sturn N 12 -> 20 / 18 -> 36.
+    This reseed converges in ~90-300 iterations on most passes but not on all
+    (the NLP is path-sensitive: Sturn N 18 -> 36 took 171 iterations from one seed
+    and did not converge in 1000 from a seed differing in the last bits), hence
+    MLTP's pass_max_iter cap, cold retry and keep-the-last-converged-pass rule."""
+    Xk, Uk, Xkj = prev_sol
+    Z = interval_polynomials(prev_disc, Xk, Xkj)
+    x0 = eval_states(prev_disc, Z, disc_new["s_knot"], x_end=np.asarray(Xk)[:, -1])
+    xc0 = eval_states(prev_disc, Z, disc_new["s_col"])
+    x_s = np.asarray(m.x_s, dtype=float).reshape(-1)
+    for X in (x0, xc0):
+        X[5:] = quasi_static_states(ctx.vp, X[0] * x_s[0]) / x_s[5:, None]
+    u0 = nlp_inputs(prev_disc, Uk, disc_new["s_knot"], ctx.OPT_uinter)
+    return {"x0": x0, "u0": u0, "xc0": xc0}
+
+
 def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
          AeroConfig="Static", ATD="On", Electric_4Motors="Off", TyreModel="CombinedSlip",
          save=True, plot=True, results_dir="Results", plots_dir="Plots",
-         warm_start_duals=True, **useropts_kwargs):
+         warm_start_duals=True, refine=None, **useropts_kwargs):
     """Solve the full 23-state MLTP. ``warm_start`` may be None (solve the 7-state
     init first), a path to an init file (data.init), a path to a previous full
     result .mat, or the ctx / ctx.data of an earlier MLTP() call (chain without
@@ -219,7 +260,25 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     primal AND dual solution (IPOPT warm start; set ``warm_start_duals=False``
     for primal only); a structurally different one is interpolated by s. A full
     result solved with another tyre set (no tyre_set field = CopyB) is ignored:
-    the 7-state init is solved instead and the warm start is recorded as 'cold'."""
+    the 7-state init is solved instead and the warm start is recorded as 'cold'.
+
+    ``refine`` (default None: one solve on the userOpts mesh, nothing else changes)
+    turns on adaptive h-refinement of the collocation mesh (functions/refine.py):
+    True for the defaults or a dict with any of passes (2), tol (1e-2), max_N
+    (4 x the base N), merge (False), ds_min (0.125 OPT_ds), ds_max (2.5 OPT_ds),
+    max_split (2), pass_max_iter (1000) and states (('n', 'eps')); an unknown key
+    or a bad value raises ValueError before any solve. After the base solve each
+    pass computes the integrated defect of the n / eps state polynomials per
+    interval, bisects the intervals above tol (nested knots, OPT_d fixed) and
+    re-solves from the previous solution (warmstart_refined; primal only, IPOPT
+    max_iter capped at pass_max_iter; a pass that does not converge is retried
+    once from the 7-state init, and if that fails too the last converged pass is
+    kept). Stops when every interval is below tol, after `passes` passes, at
+    max_N or when nothing can be split. The per-attempt log is ctx.refine_log and
+    data['refine'] (functions.refine.refine_record); once a refinement pass was
+    solved, data.mesh = data.mesh_requested = ctx.mesh_requested = 'adaptive', so
+    the result saves as <stem>_meshAdaptive, and data.nlp.warm_start is 'refine'
+    ('init7' after a cold retry)."""
     t0 = time.time()
     elapsed = {}
 
@@ -228,6 +287,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     userOpts(ctx, circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
     vp, pt = ctx.vp, ctx.pt
+    ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
 
     # ---- warm start: data.init (7-state) or a previous full result -------
     src_full = None                     # previous 23-state result, if given
@@ -265,13 +325,10 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     N = disc["N"]
 
     # ---- warm-start guesses ----------------------------------------------
-    warm = None                         # primal/dual seeds from a full result
-    if src_full is not None:
-        guesses, warm, ws_mode = warmstart_full(ctx, m, src_full, disc, len(hnames),
-                                                use_duals=warm_start_duals)
-        if ws_mode == "cold":
-            src_full = None
-    if src_full is None:                # 7-state init, interpolated by arc length
+    def _init_guesses(disc_):
+        """Guesses on disc_ from the 7-state init, interpolated by arc length (the
+        init is solved here, once, unless one was passed in)."""
+        nonlocal init
         if init is None:
             t_init = time.time()
             ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
@@ -281,17 +338,29 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             elapsed["init"] += time.time() - t_init
         init_x = np.asarray(init.x_opt, dtype=float)
         init_u = np.asarray(init.u_opt, dtype=float)
-        guesses = warmstart_guesses(ctx, m, init_x, init_u, disc["s_knot"],
-                                    solution_knots(init, init_x.shape[1]))
+        return warmstart_guesses(ctx, m, init_x, init_u, disc_["s_knot"],
+                                 solution_knots(init, init_x.shape[1]))
+
+    warm = None                         # primal/dual seeds from a full result
+    if src_full is not None:
+        guesses, warm, ws_mode = warmstart_full(ctx, m, src_full, disc, len(hnames),
+                                                use_duals=warm_start_duals)
+        if ws_mode == "cold":
+            src_full = None
+    if src_full is None:                # 7-state init, interpolated by arc length
+        guesses = _init_guesses(disc)
 
     reg = {"ru": ctx.ru.reshape(-1), "rdu": ctx.rdu.reshape(-1), "rdu2": ctx.rdu2.reshape(-1)}
 
     # ---- build + solve NLP -----------------------------------------------
     # input-rate bounds: m.duk_* = ctx.duk_* / u_s (the NLP bounds normalised rates)
-    res = build_and_solve_nlp(
-        ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
-        m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,
-        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, warm=warm)
+    def _solve(disc_, guesses_, warm_, opts_):
+        return build_and_solve_nlp(
+            ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc_, guesses_, reg,
+            m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,
+            ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, opts_, warm=warm_)
+
+    res = _solve(disc, guesses, warm, ctx.opts)
     sol = res["sol"]
     ctx.solve_stats = res["solver"].stats()
     elapsed["solve"] = time.time() - t0 - elapsed["init"]
@@ -302,6 +371,78 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
     elapsed["warm_start"] = ws_mode
     elapsed["duals"] = bool(winfo["duals"])
+
+    # ---- adaptive mesh refinement (refine=...; functions/refine.py) --------
+    if ropts is not None:
+        t_ref = time.time()
+        elapsed["solve_base"] = elapsed["solve"]
+        ind_rows = state_rows(m, ropts["states"])
+        ip = dict(ctx.opts.get("ipopt", {}))
+        ip["max_iter"] = min(int(ip.get("max_iter", ropts["pass_max_iter"])), ropts["pass_max_iter"])
+        pass_opts = dict(ctx.opts, ipopt=ip)    # cold IPOPT options, max_iter capped
+        unit_x, unit_u = np.ones(m.nx), np.ones(m.nu)
+
+        def _pass(res_, disc_, seed, mode, wall):
+            """Result dict of one solve for run_refinement (payload: what the next
+            step / evaluate / the postprocessing need)."""
+            stats = res_["solver"].stats()
+            x_n, u_n, _, xc_n = unpack_solution(res_["w_opt"], m.nx, m.nu, m.ny, disc_["N"],
+                                                ctx.OPT_d, unit_x, unit_u, None)
+            lap = float(compute_time(ca, f_sf, disc_, xc_n, unit_x)[-1])
+            return dict(status=str(stats.get("return_status", "unknown")),
+                        iters=int(stats.get("iter_count", -1)), wall=float(wall), lap=lap,
+                        seed=seed, warm_start=mode, s_knot=disc_["s_knot"],
+                        payload=dict(res=res_, disc=disc_, stats=stats, scaled=(x_n, u_n, xc_n)))
+
+        def _step(cur, s_new):
+            prev = cur["payload"]
+            disc_new = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d, s_knot=s_new)
+            t1 = time.time()
+            g = warmstart_refined(ctx, m, prev["disc"], prev["scaled"], disc_new)
+            out = _pass(_solve(disc_new, g, None, pass_opts), disc_new, "reseed", "refine",
+                        time.time() - t1)
+            if out["status"] in GOOD_STATUS:
+                return out
+            print(f"[MLTP] refine: the reseeded N={disc_new['N']} solve ended {out['status']} after "
+                  f"{out['iters']} iterations; retrying once from the 7-state init")
+            out["payload"] = None
+            t1 = time.time()
+            retry = _pass(_solve(disc_new, _init_guesses(disc_new), None, pass_opts), disc_new,
+                          "cold", "init7", time.time() - t1)
+            retry["attempts"] = [out]
+            return retry
+
+        def _evaluate(r):
+            pl = r["payload"]
+            x_n, u_n, xc_n = pl["scaled"]
+            t1 = time.perf_counter()
+            de = defect_errors(f_dyn, pl["disc"], ctx.track, x_n, xc_n, u_n, None, ctx.OPT_uinter)
+            return de["E"][ind_rows].max(axis=0), dict(dT=de["dT"], t_eval=time.perf_counter() - t1)
+
+        first = _pass(res, disc, "base", ws_mode, elapsed["solve"])
+        final, refine_log, refine_stop = run_refinement(
+            first, _step, _evaluate, ropts, order=ctx.OPT_d + 1,
+            report=lambda msg: print(f"[MLTP] refine {msg}"))
+        accepted = [e for e in refine_log if e["converged"]]
+        refine_passes = int(accepted[-1]["pass"]) if accepted else 0
+        if final is not first:          # postprocess the last converged refined pass
+            pl = final["payload"]
+            res, disc = pl["res"], pl["disc"]
+            N = disc["N"]
+            sol = res["sol"]
+            ctx.solve_stats = pl["stats"]
+            winfo = res["warm_info"]
+            ws_mode = final["warm_start"]
+            elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
+            elapsed["warm_start"] = ws_mode
+            elapsed["duals"] = bool(winfo["duals"])
+        elapsed["solve"] = time.time() - t0 - elapsed["init"]
+        elapsed["refine"] = time.time() - t_ref
+        elapsed["ipopt_iters_total"] = int(sum(max(e["iters"], 0) for e in refine_log))
+        elapsed["refine_passes"] = refine_passes
+        elapsed["refine_stop"] = refine_stop
+        ctx.refine_log = refine_log
+
     if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, len(hnames)):
         warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
                       f"transcription ({res['structure']}): dual re-injection is unreliable")
@@ -386,6 +527,12 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
+    if ropts is not None:               # adaptive mesh refinement record
+        data["refine"] = refine_record(refine_log, ropts, refine_stop,
+                                       getattr(ctx, "mesh", "uniform"))
+        if refine_passes > 0:           # the solution lives on the refined mesh
+            ctx.mesh_requested = "adaptive"
+            data["mesh"] = data["mesh_requested"] = "adaptive"
     ctx.data = SimpleNamespace(**data)
 
     if save:
@@ -397,10 +544,16 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved optimal solution -> {out_path}")
 
-    print(f"[MLTP] circuit={circuit}  config={AeroConfig}/ATD={ctx.ATD}/EM4={ctx.Electric_4Motors}  "
-          f"N={N}  lap time = {t_opt[-1]:.3f} s  (init {elapsed['init']:.1f}s, solve {elapsed['solve']:.1f}s)  "
-          f"IPOPT iters={elapsed['ipopt_iters']} [{ctx.solve_stats.get('return_status', '?')}]  "
-          f"warm start={ws_mode}  duals={'yes' if elapsed['duals'] else 'no'}")
+    summary = (f"[MLTP] circuit={circuit}  config={AeroConfig}/ATD={ctx.ATD}/EM4={ctx.Electric_4Motors}  "
+               f"N={N}  lap time = {t_opt[-1]:.3f} s  (init {elapsed['init']:.1f}s, solve {elapsed['solve']:.1f}s)  "
+               f"IPOPT iters={elapsed['ipopt_iters']} [{ctx.solve_stats.get('return_status', '?')}]  "
+               f"warm start={ws_mode}  duals={'yes' if elapsed['duals'] else 'no'}")
+    if ropts is not None:
+        chain_N = "->".join(str(e["N"]) for e in accepted) or str(N)
+        chain_eta = "->".join(f"{e['eta_max']:.3f}" for e in accepted) or "n/a"
+        summary += (f"  refine: N {chain_N}, eta_max {chain_eta}, stop={refine_stop}"
+                    f" (IPOPT iters total {elapsed['ipopt_iters_total']})")
+    print(summary)
 
     if plot:
         try:
