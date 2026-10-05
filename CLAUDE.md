@@ -59,7 +59,7 @@ Symbols: SX by default; `MLTP_SYM_TYPE=MX` (or `build_and_solve_nlp(sym_type='MX
 NLP ~15x faster but evaluates the Jacobian/Hessian ~8x slower and takes a different IPOPT path.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `test_*.py`
-files (24 today) are plain scripts whose assertions run at module top level (no
+files (27 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Run one directly, or loop over all (each exits non-zero on failure):
 
@@ -81,13 +81,17 @@ foreach ($f in Get-ChildItem test_*.py) { "== $($f.Name)"; python $f.Name; if ($
 - `test_mltp_params.py`: `MLTP` signature checks (imports casadi, no solve)
 - `test_mltp_warmstart.py`: `warmstart_guesses` / `warmstart_full` on the real 23-state model (row layout, input seeding by channel across configs, non-uniform grids, the warm-start modes; casadi, no solve)
 - `test_mltp_constraints.py`: `build_path_constraints` per `TyreModel` / config vs `MLTP.m`, input-rate bounds divided by `u_s`, what `MLTP()` / `MLTP_paramOptim` hand to `build_and_solve_nlp` (captured, no solve), `plotSDI.friction_usage`
+- `test_paramoptim_warmstart.py`: `optimise_design(warm_start=...)` from a full 23-state result (`extend_full_start`, the `plan_design_warm_start` modes `full+duals` / `full-primal` / `full-interp` / `cold`, what `MLTP_paramOptim` / `MLTP_TyreOptim` hand to `build_and_solve_nlp` captured by a stand-in, one real solve capped at `max_iter=5`; sections 3-4 need casadi + `Data/DATA_AA.mat`)
 - `test_refine.py`: `functions/refine.py` (defect indicator exact for polynomial solutions, O(h^(d+1)), localised; the NLP's input arithmetic pinned by one tiny real solve; `refine_knots`, `run_refinement` stop reasons, options, record round trip) and the `MLTP(refine=...)` wiring with a stand-in solver (casadi + `Data/DATA_AA.mat`, no 23-state solve)
+- `test_setup_sweep.py`: `setup_sweep.py`, `functions/sweep.py` and `MLTP_screen.screen_batch` (Sobol/LHS design, shortlist, bridges, rank metrics, `screen_batch == screen_sweep` exactly incl. a worker pool, a casadi-blocked child run, field classification; section 5 is a ~1 min real Sturn mini-sweep in a child process: hub check at 0 iterations, resume, determinism, `SweepError`s)
 - `test_vehmodel_matlab.py`: `vehModel.py` vs `vehModel.m` reference values and the inherited model quirks (casadi + `Data/DATA_AA.mat`)
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
 
-No test solves the 23-state NLP. `test_runconfig.py` / `test_results.py` write scratch files into
+Only two files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min)
+and `test_paramoptim_warmstart.py` (section 4, capped at `max_iter=5`); the others use stand-ins,
+toy NLPs or no solve. `test_runconfig.py` / `test_results.py` write scratch files into
 the repo root unless `CLAUDE_JOB_DIR_TMP` is set. Smoke-test the symbolic models (CasADi needed),
-and a real solve (~40 s, default MF205 tyre), with:
+and a real solve (~20 s, default MF205 tyre), with:
 
 ```powershell
 python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
@@ -139,8 +143,8 @@ arc length (primal only). The mode (`cold | init7 | full+duals | full-primal | f
 printed and stored in `data.nlp.warm_start`. Measured on Sturn (N=18, ma57; five-coefficient MF205
 proxy; pre-fix NLP, see the constraint-set bullet): a cold solve takes 257 iterations / 32.5 s; an
 identical resolve with duals 0 iterations / 4.7 s (primal-only 30); +3% `alpha_RW` takes 11 iterations warm vs 364 cold, +3% `mb` 32 vs 327.
-Full `tyre_set='MF205'` re-check, +3% mass: 10 warm, 109 primal-only, 505 cold. Iteration counts
-are path dependent. A `MLTP_paramOptim` result has `n_param` > 0, so it seeds by interpolation only.
+Full `tyre_set='MF205'` re-check (also pre-fix), +3% mass: 10 warm, 109 primal-only, 505 cold.
+Iteration counts are path dependent. A `MLTP_paramOptim` result has `n_param` > 0, so it seeds by interpolation only.
 `optimise_design(warm_start=...)` (`MLTP_paramOptim`, `MLTP_TyreOptim`) takes the same full MLTP result: if it is the design NLP minus
 the appended P block (`warmstart.plan_design_warm_start`) it starts from `[w_opt; P0]` (P0 = current vp values), `lam_g`, `[lam_x; 0]`
 (`extend_full_start`), else `full-interp` / `cold` as above; mode in `ctx.elapsed` and `data.nlp` (`test_paramoptim_warmstart.py`). Sturn,
@@ -155,7 +159,8 @@ default params, ma57: 5 iterations to 18.0080 s from the 179-iteration 18.0086 s
 
 ### Fast QSS screening tier (`MLTP_screen.py` + `functions/ggv.py`)
 A numpy-only quasi-steady g-g-v lap-time ESTIMATE (7 ms Sturn, 30 ms BCN per setup once `ctx`
-exists; +3.9% Sturn / +11.1% BCN vs the corrected-tyre (MF205 lateral) NLP lap) for ranking setups.
+exists; Sturn 18.744 s and BCN 129.467 s, i.e. +4.1% / +11.2% vs the default NLP laps of 18.0086 s
+and 116.441 s) for ranking setups.
 **Not an optimum**: fixed centreline (n = 0, track width unused), point mass, no transients.
 `python MLTP_screen.py` or `MLTP_screen(circuit='BCN', vp_overrides={...})` -> `Results/<circuit>_<cfg>_qss.mat`
 (`data.fidelity='qss'`, profile on the NLP `s_full` grid + `data.envelope`);
@@ -205,13 +210,14 @@ takes 247 iterations, 116.441 s, 253 s of solve), `'auto'` on BCN took 614 itera
 and 566 s solve against 852 iterations, 117.42 s and 968 s for the documented uniform N=155 run
 (five-coefficient proxy tyre), i.e. 1.7x wall at equal N, and its 7-state init now converges
 (1072 iterations, Optimal; the uniform-mesh init had ended `Error_In_Step_Computation`). ZigZag
-(`'auto'` resolves to curvature, N=79): `Solve_Succeeded`, 481 iterations, 56.216 s; Jarama and
-Spa also resolve to curvature under `'auto'` and are unmeasured. The gain at equal N is also
-accuracy (Sturn N=18,
-five-coefficient MF205 proxy, lap error vs the fine `OPT_ds=15` reference: uniform +0.72% in 257
-iterations, curvature +0.16% in 240). The measured BCN 2.5x speedup compared curvature at
+(`'auto'` resolves to curvature, N=79; pre-fix NLP): `Solve_Succeeded`, 481 iterations, 56.216 s;
+Jarama and Spa also resolve to curvature under `'auto'` and are unmeasured. The gain at equal N is
+also accuracy (Sturn N=18,
+five-coefficient MF205 proxy, pre-fix NLP, lap error vs the fine `OPT_ds=15` reference: uniform
++0.72% in 257 iterations, curvature +0.16% in 240). The measured BCN 2.5x speedup compared curvature at
 `OPT_ds=45` (N=103: 117.40 s, 497 iterations, 392 s wall) with uniform at `OPT_ds=30` (N=155:
-117.42 s, 852 iterations, 968 s wall), so to get the interval reduction pass `OPT_ds=45`
+117.42 s, 852 iterations, 968 s wall; both pre-fix, five-coefficient proxy), so to get the
+interval reduction pass `OPT_ds=45`
 (or larger) together with the curvature mesh, e.g. `MLTP(circuit='BCN', OPT_ds=45)`. Results record
 `data.mesh` / `data.mesh_opts`. A new mesh changes `s_full`, so a result saved on another
 mesh (e.g. an older uniform-mesh BCN result) seeds by interpolation (no dual re-injection).
@@ -320,7 +326,7 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   and so the slip-driven lateral tyre force, identically zero in `vehModel` (the NLP corners by drifting);
   the rest of the set matches `MF_205_60R15_V91`. Sturn, N=18, before the NLP constraint-set fix below: Copy-B
   gave a 25.57 s lap in 3209 IPOPT iterations (~250 s), MF205 18.01 s in 489 iterations (~35 s of solve on an
-  idle machine); with the fix MF205 takes 179 iterations (18.009 s, ~16 s of solve); MATLAB gets
+  idle machine); with the fix MF205 takes 179 iterations (18.0086 s, ~16 s of solve); MATLAB gets
   18.008-18.022 s. The benchmark runs in `docs/phase1_findings_2026-10-04.md` used a five-coefficient subset of
   MF205 (`pEy1, pKy1, pKy4, pKy5, pVy1`) as a proxy; it took 257 iterations for 18.016 s (pre-fix NLP), so
   quote 257 only for that proxy. The owner flipped the default from CopyB to MF205 on 2026-10-04 (every
@@ -337,8 +343,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `userOpts(screening=True)` loosens five tolerances (`userOpts.SCREENING_IPOPT`: `tol=1e-3`,
   `acceptable_tol=1e-2`, `dual_inf_tol=1e-2`, `constr_viol_tol=1e-3`, `compl_inf_tol=1e-3`). It is a looser
   stopping rule, not a guaranteed saving: on Sturn five matched pairs moved -41% to +16% in iterations
-  (196 vs 257 with the five-coefficient MF205 proxy, 290 vs 489 with `tyre_set='MF205'`; the other three
-  proxy pairs gave +16%, -7% and +0.3%) for lap changes of -4 to +20 ms, and iteration counts on this
+  (pre-fix NLP, not re-measured since: 196 vs 257 with the five-coefficient MF205 proxy, 290 vs 489 with
+  `tyre_set='MF205'`; the other three proxy pairs gave +16%, -7% and +0.3%) for lap changes of -4 to
+  +20 ms, and iteration counts on this
   NLP swing up to +-40% under 1-ulp perturbations. Use it for ranking sweeps, not final numbers; it
   replaces the `tol` argument and an explicit `ipopt_overrides` still wins.
 - **`vehModel_initial.py` is NOT obsolete**: it's the deliberately reduced warm-start model.
@@ -363,10 +370,13 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   exist only with `TyreModel='PureSlip'`, as in `MLTP.m`. The default Sturn NLP now has MATLAB's size
   (n_w = 1812, n_g = 1904). Default solves after the fix (ma57, MF205): Sturn 179 iterations, 18.00859 s lap
   (before: 489, 18.00934 s; MATLAB 18.008 s); BCN (`'auto'` = curvature, N=155) 247 iterations, 116.441 s,
-  253 s of solve (before: 614, 116.523 s, 566 s), with the 0.1 rad/s steering bound active. The other
-  iteration counts, lap and wall times in this file and the `Results/` baselines predate the fix (re-measure
-  before quoting them); those results carry nh = 8 path rows, so they seed a new default solve by
-  interpolation (`full-interp`), not with duals.
+  253 s of solve (before: 614, 116.523 s, 566 s), with the 0.1 rad/s steering bound active; BCN AALB 241
+  iterations, 116.065 s. The other iteration counts, laps and wall times in this file (the
+  five-coefficient proxy runs, the screening-preset pairs, the warm-start timings) predate the fix:
+  re-measure before quoting them. The default `Results/` baselines were regenerated after the fix
+  (Sturn, BCN, BCN AALB, the inits, QSS, TyreOptim; `Sturn_paramOptim` again from the full-solution warm
+  start); the full results among them seed a default solve with duals (same NLP structure). The
+  `*_CopyB.mat` files are legacy pre-fix results (no `data.nlp`).
 - **`Powertrain.py` is not a map.** Despite the name it only stores 5 scalar ratings
   (`Pmax, Tmax, OMmax, Vmax, eff`); `eff=0.9` is used only in the post-solve energy integral. The
   actual power/rpm limits are enforced in `MLTP.py`/`vehModel.py`. `pt.EM4`/`pt.ATD` are set later

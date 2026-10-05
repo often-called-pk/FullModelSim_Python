@@ -28,7 +28,7 @@ There are two ways to use it:
 | Desktop GUI app (`app/`) | ✅ working |
 | Standalone Windows `.exe` (PyInstaller) | ✅ builds & runs; verified end-to-end |
 | Coin-HSL inside the frozen exe (`sys._MEIPASS`) | ✅ verified (`ma57`, self-contained) |
-| Automated test suite (21 files, mostly casadi-free) | ✅ 21/21 |
+| Automated test suite (27 files, mostly casadi-free) | ✅ 27/27 |
 
 The frozen build has been verified on the dev machine end-to-end (Sturn solve on
 `ma57` from the bundled Coin-HSL → `Optimal Solution Found`, results + plots
@@ -132,7 +132,7 @@ python bench_linear_solver.py
 
 ## Tests
 
-There is **no pytest**, the 21 `test_*.py` files are plain scripts whose asserts
+There is **no pytest**, the 27 `test_*.py` files are plain scripts whose asserts
 run at module top level. Run a file directly; the finest selectable unit is a
 whole file. Run the full suite (each in turn):
 
@@ -141,11 +141,13 @@ foreach ($f in Get-ChildItem test_*.py) { python $f.Name }
 ```
 
 These cover the numerical/config core (collocation, mesh, warm start, QSS screener),
-plus the app's config/serialisation/results layer. Most need no casadi (18 of the 21
-pass with it blocked); `test_casadi_opts.py`, `test_hsl.py` and `test_mltp_params.py`
-import casadi, and `test_screen.py` builds the 23-state `vehModel` for its CasADi
-anchors when casadi is present (it needs the tracked `Data/DATA_AA.mat`). No test
-solves the 23-state NLP with IPOPT. Smoke-test the symbolic model with:
+plus the app's config/serialisation/results layer. Most need no casadi (23 of the 27
+exit 0 with it blocked, four of them only by printing SKIP); `test_casadi_opts.py`,
+`test_hsl.py`, `test_mltp_params.py` and `test_setup_sweep.py` need it, and
+`test_screen.py` builds the 23-state `vehModel` for its CasADi anchors when casadi is
+present (it needs the tracked `Data/DATA_AA.mat`). Only `test_setup_sweep.py` (about a
+minute) and `test_paramoptim_warmstart.py` (capped at 5 iterations) solve the real
+23-state NLP with IPOPT. Smoke-test the symbolic model with:
 
 ```powershell
 python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
