@@ -324,18 +324,24 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
 
 
 def _make_solver(ca, nlp, opts):
-    """Create the IPOPT solver. Forces the MUMPS linear solver (bundled with the
-    casadi wheel) and strips any HSL/MA57 request, so a solve never fails on a
-    missing HSL DLL regardless of what is in opts. (HSL is loaded by IPOPT at
-    solve time, not construction time, so it cannot be caught with a try/except
-    around solver construction -- the reliable fix is to not request it.)"""
+    """Create the IPOPT solver with a configurable linear solver.
+
+    If an HSL solver (ma*) is requested, register the Coin-HSL DLL directory,
+    probe once that IPOPT can load it, and use it via the `hsllib` option; if
+    HSL is unavailable or fails to load, transparently fall back to MUMPS
+    (bundled in the casadi wheel) so a solve never crashes on a missing or
+    incompatible HSL DLL. The HSL directory is taken from a private top-level
+    `opts["_hsl_dir"]` hint (set by userOpts) resolved against COINHSL_DIR and
+    a seeded default; the hint is always stripped before reaching CasADi.
+    """
     import copy
+    from functions.hsl import apply_linear_solver, resolve_hsl_dir
+
     opts = copy.deepcopy(opts)
+    hsl_dir = resolve_hsl_dir(explicit=opts.pop("_hsl_dir", None))
     ip = opts.setdefault("ipopt", {})
-    if ip.get("linear_solver", "mumps").startswith("ma"):     # ma27/ma57/ma77/ma86/ma97
-        ip["linear_solver"] = "mumps"
-    ip.pop("hsllib", None)
+    linear_solver = ip.get("linear_solver", "mumps")
+    if str(linear_solver).startswith("ma"):
+        opts = apply_linear_solver(opts, linear_solver=linear_solver,
+                                   hsl_dir=hsl_dir)
     return ca.nlpsol("solver", "ipopt", nlp, opts)
-    # opts = {**opts, "jit": True, "compiler": "shell",
-    #     "jit_options": {"flags": ["-O3"], "compiler": "gcc"}}
-    # return ca.nlpsol("solver", "ipopt", nlp, opts)

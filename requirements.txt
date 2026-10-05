@@ -12,9 +12,21 @@ kaleido>=0.2.1     # OPTIONAL: static PNG/PDF export of Plotly figures (figure.w
 # ---------------------------------------------------------------------------
 # Linear solver
 # ---------------------------------------------------------------------------
-# IPOPT ships *inside* the casadi wheel and uses the MUMPS linear solver, which
-# needs no external library -- a solve runs out of the box on any platform.
-# (The faster HSL/MA57 solver is deliberately not used: it requires a licensed
-# HSL DLL that IPOPT loads at solve time. If you ever want it, set
-# opts["ipopt"]["linear_solver"] = "ma57" and opts["ipopt"]["hsllib"] in
-# userOpts.py and make the HSL library findable on your loader path.)
+# IPOPT ships *inside* the casadi wheel. It defaults here to the HSL solver
+# MA57 (run with ma57_automatic_scaling so it converges on the stiff 23-state
+# MLTP; it factorises ~4-5x faster per IPOPT iteration than MUMPS, though total
+# wall-clock also depends on the iteration count each takes). MA57/MA97/MA27
+# require a Coin-HSL shared library (licensed, free for academic use); IPOPT
+# loads it at solve time. Point the framework at it by setting the COINHSL_DIR
+# environment variable to the folder containing libhsl.dll / libcoinhsl.dll:
+#     setx COINHSL_DIR "D:\path\to\CoinHSL\bin"     (Windows, new shells)
+# If no Coin-HSL library is found, the solve transparently falls back to MUMPS
+# (bundled in the casadi wheel, needs no external library). To force MUMPS, call
+# with linear_solver="mumps" (e.g. MLTP(..., linear_solver="mumps")). Compare
+# solvers with:  python bench_linear_solver.py
+
+# ---------------------------------------------------------------------------
+# GUI and packaging
+# ---------------------------------------------------------------------------
+PySide6
+pyinstaller
