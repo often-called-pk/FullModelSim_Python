@@ -169,7 +169,7 @@ def _screen_rows(args):
                 lap, feasible = prof["lap_time"], bool(prof["vi_feasible"])
                 if not np.isfinite(lap):
                     err = f"non-finite QSS lap time {lap!r}"
-                elif float(np.min(prof["v"])) <= v_floor:
+                elif float(np.min(prof["v"][1:])) <= v_floor:   # v[0] = vi is not floored
                     err = (f"non-physical setup: the QSS march hit its {v_floor:g} m/s speed "
                            f"floor (lap {lap:.1f} s)")
             except Exception as exc:
