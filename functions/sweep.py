@@ -12,8 +12,9 @@ sampling, shortlist and statistics layers are testable without the NLP stack.
   bridge_points()     intermediate setups on the segment hub -> row (the private
                       homotopy of one confirmation)
   rank_metrics()      QSS-vs-NLP agreement: Spearman / Kendall tau-b with seeded
-                      bootstrap CIs, resolved-pair concordance, regret, slope ...
-  noise_floor(), unresolved_pairs()
+                      bootstrap CIs, resolved-pair concordance, regret, slope ...,
+                      and whether the screen ranking can be trusted
+  noise_floor(), lap_bracket(), bracket_gap(), unresolved_pairs()
   fingerprint(), model_hash(), sha256_file(), array_sha()
   free_ram_mb(), auto_workers(), blas_single_thread()
   write_text_atomic(), write_json_atomic(), read_json(), write_csv_atomic(), read_csv(),
@@ -36,6 +37,8 @@ import numpy as np
 SAMPLERS = ("sobol", "lhs")
 BLAS_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 UNKNOWN_REASON = "unknown (vp_overrides would raise)"
+MIN_TRUST_N = 6            # fewer confirmed rows never give screen_trusted (rho = 1 by chance: 1/n!)
+SPEARMAN_EXACT_MAX_N = 8   # exact permutation p-value of Spearman's rho up to this n (8! orders)
 
 
 # ============================================================================
@@ -186,21 +189,47 @@ def _finite(x):
 
 
 def noise_floor(rows, resolve_s=1e-4):
-    """max(resolve_s, max |rt_residual_s| over rows with branch_ok): two NLP laps
-    closer than this cannot be ordered (round-trip residuals measure how far a
-    warm hop and its way back disagree, i.e. the continuation noise)."""
+    """The on-branch continuation noise: max(resolve_s, max |rt_residual_s| over rows
+    with branch_ok). Round-trip residuals measure how far a warm hop and its way back
+    disagree; two NLP laps closer than the floor cannot be ordered. A row whose round
+    trip landed on another branch (branch_ok False) is deliberately not folded into
+    this one number (a single 0.1 s outlier would blur every pair of the sweep): it
+    carries its own lap bracket (lap_bracket), which unresolved_pairs and
+    rank_metrics apply on top of the floor."""
     res = [abs(float(r["rt_residual_s"])) for r in rows
            if r.get("branch_ok") is True and _finite(r.get("rt_residual_s"))]
     return max([float(resolve_s)] + res)
 
 
-def unresolved_pairs(laps, floor):
-    """{row_id: sorted ids whose lap is within ``floor`` of this row's} for
-    laps = {row_id: lap} (finite laps only)."""
+def lap_bracket(lap, rt_residual_s=None):
+    """(lo, hi) bracket of a confirmed NLP lap: the forward lap and, when the row's
+    round trip back to the base setup converged, the same lap re-referenced to the
+    baseline branch that round trip found (lap - rt_residual_s, i.e. hub lap +
+    delta_rev). A row without a converged round trip, and the baseline itself, is the
+    point (lap, lap)."""
+    lap = float(lap)
+    if _finite(rt_residual_s):
+        other = lap - float(rt_residual_s)
+        return (min(lap, other), max(lap, other))
+    return (lap, lap)
+
+
+def bracket_gap(a, b):
+    """Distance between the closed intervals a = (lo, hi) and b (0 when they overlap)."""
+    return max(0.0, max(float(a[0]), float(b[0])) - min(float(a[1]), float(b[1])))
+
+
+def unresolved_pairs(laps, floor, brackets=None):
+    """{row_id: sorted ids that cannot be ordered against this row} for laps =
+    {row_id: lap} (finite laps only). Without ``brackets``: the laps are within
+    ``floor``. With brackets = {row_id: (lo, hi)} (lap_bracket; a missing id is its
+    point lap): the brackets are within ``floor`` of each other, so a row whose round
+    trip found another branch is unresolved against every row inside its bracket."""
     items = [(rid, float(v)) for rid, v in laps.items() if _finite(v)]
+    br = {rid: (tuple(brackets[rid]) if brackets and rid in brackets else (v, v)) for rid, v in items}
     out = {}
     for rid, v in items:
-        out[rid] = sorted(o for o, w in items if o != rid and abs(w - v) <= floor)
+        out[rid] = sorted(o for o, _ in items if o != rid and bracket_gap(br[rid], br[o]) <= floor)
     return out
 
 
@@ -243,10 +272,24 @@ def kendall_b_rows(Q, Y):
     return np.clip(t, -1.0, 1.0)
 
 
+def spearman_exact_p(q, y):
+    """Two-sided exact permutation p-value of Spearman's rho: the fraction of the n!
+    orderings of y whose |rho| reaches the observed one (scipy's t approximation says
+    p = 0 for n = 3 and rho = 1; the exact value is 1/3). NaN when rho is undefined."""
+    from itertools import permutations
+    q, y = np.asarray(q, float), np.asarray(y, float)
+    obs = spearman_rows(q, y)[0]
+    if not np.isfinite(obs):
+        return float("nan")
+    perms = np.array(list(permutations(range(q.size))))
+    rho = spearman_rows(np.broadcast_to(q, perms.shape), y[perms])
+    return float(np.mean(np.abs(rho) >= abs(obs) - 1e-12))
+
+
 def _corr_block(q, y, seed, n_boot, label=None):
-    """Spearman rho / Kendall tau-b with scipy p-values, plus percentile
-    bootstrap 95% CIs (``n_boot`` resamples of the rows, seeded; skipped when
-    n < 6) for one subset."""
+    """Spearman rho / Kendall tau-b with p-values (Spearman exact by permutation for
+    n <= SPEARMAN_EXACT_MAX_N, else scipy's), plus percentile bootstrap 95% CIs
+    (``n_boot`` resamples of the rows, seeded; skipped when n < 6) for one subset."""
     from scipy.stats import spearmanr, kendalltau
     q, y = np.asarray(q, float), np.asarray(y, float)
     n = int(q.size)
@@ -261,6 +304,8 @@ def _corr_block(q, y, seed, n_boot, label=None):
             t = kendalltau(q, y)
         out.update(spearman_rho=float(r.statistic), spearman_p=float(r.pvalue),
                    kendall_tau_b=float(t.statistic), kendall_p=float(t.pvalue))
+        if n <= SPEARMAN_EXACT_MAX_N and math.isfinite(out["spearman_rho"]):
+            out.update(spearman_p=spearman_exact_p(q, y), spearman_p_method="exact")
     if n >= 6 and n_boot > 0:
         rng = np.random.default_rng(seed)
         idx = rng.integers(0, n, size=(int(n_boot), n))
@@ -277,69 +322,106 @@ def _corr_block(q, y, seed, n_boot, label=None):
     return out
 
 
-def rank_metrics(rows, floor_s, top_ids, seed=0, n_boot=2000):
+def rank_metrics(rows, floor_s, top_ids, seed=0, n_boot=2000, unconfirmed=None,
+                 min_n=MIN_TRUST_N):
     """Agreement between the QSS screen and the NLP on the confirmed rows.
 
     rows    : dicts with row_id, kind ('baseline' | 'top' | 'probe'), qss_lap,
-              nlp_lap and branch_ok (True / False / None); finish rows must be
-              left out by the caller. Deltas are taken against the 'baseline' row.
-    floor_s : the NLP noise floor (noise_floor()): pairs / deltas closer than
-              this count as unresolved.
+              nlp_lap, branch_ok (True / False / None) and optionally nlp_lo /
+              nlp_hi, the row's lap bracket (lap_bracket(); default the point
+              nlp_lap); finish rows must be left out by the caller. Deltas are
+              taken against the 'baseline' row.
+    floor_s : the NLP noise floor (noise_floor()): two rows whose brackets are
+              within it are unresolved.
     top_ids : the QSS top-k row ids (for nlp_best_in_qss_top_k).
+    unconfirmed : the shortlisted rows without an accepted NLP lap (dicts with
+              row_id, kind, qss_lap): they cannot be ranked, but when one of them is
+              the QSS-best row the top-1 regret is unknown (it is never re-defined
+              over the survivors).
+    min_n   : the fewest confirmed rows that can give screen_trusted (rho = 1 occurs
+              by chance with probability 1/n!: 1/6 at n = 3).
     Returns a dict: n; 'all', 'branch_ok' and 'within_shortlist' (baseline +
     top, range restricted) blocks with Spearman rho / Kendall tau-b, p-values
-    and bootstrap 95% CIs; concordance over resolved pairs (|dNLP| > floor);
-    top1_regret_s (NLP lap of the QSS-best row minus the NLP-best lap);
-    nlp_best_in_qss_top_k; slope / intercept_s of NLP delta on QSS delta;
-    sign agreement where |NLP delta| > floor; screen_trusted (rho >= 0.9 and
-    concordance >= 0.9 and regret <= floor)."""
+    and bootstrap 95% CIs; concordance over resolved pairs (brackets farther
+    apart than the floor); qss_best_row (over the confirmed and unconfirmed
+    rows), qss_best_confirmed, top1_regret_s (NLP lap of the QSS-best row minus
+    the NLP-best lap; NaN when the QSS-best row is unconfirmed);
+    nlp_best_in_qss_top_k; slope / intercept_s of NLP delta on QSS delta; sign
+    agreement where a row's bracket is farther than the floor from the
+    baseline's; n_unconfirmed / unconfirmed_rows; screen_trusted (n >= min_n,
+    the QSS-best row confirmed, rho >= 0.9, concordance >= 0.9 and regret <=
+    floor) and trust_reasons, the criteria that failed."""
     rows = [r for r in rows if _finite(r.get("qss_lap")) and _finite(r.get("nlp_lap"))]
     rows = sorted(rows, key=lambda r: r["row_id"])
     ids = [r["row_id"] for r in rows]
     q = np.array([float(r["qss_lap"]) for r in rows])
     y = np.array([float(r["nlp_lap"]) for r in rows])
+    br = [(float(r["nlp_lo"]), float(r["nlp_hi"])) if _finite(r.get("nlp_lo")) and _finite(r.get("nlp_hi"))
+          else (y[i], y[i]) for i, r in enumerate(rows)]
+    unconf = sorted([r for r in (unconfirmed or []) if _finite(r.get("qss_lap"))],
+                    key=lambda r: r["row_id"])
     floor_s = float(floor_s)
-    out = dict(n=len(rows), floor_s=floor_s, row_ids=ids)
+    out = dict(n=len(rows), floor_s=floor_s, row_ids=ids, n_unconfirmed=len(unconfirmed or []),
+               unconfirmed_rows=sorted(r["row_id"] for r in (unconfirmed or [])))
     out["all"] = _corr_block(q, y, seed, n_boot)
     sel = [i for i, r in enumerate(rows) if r.get("branch_ok") is True]
     out["branch_ok"] = _corr_block(q[sel], y[sel], seed, n_boot)
     sel = [i for i, r in enumerate(rows) if r.get("kind") in ("baseline", "top")]
     out["within_shortlist"] = _corr_block(q[sel], y[sel], seed, n_boot,
                                           label="within shortlist (range restricted)")
-    # resolved-pair concordance
+    # resolved-pair concordance (disjoint brackets order the laps as the brackets)
     n_pairs = n_conc = 0
     for i in range(len(rows)):
         for j in range(i + 1, len(rows)):
-            dy = y[i] - y[j]
-            if abs(dy) > floor_s:
+            if bracket_gap(br[i], br[j]) > floor_s:
                 n_pairs += 1
-                n_conc += int((q[i] - q[j]) * dy > 0)
+                n_conc += int((q[i] - q[j]) * (y[i] - y[j]) > 0)
     out["concordance"] = dict(value=(n_conc / n_pairs) if n_pairs else float("nan"),
                               n_pairs=n_pairs, n_concordant=n_conc)
+    cand = [(q[i], ids[i], True) for i in range(len(rows))] + [
+        (float(r["qss_lap"]), r["row_id"], False) for r in unconf]
+    if cand:
+        _, qss_best, confirmed = min(cand, key=lambda c: (c[0], c[1]))
+        out["qss_best_row"], out["qss_best_confirmed"] = qss_best, confirmed
+    else:
+        out.update(qss_best_row=None, qss_best_confirmed=False)
     if rows:
-        i_q = min(range(len(rows)), key=lambda i: (q[i], ids[i]))
         i_y = min(range(len(rows)), key=lambda i: (y[i], ids[i]))
-        out["qss_best_row"], out["nlp_best_row"] = ids[i_q], ids[i_y]
-        out["top1_regret_s"] = float(y[i_q] - y[i_y])
+        out["nlp_best_row"] = ids[i_y]
+        out["top1_regret_s"] = (float(y[ids.index(out["qss_best_row"])] - y[i_y])
+                                if out["qss_best_confirmed"] else float("nan"))
         out["nlp_best_in_qss_top_k"] = bool(ids[i_y] in set(top_ids))
     else:
-        out.update(qss_best_row=None, nlp_best_row=None, top1_regret_s=float("nan"),
-                   nlp_best_in_qss_top_k=False)
+        out.update(nlp_best_row=None, top1_regret_s=float("nan"), nlp_best_in_qss_top_k=False)
     base = [i for i, r in enumerate(rows) if r.get("kind") == "baseline"]
     slope = intercept = float("nan")
     agree = dict(value=float("nan"), n=0)
     if base:
-        qd, yd = q - q[base[0]], y - y[base[0]]
+        b = base[0]
+        qd, yd = q - q[b], y - y[b]
         if np.unique(qd).size >= 2:
             slope, intercept = (float(v) for v in np.polyfit(qd, yd, 1))
-        m = [i for i in range(len(rows)) if i != base[0] and abs(yd[i]) > floor_s]
+        m = [i for i in range(len(rows)) if i != b and bracket_gap(br[i], br[b]) > floor_s]
         if m:
             agree = dict(value=float(np.mean([np.sign(qd[i]) == np.sign(yd[i]) for i in m])), n=len(m))
     out["slope"], out["intercept_s"], out["sign_agreement"] = slope, intercept, agree
     rho, conc, reg = out["all"]["spearman_rho"], out["concordance"]["value"], out["top1_regret_s"]
-    out["screen_trusted"] = bool(_finite(rho) and _finite(conc) and _finite(reg)
-                                 and rho >= 0.9 and conc >= 0.9 and reg <= floor_s)
-    out["screen_trusted_rule"] = "spearman_rho >= 0.9 and concordance >= 0.9 and top1_regret_s <= floor_s"
+    why = []
+    if len(rows) < int(min_n):
+        why.append(f"only {len(rows)} confirmed row(s), fewer than {int(min_n)}")
+    if out["qss_best_row"] is not None and not out["qss_best_confirmed"]:
+        why.append(f"the QSS-best row {out['qss_best_row']} has no confirmed NLP lap, so the "
+                   "top-1 regret is unknown")
+    elif not (_finite(reg) and reg <= floor_s):
+        why.append(f"top-1 regret {1e3 * reg:.3f} ms > noise floor {1e3 * floor_s:.3f} ms")
+    if not (_finite(rho) and rho >= 0.9):
+        why.append(f"Spearman {rho:.3f} < 0.9")
+    if not (_finite(conc) and conc >= 0.9):
+        why.append(f"concordance {conc:.3f} < 0.9 ({n_pairs} resolved pairs)")
+    out["screen_trusted"] = not why
+    out["trust_reasons"] = why
+    out["screen_trusted_rule"] = (f"n >= {int(min_n)} and the QSS-best shortlisted row confirmed and "
+                                  "spearman_rho >= 0.9 and concordance >= 0.9 and top1_regret_s <= floor_s")
     return out
 
 

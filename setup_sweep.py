@@ -4,7 +4,8 @@ confirmations (roadmap Item 8).
     from setup_sweep import setup_sweep
     res = setup_sweep([("alpha_RW", 4, 16), ("hcg", 0.45, 0.55), ("mb", 1730, 1910)],
                       n_samples=64, circuit="Sturn", top_k=4, n_probes=4)
-    res.best["vp_overrides"]          # ready for MLTP(vp_overrides=...)
+    res.best["vp_overrides"]          # the NLP-best setup, for MLTP(vp_overrides=...)
+    res.best["result_file"]           # its confirmed solution (res.best["repro"] re-solves it)
 
 Stages (everything is written into Results/sweeps/<name>/, nothing else is touched;
 every MLTP / optimise_design call runs with save=False, plot=False):
@@ -16,10 +17,14 @@ every MLTP / optimise_design call runs with save=False, plot=False):
             the QSS screen cannot see
   design    row 0 = the baseline setup (vp_overrides), rows 1..n = a scrambled Sobol'
             (or Latin hypercube) design over the box             -> samples.csv
-  hub       the baseline NLP solution every confirmation starts from: solved cold in a
-            worker (base=None) or taken from a full result (base=<.mat> / ctx), then
-            checked: a warm re-solve with duals at the base setup must be 'full+duals',
-            converge and take 0 IPOPT iterations                  -> hub.mat, hub.json
+  hub       the baseline NLP solution every confirmation starts from, either taken
+            from a full result (base=<.mat> / ctx) or (base=None) solved in workers:
+            a cold solve at the base setup and, when vp_overrides moves the base off
+            the default setup, a second candidate that continues a cold solve at the
+            default setup to the base setup by one warm hop; the faster of the two is
+            kept (warned when they disagree)          -> hub_candidates/<name>.mat
+            Then checked: a warm re-solve with duals at the base setup must be
+            'full+duals', converge and take 0 IPOPT iterations  -> hub.mat, hub.json
   screen    QSS lap of every row (MLTP_screen.screen_batch, bitwise screen_sweep),
             run while the hub solves
   shortlist baseline + the QSS top_k + n_probes rows at QSS-rank quantiles of the rest
@@ -28,26 +33,37 @@ every MLTP / optimise_design call runs with save=False, plot=False):
             not converge is retried along a private bridge (2, then 4 equal steps from
             the hub), never cold; a round trip back to the base setup measures the
             branch                                  -> rows/<id>.json|mat, logs/<id>.log
-  report    ranking with a noise floor (unresolved pairs), QSS-vs-NLP rank metrics
-            (Spearman / Kendall tau-b + bootstrap CIs, resolved-pair concordance,
-            regret, slope), the best setup    -> confirmed.csv, summary.json, report.html
+  report    ranking with a noise floor and per-row lap brackets (unresolved pairs),
+            QSS-vs-NLP rank metrics (Spearman / Kendall tau-b + bootstrap CIs,
+            resolved-pair concordance, regret, slope, whether the screen can be
+            trusted), the best setup with its branch flag, result file and repro
+                                              -> confirmed.csv, summary.json, report.html
   finish    (finish=True) optimise_design over the promotion-safe fields, warm-started
             from the winner's row; its p* is re-confirmed through the star  -> finish/
 
-Why a star: cold solves of this NLP land on local optima about 0.01 s apart, more than
-many setup effects, so no cold lap may enter a ranking. A chain of warm starts avoids
-cold scatter but makes every row depend on the order (a chain and its reverse differed
-by up to 1.9 ms). A star row is a pure function of (hub bytes, setup, options): bitwise
+Why a star: cold solves of this NLP land on local optima about 0.01 s apart at the
+default setup and up to 2 s apart off it (Sturn, base mb=1800: 18.419 s cold against
+17.952 s continued from the default solution; mb=1800 and alpha_RW=9: +1.93 s), more
+than most setup effects, so no cold lap may enter a ranking and the hub of a
+non-default base is a continuation candidate too. A chain of warm starts avoids cold
+scatter but makes every row depend on the order (a chain and its reverse differed by
+up to 1.9 ms). A star row is a pure function of (hub bytes, setup, options): bitwise
 reproducible across worker counts, order independent, resumable and parallel. Far rows
-can still hop to another branch, hence the round trips and the noise floor; keep the
-box within continuation range.
+can still hop to another branch, hence the round trips: a row whose round trip back
+to the base setup misses the hub's lap by more than tol_branch_s is flagged OFF-BRANCH
+and its lap is only known within its bracket [delta_rev, delta_fwd], so it is
+unresolved against every row inside that bracket; keep the box within continuation
+range.
 
 The QSS screen is an ESTIMATE (fixed centreline): about +4% on Sturn and +11% on BCN
 against the NLP, with deltas over-stated about 1.2-1.5x. The confirmed NLP deltas are
 the numbers to use; summary.json says whether the screen ranking could be trusted.
 
 Parallelism: NLP tasks run in a spawn ProcessPoolExecutor (BLAS pinned to 1 thread,
-Coin-HSL kept loaded per worker), the screen in-process or in its own pool. Call
+Coin-HSL kept loaded per worker); a worker that dies (a native crash, OOM) costs no
+innocent task: what the broken pool held re-runs one task per fresh process, and only
+a task that dies there too is recorded 'crashed' (a resume retries it). The screen runs
+in-process or in its own pool (in parallel with a cold hub once it would outlast it). Call
 setup_sweep from `python -c`, from a function, or under `if __name__ == "__main__":`
 (Windows spawn re-imports the main script in every worker); never run the repo as a
 package with -m. casadi is imported lazily: `import setup_sweep` works without it, and
@@ -82,12 +98,21 @@ from vehParams import vehParams, PRIMARY_KEYS
 
 _REPO = os.path.dirname(os.path.abspath(__file__))
 
-# code whose bytes define a confirmation (plan fingerprint; checked again in every worker)
+# code whose bytes define a confirmation (plan fingerprint; checked again in every
+# worker): the whole import closure of MLTP, MLTP_initial, MLTP_screen, MLTP_paramOptim
+# and this orchestrator (test_setup_sweep.py recomputes the closure and checks this list
+# covers it), minus _HASH_EXEMPT
 _CODE_FILES = ("MLTP.py", "MLTP_initial.py", "MLTP_screen.py", "MLTP_paramOptim.py",
                "vehModel.py", "vehModel_initial.py", "vehParams.py", "userOpts.py",
-               "Powertrain.py", "functions/transcription.py", "functions/warmstart.py",
-               "functions/ggv.py", "functions/mesh.py", "functions/collocation.py",
-               "functions/casadi_opts.py", "functions/hsl.py")
+               "Powertrain.py", "setup_sweep.py", "functions/__init__.py",
+               "functions/transcription.py", "functions/warmstart.py", "functions/ggv.py",
+               "functions/mesh.py", "functions/collocation.py", "functions/casadi_opts.py",
+               "functions/hsl.py", "functions/simpleMA.py", "functions/importfile.py",
+               "functions/context.py", "functions/refine.py", "functions/sweep.py",
+               "functions/curv2cart.py", "functions/cartPath.py", "functions/trackLimits.py",
+               "functions/rotatePoint2D.py")
+# in the closure but never run by a sweep task (every MLTP call passes plot=False)
+_HASH_EXEMPT = ("plotSDI.py", "gg_plots.py")
 
 ROUNDTRIP_MODES = ("all", "top", "none")
 _RETRY = ("crashed", "code_changed", "error")   # row statuses a resume runs again
@@ -98,6 +123,12 @@ _CSV_TAIL = ["qss_lap_s", "qss_rank", "qss_delta_s", "nlp_lap_s", "nlp_delta_s",
              "rt_residual_s", "branch_ok", "unresolved_with", "iters", "rt_iters", "wall_s",
              "warm_start_mode", "path", "status", "linear_solver", "w_sha", "result_file",
              "repro", "reason"]
+
+# screen_workers='auto': a serial screen estimated under _SCREEN_SERIAL_S is not worth a
+# pool, and under _SCREEN_HIDDEN_S it hides behind a cold hub (>= ~20 s even on Sturn),
+# where a pool would only slow the hub; a longer one gets the cores the NLP tasks leave
+_SCREEN_SERIAL_S = 3.0
+_SCREEN_HIDDEN_S = 15.0
 
 _W = {}                                           # worker-process globals (_worker_init)
 
@@ -123,6 +154,7 @@ class SweepResult:
     finish: dict = dataclasses.field(default_factory=dict, repr=False)
     hub: dict = dataclasses.field(default_factory=dict, repr=False)
     warnings: list = dataclasses.field(default_factory=list, repr=False)
+    failures: list = dataclasses.field(default_factory=list, repr=False)
     timings: dict = dataclasses.field(default_factory=dict, repr=False)
     throughput: dict = dataclasses.field(default_factory=dict, repr=False)
     files: dict = dataclasses.field(default_factory=dict, repr=False)
@@ -472,12 +504,52 @@ def _round_trip(task, warm, hops):
 
 
 def _task_hub_cold(task):
+    """Hub candidate 'cold': a cold MLTP solve (7-state init) at the base setup."""
     t0 = time.perf_counter()
     c = _mltp(task, None, {}, task["cold_ipopt"])
     h = _hop_info(c, t0, "hub_cold", {})
     h["init_s"] = float(c.elapsed.get("init", float("nan")))
-    _savemat_atomic(task["hub_path"], vars(c.data))
+    _savemat_atomic(task["out_path"], vars(c.data))
     return dict(status="done", hop=h)
+
+
+def _task_hub_via_default(task):
+    """Hub candidate 'via_default' (base=None with a base vp_overrides): a cold solve at
+    the DEFAULT setup (no vp_overrides), continued to the base setup by one warm hop
+    with duals (uncapped, as the cold solve). A cold solve off the default setup can end
+    on a much slower local optimum than this continuation."""
+    t0 = time.perf_counter()
+    c0 = _mltp(dict(task, base_ov={}), None, {}, task["cold_ipopt"])
+    d = _hop_info(c0, t0, "default_cold", {})
+    d["init_s"] = float(c0.elapsed.get("init", float("nan")))
+    if d["status"] not in GOOD_STATUS:
+        return dict(status="failed", default=d,
+                    reason=f"the cold solve at the default setup ended {d['status']} "
+                           f"after {d['iters']} iterations")
+    t1 = time.perf_counter()
+    c = _mltp(task, c0, {}, task["cold_ipopt"])
+    h = _hop_info(c, t1, "hub_via_default", {})
+    _savemat_atomic(task["out_path"], vars(c.data))
+    return dict(status="done", hop=h, default=d)
+
+
+def _pick_hub(cands, tol_s):
+    """(name, warning or None) of the hub among the candidates {name: record}: the
+    converged one (record['ok']) with the fastest lap, ties to the first listed; a
+    warning when converged candidates disagree by more than ``tol_s``. (None, None)
+    when none converged."""
+    ok = [(c["lap_s"], i, n) for i, (n, c) in enumerate(cands.items()) if c.get("ok")]
+    if not ok:
+        return None, None
+    lap, _, name = min(ok)
+    spread = max(o[0] for o in ok) - lap
+    if len(ok) < 2 or spread <= tol_s:
+        return name, None
+    alts = ", ".join(f"'{n}' {c['lap_s']:.6f} s in {c['iters']} it" for n, c in cands.items() if c.get("ok"))
+    return name, (f"hub: the cold candidates disagree by {1e3 * spread:.3f} ms ({alts}); kept the "
+                  f"faster, '{name}'. A cold solve off the default setup can end on a much slower "
+                  "local optimum; every lap and delta of this sweep is measured from the kept hub "
+                  "(hub.json 'candidates')")
 
 
 def _task_hub_check(task):
@@ -572,8 +644,8 @@ def _task_finish(task):
                 result_file=task["design_mat"])
 
 
-_TASKS = {"hub_cold": _task_hub_cold, "hub_check": _task_hub_check,
-          "confirm": _task_confirm, "finish": _task_finish}
+_TASKS = {"hub_cold": _task_hub_cold, "hub_via_default": _task_hub_via_default,
+          "hub_check": _task_hub_check, "confirm": _task_confirm, "finish": _task_finish}
 
 
 def _run_task(task):
@@ -611,27 +683,38 @@ def _run_task(task):
 # parent side: task runner
 # =============================================================================
 class _Runner:
-    """Runs task dicts in a spawn ProcessPoolExecutor (``P`` workers, _worker_init), or
-    in this process when inline (workers=0, debugging). After a BrokenProcessPool the
-    pool is re-created once and the unfinished tasks are resubmitted; tasks still
-    unfinished when a second pool breaks are recorded 'crashed'."""
+    """Runs task dicts in a shared spawn ProcessPoolExecutor of ``P`` workers
+    (_worker_init), or in this process when inline (workers=0, debugging).
+
+    A worker that dies (a native crash, OOM: BrokenProcessPool, also when it dies
+    while idle and only the next submit notices) never aborts the sweep and never
+    costs a task that did not cause it: every task the broken pool still held is
+    re-run ALONE in a fresh one-worker pool (up to P at a time, one while the shared
+    pool is busy), so a task that kills its worker cannot take its neighbours down
+    twice; only a task whose solo run dies too is recorded 'crashed' (a resume
+    retries it). The shared pool is re-created for the tasks submitted afterwards,
+    so there is no run-wide budget: every break is handled the same way. The pool
+    is created on the first submit (tests swap _init_fn / _run_fn for stand-ins
+    before that)."""
 
     def __init__(self, P, spec, inline, say):
-        self.P, self.spec, self.inline, self.say = int(P), dict(spec), bool(inline), say
+        self.P, self.spec, self.inline, self.say = max(int(P), 1), dict(spec), bool(inline), say
         self.tasks, self.futs, self.results, self.delivered = {}, {}, {}, set()
-        self.recreated, self.n_submitted, self.pool = False, 0, None
+        self.solo, self.solo_queue = {}, []      # tid -> (one-worker pool, future); waiting tids
+        self.n_submitted, self.n_breaks, self.pool, self._inline_ready = 0, 0, None, False
         mod = importlib.import_module("setup_sweep")    # pickled by module name, not __main__
         self._init_fn, self._run_fn = mod._worker_init, mod._run_task
-        if self.inline:
-            _worker_init(self.spec)
-        else:
-            self.pool = self._new_pool()
 
-    def _new_pool(self):
+    def _new_pool(self, n):
         import multiprocessing as mp
         from concurrent.futures import ProcessPoolExecutor
-        return ProcessPoolExecutor(max_workers=self.P, mp_context=mp.get_context("spawn"),
+        return ProcessPoolExecutor(max_workers=n, mp_context=mp.get_context("spawn"),
                                    initializer=self._init_fn, initargs=(self.spec,))
+
+    def n_running(self):
+        """Tasks submitted and not finished yet (shared, solo and queued solo)."""
+        return (sum(1 for f in self.futs.values() if not f.done())
+                + sum(1 for _, f in self.solo.values() if not f.done()) + len(self.solo_queue))
 
     def submit(self, task):
         tid = task["id"]
@@ -640,31 +723,66 @@ class _Runner:
         self.delivered.discard(tid)
         self.n_submitted += 1
         if self.inline:
-            self.results[tid] = _run_task(task)
-        elif self.pool is None:
-            self.results[tid] = dict(status="crashed", reason="no process pool left after two breaks")
-        else:
-            self.futs[tid] = self.pool.submit(self._run_fn, task)
-
-    def _recover(self):
-        unfinished = [t for t in self.futs if t not in self.results]
-        try:
-            self.pool.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
-        if self.recreated:
-            for t in unfinished:
-                self.results[t] = dict(status="crashed", reason="a worker process died in two "
-                                       "process pools (BrokenProcessPool); not retried")
-                self.futs.pop(t, None)
-            self.pool = None
+            if not self._inline_ready:
+                self._init_fn(self.spec)
+                self._inline_ready = True
+            self.results[tid] = self._run_fn(task)
             return
-        self.recreated = True
-        self.say(f"[sweep] a worker process died (BrokenProcessPool): re-creating the pool once "
-                 f"and resubmitting {len(unfinished)} unfinished task(s)")
-        self.pool = self._new_pool()
-        for t in unfinished:
-            self.futs[t] = self.pool.submit(self._run_fn, self.tasks[t])
+        for _ in range(3):
+            if self.pool is None:
+                self.pool = self._new_pool(self.P)
+            try:
+                self.futs[tid] = self.pool.submit(self._run_fn, task)
+                return
+            except RuntimeError:    # BrokenProcessPool: a worker died while idle or since the
+                self._on_break()    # last submit; this task is innocent, it goes to a fresh pool
+        self.results[tid] = dict(status="crashed", reason="no process pool accepted the task")
+
+    def _on_break(self):
+        """The shared pool broke: what it still held runs alone, one task per process."""
+        pool, self.pool = self.pool, None
+        self.n_breaks += 1
+        held = []
+        for t, fut in list(self.futs.items()):
+            del self.futs[t]
+            if t in self.results:
+                continue
+            res = None
+            if fut.done() and not fut.cancelled():
+                try:
+                    res = fut.result(timeout=0)         # it finished before the break
+                except Exception:
+                    res = None
+            if res is not None:
+                self.results[t] = res
+            else:
+                held.append(t)
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        self.solo_queue.extend(held)                    # collect() starts them
+        if held:
+            self.say(f"[sweep] a worker process died (BrokenProcessPool): re-running the {len(held)} "
+                     "task(s) the pool held one per fresh worker process")
+
+    def _start_solo(self):
+        """Start queued solo tasks: up to P solo pools, but only one while the shared
+        pool holds P or more tasks."""
+        cap = max(1, self.P - min(self.P, len(self.futs)))
+        while self.solo_queue and len(self.solo) < cap:
+            t = self.solo_queue.pop(0)
+            ex = self._new_pool(1)
+            try:
+                self.solo[t] = (ex, ex.submit(self._run_fn, self.tasks[t]))
+            except Exception as exc:
+                self.results[t] = dict(status="crashed", reason=f"could not start a worker process "
+                                       f"for it ({type(exc).__name__}: {exc})")
+                try:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
 
     def collect(self, ids, on_done=None):
         """Wait for the tasks ``ids``; on_done(task, result) once per task, as it ends."""
@@ -678,35 +796,54 @@ class _Runner:
                 if on_done is not None:
                     on_done(self.tasks[t], self.results[t])
 
-        for t in ids:
-            if t in self.results:
-                deliver(t)
         while True:
-            pending = {self.futs[t]: t for t in ids if t not in self.results and t in self.futs}
-            if not pending:
-                break
+            for t in ids:
+                if t in self.results:
+                    deliver(t)
+            if all(t in self.results for t in ids):
+                return {t: self.results[t] for t in ids}
+            self._start_solo()
+            pending = {fut: (t, False) for t, fut in self.futs.items()}
+            pending.update({fut: (t, True) for t, (_, fut) in self.solo.items()})
+            if not pending:                  # defensive: an id that was never submitted
+                for t in ids:
+                    self.results.setdefault(t, dict(status="error", reason="the task was never run"))
+                continue
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             broken = False
             for fut in done:
-                t = pending[fut]
+                t, solo = pending[fut]
                 try:
                     res = fut.result()
                 except BrokenProcessPool:
-                    broken = True
-                    continue
+                    if not solo:
+                        broken = True
+                        continue
+                    res = dict(status="crashed", reason="its worker process died twice "
+                               "(BrokenProcessPool: in the shared pool, then running alone); "
+                               "not retried in this call, a resume runs it again")
                 except Exception as exc:
                     res = dict(status="error", reason=f"{type(exc).__name__}: {exc}")
+                if solo:
+                    ex, _ = self.solo.pop(t)
+                    try:
+                        ex.shutdown(wait=False)
+                    except Exception:
+                        pass
+                else:
+                    self.futs.pop(t, None)
                 self.results[t] = res
-                self.futs.pop(t, None)
-                deliver(t)
             if broken:
-                self._recover()
-                for t in ids:
-                    if t in self.results:
-                        deliver(t)
-        return {t: self.results[t] for t in ids}
+                self._on_break()
 
     def close(self, cancel=False):
+        for ex, _ in list(self.solo.values()):
+            try:
+                ex.shutdown(wait=not cancel, cancel_futures=cancel)
+            except Exception:
+                pass
+        self.solo.clear()
+        self.solo_queue.clear()
         if self.pool is not None:
             try:
                 self.pool.shutdown(wait=not cancel, cancel_futures=cancel)
@@ -835,6 +972,8 @@ class _Sweep:
             raise ValueError(f"roundtrip must be one of {ROUNDTRIP_MODES}, got {self.roundtrip!r}")
         if self.TyreModel not in ("CombinedSlip", "PureSlip"):
             raise ValueError(f"TyreModel must be 'CombinedSlip' or 'PureSlip', got {self.TyreModel!r}")
+        if self.sampler not in S.SAMPLERS:     # here, before plan.json exists (not in design())
+            raise ValueError(f"sampler must be one of {S.SAMPLERS}, got {self.sampler!r}")
         n = self.n_samples
         if isinstance(n, bool) or int(n) != n or int(n) < 1:
             raise ValueError(f"n_samples must be a positive integer, got {n!r}")
@@ -940,7 +1079,8 @@ class _Sweep:
         self.out_dir = out = os.path.abspath(os.path.join(self.results_root, self.name))
         self.paths = dict(plan=os.path.join(out, "plan.json"), samples=os.path.join(out, "samples.csv"),
                           hub=os.path.join(out, "hub.mat"), hub_json=os.path.join(out, "hub.json"),
-                          rehub=os.path.join(out, "hub_rehub.mat"), rows=os.path.join(out, "rows"),
+                          rehub=os.path.join(out, "hub_rehub.mat"),
+                          hub_cands=os.path.join(out, "hub_candidates"), rows=os.path.join(out, "rows"),
                           logs=os.path.join(out, "logs"), finish=os.path.join(out, "finish"),
                           confirmed=os.path.join(out, "confirmed.csv"),
                           summary=os.path.join(out, "summary.json"),
@@ -1043,9 +1183,12 @@ class _Sweep:
                     hub_linear_solver=None if not self.hub else self.hub.get("linear_solver"))
 
     def start_hub(self):
-        """Create the NLP pool and submit the hub task first, so it runs during the screen."""
+        """Create the NLP pool and submit the hub task(s) first, so they run during the
+        screen: base=None -> the cold candidate (and 'via_default' when vp_overrides moves
+        the base off the default setup); a supplied base -> its check."""
         self.t_hub0 = time.perf_counter()
         self.hub_cold_running = False
+        self.hub_cands = []
         if not self.confirm:
             return
         p = self.paths
@@ -1059,7 +1202,8 @@ class _Sweep:
         n_w = nlp_structure(23, len(bc.input_keys), 0, self.disc["N"], bc.OPT_d, self.cinfo["nh"])["n_w"]
         self.rss_mb = 130.0 + 0.072 * n_w
         n_conf = max(1, min(self.n, self.top_k + self.n_probes))
-        self.P = (S.auto_workers(n_conf, rss_mb=self.rss_mb) if self.workers == "auto"
+        n_hub = 2 if (self.hub is None and self.base_kind is None and self.base_ov) else 1
+        self.P = (S.auto_workers(max(n_conf, n_hub), rss_mb=self.rss_mb) if self.workers == "auto"
                   else int(self.workers))
         spec = dict(root=os.getcwd(), circuit=self.circuit,
                     circuits_dir=self.kw.get("circuits_dir", "Circuits"),
@@ -1073,10 +1217,15 @@ class _Sweep:
                         check_ok=False)
         tb = self.task_base()
         if self.base_kind is None:
-            self.runner.submit(dict(tb, id="hub_cold", kind="hub_cold",
-                                    log=os.path.join(p["logs"], "hub_cold.log")))
+            self.hub_cands = ["cold"] + (["via_default"] if self.base_ov else [])
+            for name in self.hub_cands:
+                self.runner.submit(dict(tb, id=f"hub_{name}", kind=f"hub_{name}",
+                                        out_path=os.path.join(p["hub_cands"], f"{name}.mat"),
+                                        log=os.path.join(p["logs"], f"hub_{name}.log")))
             self.hub_cold_running = not self.runner.inline
-            self.say(f"[sweep] hub: cold solve submitted ({self.P or 'in-process'} NLP worker(s), "
+            what = ("cold solve" if len(self.hub_cands) == 1 else
+                    "cold solve and the continuation from the default setup")
+            self.say(f"[sweep] hub: {what} submitted ({self.P or 'in-process'} NLP worker(s), "
                      f"~{self.rss_mb:.0f} MB each); screening meanwhile")
             return
         if self.base_kind == "file":
@@ -1105,8 +1254,13 @@ class _Sweep:
                        ds_fine=self.ds_fine, vp_overrides=self.base_ov, **self.kw)
             r0 = screen_batch(self.circuit, self.row_ovs[:1], workers=1, **scr)
             if self.screen_workers == "auto":
-                sw = (1 if (self.hub_cold_running or n * r0["wall_s"] < 3.0)
-                      else S.auto_workers(math.ceil(n / 256)))
+                est = n * r0["wall_s"]                  # serial screen estimate
+                busy = (0 if self.runner is None or self.runner.inline
+                        else min(self.P, self.runner.n_running()))
+                if est < _SCREEN_SERIAL_S or (self.hub_cold_running and est < _SCREEN_HIDDEN_S):
+                    sw = 1                              # hidden behind the hub / not worth a pool
+                else:                                   # the cores the NLP tasks leave free
+                    sw = max(1, S.auto_workers(math.ceil(n / 256)) - busy)
             else:
                 sw = int(self.screen_workers)
             rr = screen_batch(self.circuit, self.row_ovs[1:], workers=sw, **scr)
@@ -1153,24 +1307,52 @@ class _Sweep:
                  f"{[i for i, k in self.shortlist if k == 'probe']}")
 
     # ---- 9: hub cold -> check (-> re-hub once) --------------------------------------
+    def _choose_hub(self):
+        """Collect the cold hub candidates, keep the fastest converged one as hub.mat
+        (warned when they disagree) and submit its check."""
+        p, hub = self.paths, self.hub
+        ids = [f"hub_{n}" for n in self.hub_cands]
+        out = self.runner.collect(ids)
+        cands = {}
+        for name in self.hub_cands:
+            res = out[f"hub_{name}"]
+            h = res.get("hop") or {}
+            ok = res.get("status") == "done" and h.get("status") in GOOD_STATUS
+            rec = dict(ok=ok, file=os.path.join(p["hub_cands"], f"{name}.mat"),
+                       log=os.path.join(p["logs"], f"hub_{name}.log"),
+                       reason=None if ok else f"{res.get('status')}: {res.get('reason') or h.get('status')}")
+            if h:
+                rec.update(iters=h["iters"], wall_s=h["wall"], status=h["status"], lap_s=h["lap"],
+                           init_s=h.get("init_s"), mode=h["mode"], linear_solver=h["linear_solver"],
+                           w_sha=h["w_sha"])
+            if res.get("default"):
+                d = res["default"]
+                rec["default_solve"] = dict(iters=d["iters"], wall_s=d["wall"], status=d["status"],
+                                            lap_s=d["lap"], init_s=d.get("init_s"))
+            cands[name] = rec
+            if ok:
+                via = (f" (continued from the default setup's {rec['default_solve']['lap_s']:.6f} s, "
+                       f"{rec['default_solve']['iters']} it)" if "default_solve" in rec else "")
+                self.say(f"[sweep] hub candidate {name}: {h['lap']:.6f} s, {h['iters']} iterations, "
+                         f"{h['wall']:.1f} s ({h['linear_solver']}){via}")
+            else:
+                self.say(f"[sweep] hub candidate {name}: failed ({rec['reason']}); see {rec['log']}")
+        chosen, msg = _pick_hub(cands, float(self.tol_branch_s))
+        hub.update(candidates=cands, chosen=chosen, cold=cands["cold"])
+        if chosen is None:
+            raise SweepError("the cold hub solve failed (" + "; ".join(
+                f"{n}: {c['reason']}" for n, c in cands.items()) + f"); see {p['logs']}")
+        if msg:
+            self.warn(msg)
+        _copy_atomic(cands[chosen]["file"], p["hub"])
+        self.runner.submit(dict(self.task_base(), id="hub_check", kind="hub_check",
+                                rehub_path=p["rehub"], log=os.path.join(p["logs"], "hub_check.log")))
+
     def finish_hub(self):
         p, hub = self.paths, self.hub
         if not hub.get("check_ok"):
-            if "hub_cold" in self.runner.tasks:
-                res = self.runner.collect(["hub_cold"])["hub_cold"]
-                h = res.get("hop") or {}
-                if res.get("status") != "done" or h.get("status") not in GOOD_STATUS:
-                    raise SweepError(f"the cold hub solve failed ({res.get('status')}: "
-                                     f"{res.get('reason') or h.get('status')}); see "
-                                     f"{os.path.join(p['logs'], 'hub_cold.log')}")
-                hub["cold"] = dict(iters=h["iters"], wall_s=h["wall"], status=h["status"],
-                                   lap_s=h["lap"], init_s=h.get("init_s"), mode=h["mode"],
-                                   linear_solver=h["linear_solver"], w_sha=h["w_sha"])
-                self.say(f"[sweep] hub: cold solve {h['lap']:.6f} s, {h['iters']} iterations, "
-                         f"{h['wall']:.1f} s ({h['linear_solver']})")
-                self.runner.submit(dict(self.task_base(), id="hub_check", kind="hub_check",
-                                        rehub_path=p["rehub"],
-                                        log=os.path.join(p["logs"], "hub_check.log")))
+            if self.hub_cands:
+                self._choose_hub()
             for attempt, tid in ((1, "hub_check"), (2, "hub_check2")):
                 res = self.runner.collect([tid])[tid]
                 h = res.get("hop") or {}
@@ -1340,7 +1522,8 @@ class _Sweep:
         fjson = os.path.join(p["finish"], "finish.json")
         prev = S.read_json(fjson) if os.path.isfile(fjson) else None
         if (prev and prev.get("fingerprint") == self.fp and prev.get("winner_row") == winner
-                and prev.get("eligible") == eligible and prev.get("design_status") is not None):
+                and prev.get("eligible") == eligible and prev.get("design_status") is not None
+                and prev.get("design_status") not in _RETRY):     # crashed / error: run again
             fin.clear()
             fin.update(prev)
             self.say(f"[sweep] finish: reused {fjson}")
@@ -1389,7 +1572,9 @@ class _Sweep:
     # ---- 12: report -------------------------------------------------------------------
     def ranked_rows(self):
         """confirmed.csv rows: accepted metric rows ranked by (nlp_lap, row_id), then the
-        finish row and the failures (with their reasons)."""
+        finish row and the failures (with their reasons). Two metric rows are unresolved
+        when their lap brackets (sweep.lap_bracket: [lap, lap - rt_residual] once a round
+        trip converged) are within the noise floor."""
         hub = self.hub
         hub_lap = float(hub["lap_s"])
         chk = hub.get("rehub_check") or hub["check"]
@@ -1397,12 +1582,15 @@ class _Sweep:
                         nlp_lap_s=hub_lap, delta_rev_s=0.0, rt_residual_s=0.0, branch_ok=True,
                         rt_ok=True, iters=chk["iters"], rt_iters=None, wall_s=chk["wall_s"],
                         warm_start_mode=chk["mode"], path="hub", linear_solver=chk["linear_solver"],
-                        w_sha=chk["w_sha"], result_file=self.paths["hub"], repro=None, reason=None)}
+                        w_sha=chk["w_sha"], result_file=self.paths["hub"],
+                        repro=_repro(self.task_base(), [{}]), reason=None)}
         recs.update(self.records)
         metric = [rid for rid, r in recs.items()
                   if r.get("status") == "accepted" and r.get("kind") != "finish"]
         floor = S.noise_floor([recs[rid] for rid in metric], self.resolve_s)
-        unres = S.unresolved_pairs({rid: recs[rid]["nlp_lap_s"] for rid in metric}, floor)
+        brackets = {rid: S.lap_bracket(r["nlp_lap_s"], r.get("rt_residual_s") if r.get("rt_ok") else None)
+                    for rid, r in recs.items() if r.get("status") == "accepted"}
+        unres = S.unresolved_pairs({rid: recs[rid]["nlp_lap_s"] for rid in metric}, floor, brackets)
         ranked = sorted(metric, key=lambda rid: (recs[rid]["nlp_lap_s"], rid))
         rest = sorted([rid for rid in recs if rid not in metric],
                       key=lambda rid: (recs[rid].get("kind") != "finish", rid))
@@ -1430,6 +1618,7 @@ class _Sweep:
                 # unknown (empty) unless a round trip converged
                 branch_ok=r.get("branch_ok") if (acc and r.get("rt_ok")) else None,
                 rt_ok=r.get("rt_ok") if acc else None,
+                nlp_bracket_s=list(brackets[rid]) if acc else None,
                 unresolved_with=unres.get(rid, []) if rid in ranked else [],
                 iters=r.get("iters"), rt_iters=r.get("rt_iters"), wall_s=r.get("wall_s"),
                 warm_start_mode=r.get("warm_start_mode"), path=r.get("path"), status=r.get("status"),
@@ -1558,26 +1747,24 @@ class _Sweep:
                         row_id=bid, qss_lap_s=float(self.lap[bid]), basis="QSS only (confirm=False)")
         else:
             table, floor = self.ranked_rows()
+            sel = ("baseline", "top", "probe")
             mrows = [dict(row_id=r["row_id"], kind=r["kind"], qss_lap=r["qss_lap_s"],
-                          nlp_lap=r["nlp_lap_s"], branch_ok=r["branch_ok"]) for r in table
-                     if r["status"] == "accepted" and r["kind"] in ("baseline", "top", "probe")]
-            self.metrics = S.rank_metrics(mrows, floor, self.top_ids, seed=self.seed)
-            b = next(r for r in table if r["nlp_rank"] == 1)
-            best = dict(vp_overrides={**self.base_ov, **(b["overrides"] if b["row_id"] else {})},
-                        nlp_lap_s=b["nlp_lap_s"], delta_s=b["nlp_delta_s"], row_id=b["row_id"],
-                        kind=b["kind"], unresolved_with=b["unresolved_with"])
-            m = self.metrics
-            if m["n"] >= 3 and not m["screen_trusted"]:
-                self.warn(f"the QSS screen ranking is not trusted on this box (Spearman "
-                          f"{m['all']['spearman_rho']:.3f}, concordance {m['concordance']['value']:.3f}, "
-                          f"top-1 regret {1e3 * m['top1_regret_s']:.3f} ms vs floor {1e3 * floor:.3f} ms): "
-                          "raise top_k / n_probes, or Item 11 (free-line QSS)")
+                          nlp_lap=r["nlp_lap_s"], branch_ok=r["branch_ok"],
+                          nlp_lo=r["nlp_bracket_s"][0], nlp_hi=r["nlp_bracket_s"][1]) for r in table
+                     if r["status"] == "accepted" and r["kind"] in sel]
+            unconf = [dict(row_id=r["row_id"], kind=r["kind"], qss_lap=r["qss_lap_s"]) for r in table
+                      if r["status"] != "accepted" and r["kind"] in sel]
+            self.metrics = S.rank_metrics(mrows, floor, self.top_ids, seed=self.seed, unconfirmed=unconf)
+            best = self._best(next(r for r in table if r["nlp_rank"] == 1))
+            self._report_warnings(best, table)
             S.write_csv_atomic(self.paths["confirmed"], ["nlp_rank", "row_id", "kind"] + self.fields + _CSV_TAIL,
                                table)
             self.files.update(confirmed=self.paths["confirmed"], rows=self.paths["rows"],
                               logs=self.paths["logs"])
         failures = [dict(row_id=r["row_id"], kind=r["kind"], status=r["status"], reason=r["reason"])
                     for r in table if r["status"] != "accepted"]
+        rt_res = [abs(r["rt_residual_s"]) for r in table
+                  if r["status"] == "accepted" and r.get("rt_ok") and _fin(r.get("rt_residual_s"))]
         self.timings["report_s"] = time.perf_counter() - t0
         if self.plot:
             try:
@@ -1590,24 +1777,80 @@ class _Sweep:
         summary = dict(fingerprint=self.fp, name=self.name, out_dir=self.out_dir, plan=self.plan,
                        fields=self.flags, dropped=self.dropped, warnings=self.wlist, hub=self.hub,
                        shortlist=[list(s) for s in self.shortlist], metrics=self.metrics,
-                       noise_floor_s=floor, best=best, finish=self.fin, failures=failures,
+                       noise_floor_s=floor, rt_residual_max_s=max(rt_res) if rt_res else None,
+                       best=best, finish=self.fin, failures=failures,
                        timings=self.timings, throughput=thr, n_tasks_run=thr["nlp_tasks_run"],
                        files=self.files, history=self._history())
         S.write_json_atomic(self.paths["summary"], summary)
         if self.confirm:
             self.print_table(table)
             m = self.metrics
+            br = {True: "on the hub's branch", False: "OFF-BRANCH", None: "branch unknown"}[best["branch_ok"]]
             self.say(f"[sweep] best: row {best['row_id']} ({best['kind']}) NLP {best['nlp_lap_s']:.6f} s, "
-                     f"{1e3 * best['delta_s']:+.3f} ms vs the baseline (noise floor {1e3 * floor:.3f} ms); "
-                     f"Spearman {m['all']['spearman_rho']:.3f}, Kendall {m['all']['kendall_tau_b']:.3f}, "
-                     f"concordance {m['concordance']['value']:.3f}, screen_trusted {m['screen_trusted']}")
+                     f"{1e3 * best['delta_s']:+.3f} ms vs the baseline, {br} (noise floor "
+                     f"{1e3 * floor:.3f} ms); Spearman {m['all']['spearman_rho']:.3f}, Kendall "
+                     f"{m['all']['kendall_tau_b']:.3f}, concordance {m['concordance']['value']:.3f}, "
+                     f"screen_trusted {m['screen_trusted']}; {len(failures)} failure(s)")
         self.say(f"[sweep] done in {self.timings['total_s']:.1f} s ({thr['nlp_tasks_run']} NLP task(s)) "
                  f"-> {self.out_dir}")
         return SweepResult(name=self.name, out_dir=self.out_dir, fingerprint=self.fp, fields=self.flags,
                            dropped=self.dropped, samples=self.samples, shortlist=self.shortlist,
                            confirmed=table, metrics=self.metrics, best=best, finish=self.fin or {},
-                           hub=self.hub or {}, warnings=list(self.wlist), timings=self.timings,
-                           throughput=thr, files=dict(self.files), n_tasks_run=thr["nlp_tasks_run"])
+                           hub=self.hub or {}, warnings=list(self.wlist), failures=failures,
+                           timings=self.timings, throughput=thr, files=dict(self.files),
+                           n_tasks_run=thr["nlp_tasks_run"])
+
+    def _best(self, b):
+        """res.best from the NLP-best table row: the setup and its lap, plus what they rest
+        on: the branch flag and round-trip residual, the delta bracket, the confirmed
+        solution file and the one-line call that re-solves it from the hub."""
+        hub_lap = float(self.hub["lap_s"])
+        rf = b.get("result_file")
+        lo, hi = b["nlp_bracket_s"]
+        return dict(vp_overrides={**self.base_ov, **(b["overrides"] if b["row_id"] else {})},
+                    nlp_lap_s=b["nlp_lap_s"], delta_s=b["nlp_delta_s"], row_id=b["row_id"],
+                    kind=b["kind"], unresolved_with=b["unresolved_with"], branch_ok=b["branch_ok"],
+                    rt_ok=b["rt_ok"], rt_residual_s=b["rt_residual_s"],
+                    delta_bracket_s=[lo - hub_lap, hi - hub_lap], path=b["path"], iters=b["iters"],
+                    result_file=(os.path.normpath(os.path.join(self.out_dir, rf))
+                                 if rf and not os.path.isabs(rf) else rf),
+                    repro=b["repro"])
+
+    def _report_warnings(self, best, table):
+        """Warn about what the headline result rests on: an off-branch (or unchecked)
+        winner, many off-branch rows (a third or more of the round trips), shortlisted rows
+        that were not confirmed, an untrusted screen ranking."""
+        m = self.metrics
+        rt = [r for r in table if r["row_id"] != 0 and r["status"] == "accepted" and r.get("rt_ok")]
+        off = sorted(1e3 * r["rt_residual_s"] for r in rt if r["branch_ok"] is False)
+        if len(off) >= 2 and 3 * len(off) >= len(rt):
+            self.warn(f"{len(off)} of {len(rt)} round-tripped rows are OFF-BRANCH (residuals {off[0]:+.3f} .. "
+                      f"{off[-1]:+.3f} ms, tol_branch_s {1e3 * self.tol_branch_s:g} ms): their laps are only "
+                      "bracketed and rows inside a bracket are unresolved; a smaller box keeps the rows on "
+                      "the hub's branch")
+        if best["row_id"] != 0 and best["rt_ok"] is False:
+            self.warn(f"best row {best['row_id']}: its round trip back to the base setup did not converge, "
+                      "so its branch is unknown; it rests on best['result_file'] / best['repro']")
+        elif best["branch_ok"] is False:
+            lo, hi = best["delta_bracket_s"]
+            self.warn(f"best row {best['row_id']} is OFF-BRANCH: its round trip back to the base setup ends "
+                      f"{1e3 * best['rt_residual_s']:+.3f} ms from the hub (tol_branch_s "
+                      f"{1e3 * self.tol_branch_s:g} ms), so its delta is only bracketed, "
+                      f"[{1e3 * lo:+.3f}, {1e3 * hi:+.3f}] ms, and it cannot be ordered against rows "
+                      f"{best['unresolved_with'] or '(none)'}; reproduce it from best['result_file'] or "
+                      "best['repro'] (a cold MLTP of best['vp_overrides'] can end on another local optimum)")
+        fails = [r for r in table if r["status"] != "accepted"]
+        if fails:
+            n_conf = sum(1 for r in table if r["row_id"] != 0)
+            cut = lambda s: s if len(s) <= 160 else s[:157] + "..."    # noqa: E731 (full text: failures)
+            head = "; ".join(f"row {r['row_id']} ({r['kind']}) {r['status']}: {cut(str(r['reason']))}"
+                             for r in fails[:4])
+            more = f"; {len(fails) - 4} more in summary.json 'failures'" if len(fails) > 4 else ""
+            self.warn(f"{len(fails)} of {n_conf} confirmation(s) did not succeed and are left out of the "
+                      f"ranking and the rank metrics: {head}{more}")
+        if not m["screen_trusted"]:
+            self.warn(f"the QSS screen ranking is not trusted on this box ({'; '.join(m['trust_reasons'])}): "
+                      "raise top_k / n_probes, or Item 11 (free-line QSS)")
 
     def baseline_only(self):
         """No field left after validation / classification: plan + summary, no NLP."""
@@ -1643,18 +1886,24 @@ def setup_sweep(param_specs, n_samples=256, circuit="Sturn", *, name=None, vi=60
                 plot=True, resume=True, verbose=True, **useropts_kwargs):
     """Screen ``n_samples`` setups with the QSS model, then confirm a shortlist with
     warm-started 23-state NLP solves (a star from one validated hub). Returns a
-    SweepResult; res.best['vp_overrides'] is the NLP-best confirmed setup.
+    SweepResult; res.best['vp_overrides'] is the NLP-best confirmed setup, with
+    res.best['branch_ok'] / 'rt_residual_s' / 'delta_bracket_s' (how firmly it is
+    placed), 'result_file' (its confirmed solution) and 'repro' (the call that re-solves
+    it from the hub); res.failures lists the confirmations that did not succeed.
 
     param_specs     [(field, lower, upper), ...] (optimise_design's format): vehParams
                     primaries or Pacejka coefficients. Unknown fields and fields the NLP
                     ignores in this configuration are dropped with a warning; malformed
                     specs raise ValueError.
     n_samples       design size (a power of 2 for Sobol'); row 0, the baseline, is extra.
-    base            None (a cold hub is solved first), a full 23-state result .mat with
-                    data.nlp (a previous sweep's hub.mat, Results/<stem>.mat) or an MLTP
-                    ctx / ctx.data. It must be this NLP (circuit, config, OPT_ds / OPT_d /
-                    mesh, tyre_set), else SweepError before any solve; if it needs IPOPT
-                    iterations at the base setup it is replaced by that re-solve (warned).
+    base            None (the hub is solved first: cold at the base setup and, when
+                    vp_overrides moves the base off the default setup, also continued from
+                    a cold solve at the default setup; the faster is kept), a full
+                    23-state result .mat with data.nlp (a previous sweep's hub.mat,
+                    Results/<stem>.mat) or an MLTP ctx / ctx.data. It must be this NLP
+                    (circuit, config, OPT_ds / OPT_d / mesh, tyre_set), else SweepError
+                    before any solve; if it needs IPOPT iterations at the base setup it is
+                    replaced by that re-solve (warned).
     top_k, n_probes the shortlist: the QSS top_k plus n_probes rows at QSS-rank
                     quantiles of the rest (keeps the rank metrics from range restriction).
     roundtrip       'all' (every confirmed row hops back to the base setup: residual,
@@ -1663,12 +1912,17 @@ def setup_sweep(param_specs, n_samples=256, circuit="Sturn", *, name=None, vi=60
     max_warm_iter   IPOPT max_iter of a warm hop (~ one cold solve); a hop that needs more
                     goes to the bridge ladder ``bridge_steps`` (never a cold solve).
     tol_branch_s    round-trip residual within which a row is on the hub's branch.
-    resolve_s       minimum noise floor: NLP laps closer than the floor are unresolved.
+    resolve_s       minimum noise floor: NLP laps closer than the floor are unresolved,
+                    and so are rows within the floor of an off-branch row's bracket
+                    [lap, lap - round-trip residual].
     finish          co-optimise the promotion-safe fields with optimise_design from the
                     NLP-best row, then re-confirm p* through the star (kind 'finish').
     workers         NLP processes: 'auto' (cores and free RAM) or an int; 0 runs the NLP
                     tasks in this process (debugging only, not bitwise comparable).
-    screen_workers  'auto' or an int, the processes of MLTP_screen.screen_batch.
+    screen_workers  'auto' or an int, the processes of MLTP_screen.screen_batch. 'auto'
+                    screens in-process when the serial screen is short (or would hide
+                    behind a cold hub solve), else in a pool on the cores the NLP tasks
+                    leave free.
     pin_hsl         keep the Coin-HSL library loaded in every worker (faster hops).
     name, results_root  output folder results_root/name (default '<stem>_<fp[:8]>'); the
                     folder of the same sweep resumes (only missing rows run), a folder of

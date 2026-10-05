@@ -4,24 +4,40 @@ Run from the repo root:
     venv\\Scripts\\python.exe test_setup_sweep.py
 
   1. functions.sweep units: validate_specs, sample_box, select_shortlist, bridge_points,
-     rank_metrics on synthetic data, noise floor / unresolved pairs, fingerprint, writers
+     rank_metrics on synthetic data (lap brackets, the trust rule: minimum n, an
+     unconfirmed QSS-best row, the exact small-n Spearman p), noise floor / brackets /
+     unresolved pairs, fingerprint, writers
+  1b. setup_sweep internals with stand-ins (casadi-free, no solve): the hub candidate pick,
+     _reject, _load_row, _rt_wave, _task_confirm with a stand-in hop (star, bridge ladder,
+     solver mismatch, a better baseline branch), the argument ValueErrors (no folder),
+     _resolve_base / _precheck_base, the finish stage with a stand-in runner (reuse rules,
+     skips), the report on a stub sweep (an OFF-BRANCH winner, a failed QSS-best row:
+     best provenance, unresolved brackets, warnings, failures), the inline runner, and the
+     code hash (covers the import closure; an edit to functions/simpleMA.py changes it)
   2. screen_batch == screen_sweep, exact ==: 16 seeded Sobol setups over 10 fields in 4
      configs on Sturn (+ BCN when its .mat exists), the MLTP_screen baseline, an invalid row
-     isolated; workers=2 with chunk 1 / 7 in a `python -c` child (Windows spawn re-imports
-     the main script in every worker, so pools never start from this file)
+     isolated, warnings captured; workers=2 with chunk 1 / 7 in a `python -c` child (Windows
+     spawn re-imports the main script in every worker, so pools never start from this file)
   3. casadi blocked: this file re-runs itself in a child with sys.modules['casadi'] = None
      (sections 1-2 in-process, the imports of functions.sweep / MLTP_screen / setup_sweep,
-     4 rows screened, a confirm=False sweep), then stops before section 4
+     4 rows screened, a confirm=False sweep), then stops before section 3b
+  3b. _Runner recovery (`python -c` child, stand-in tasks in spawn pools): a worker that dies
+     once, a later wave after an earlier break, a poison task among innocent ones, a worker
+     that died while idle before the next submit
   4. field classification (casadi, no solve): nlp_signature determinism, NLP-inert / live
-     per config, scale_changed, promotion_safe, QSS-blind, an all-dropped call
-  5. NLP mini-sweep (Sturn, ~1 min, in a `python -c` child): brkB dropped, the hub check,
-     the baseline delta, the accepted-row fields, files and schemas, a resume that runs no
-     task, a second run from hub.mat (1 worker, HSL not pinned) with identical laps and
-     w_sha, and the SweepErrors (another OPT_ds with that base, another seed, same name)
+     per config (AALB included), scale_changed, promotion_safe, QSS-blind, an all-dropped call
+  5. NLP mini-sweep (Sturn, ~1 min, in a `python -c` child): brkB dropped, the hub (one
+     cold candidate on the default base) and its check, the baseline delta, the accepted-row
+     fields, best's provenance, files and schemas, a resume that runs no task, a second run
+     from hub.mat (1 worker, HSL not pinned) with identical laps and w_sha, and the
+     SweepErrors (another OPT_ds with that base, another seed, same name)
 
 No NLP lap time or iteration count is pinned: only properties (warm-start modes, statuses,
-0 iterations on the hub check, equality between runs, file schemas).
+0 iterations on the hub check, equality between runs, file schemas); the stand-in sections
+use synthetic laps.
 """
+import ast
+import itertools
 import json
 import math
 import os
@@ -29,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import warnings
 
 import numpy as np
@@ -189,6 +206,47 @@ ok("noise_floor = max(resolve_s, |r| over branch_ok rows)",
 up = S.unresolved_pairs({0: 18.0, 1: 18.00005, 2: 18.00012, 5: float("nan")}, 1e-4)
 ok("unresolved_pairs within the floor (not transitive), nan laps left out",
    up == {0: [1], 1: [0, 2], 2: [1]})
+H = 18.4                       # an OFF-BRANCH best row: round trip -9.994 ms, runner-up 1.786 ms behind
+laps = {0: H, 1: H - 0.02373, 2: H - 0.021944}
+brk = {0: S.lap_bracket(H, 0.0), 1: S.lap_bracket(laps[1], -0.009994), 2: S.lap_bracket(laps[2], 2e-5)}
+ok("lap_bracket: (lap, lap - rt_residual) ordered; the point lap without a converged round trip",
+   brk[1][0] == laps[1] and abs(brk[1][1] - (laps[1] + 0.009994)) < 1e-12 and brk[0] == (H, H)
+   and S.lap_bracket(H, None) == (H, H) and S.lap_bracket(H, float("nan")) == (H, H))
+ok("bracket_gap: 0 when the intervals overlap, else their distance",
+   S.bracket_gap((1, 3), (2, 5)) == 0.0 and S.bracket_gap((1, 2), (2.5, 3)) == 0.5
+   and S.bracket_gap((4, 5), (1, 2)) == 2.0)
+ok("the off-branch row is unresolved against the row inside its bracket (the point rule resolved it)",
+   S.unresolved_pairs(laps, 1e-4, brk) == {0: [], 1: [2], 2: [1]}
+   and S.unresolved_pairs(laps, 1e-4) == {0: [], 1: [], 2: []}
+   and S.noise_floor([dict(branch_ok=False, rt_residual_s=-0.009994), dict(branch_ok=True, rt_residual_s=2e-5)],
+                     1e-4) == 1e-4)
+rows_b = mrows(qd, [0.8 * x for x in qd])
+rows_b[2].update(nlp_lo=rows_b[2]["nlp_lap"] - 0.004, nlp_hi=rows_b[2]["nlp_lap"])   # reaches row 1
+rows_b[4].update(nlp_lo=rows_b[4]["nlp_lap"] - 0.002, nlp_hi=rows_b[4]["nlp_lap"])   # reaches the baseline
+m = S.rank_metrics(rows_b, 1e-4, top_ids=[1, 2, 3])
+ok("rank_metrics with brackets: pairs inside a bracket are unresolved (concordance 26 of 28, sign 6 of 7)",
+   m["concordance"]["n_pairs"] == 26 and m["concordance"]["value"] == 1.0 and m["sign_agreement"]["n"] == 6
+   and m["screen_trusted"] and m["trust_reasons"] == [])
+m = S.rank_metrics(mrows(qd[:3], qd[:3], kinds=["baseline", "top", "top"]), 1e-4, [1, 2])
+ok("n = 3 in perfect agreement: rho = 1 but not trusted (fewer than 6 rows); exact Spearman p = 1/3",
+   abs(m["all"]["spearman_rho"] - 1) < 1e-12 and not m["screen_trusted"] and S.MIN_TRUST_N == 6
+   and any("fewer than 6" in s for s in m["trust_reasons"]) and abs(m["all"]["spearman_p"] - 1 / 3) < 1e-12
+   and m["all"]["spearman_p_method"] == "exact")
+qx, yx = [1, 2, 2, 4, 5], [2.0, 1.0, 4.0, 3.0, 5.0]
+r_obs = abs(spearmanr(qx, yx).statistic)
+ok("exact Spearman p == brute force over the 5! orders (ties included)",
+   abs(S.spearman_exact_p(qx, yx) - np.mean([abs(spearmanr(qx, p).statistic) >= r_obs - 1e-12
+                                              for p in itertools.permutations(yx)])) < 1e-12)
+m = S.rank_metrics(mrows(qd, [0.8 * x for x in qd]), 1e-4, [1, 2, 3],
+                   unconfirmed=[dict(row_id=9, kind="top", qss_lap=18.7 - 0.02)])
+ok("the QSS-best row unconfirmed: regret unknown (nan), not trusted, the row counted",
+   m["qss_best_row"] == 9 and m["qss_best_confirmed"] is False and math.isnan(m["top1_regret_s"])
+   and not m["screen_trusted"] and m["n_unconfirmed"] == 1 and m["unconfirmed_rows"] == [9]
+   and any("row 9" in s for s in m["trust_reasons"]))
+m = S.rank_metrics(mrows(qd, [0.8 * x for x in qd]), 1e-4, [1, 2, 3],
+                   unconfirmed=[dict(row_id=9, kind="probe", qss_lap=18.7 + 0.5)])
+ok("an unconfirmed row that is not the QSS best leaves the verdict alone",
+   m["screen_trusted"] and m["qss_best_row"] == 1 and m["qss_best_confirmed"] and m["n_unconfirmed"] == 1)
 
 f1 = S.fingerprint({"b": [1, 2.5], "a": {"y": np.float64(0.1), "x": (1, 2)}})
 f2 = S.fingerprint({"a": {"x": [1, 2], "y": 0.1}, "b": [np.int64(1), 2.5]})
@@ -211,6 +269,381 @@ with S.blas_single_thread():
     inside = [os.environ.get(k) for k in S.BLAS_VARS]
 ok("blas_single_thread sets the BLAS variables to '1' inside the block only",
    inside == ["1", "1", "1"])
+
+# =============================================================================
+print("1b. setup_sweep internals with stand-ins" + (" (casadi blocked)" if NO_CASADI else ""))
+import setup_sweep as SS
+from functions.context import Ctx
+from functions.transcription import discretise
+from functions.warmstart import nlp_structure
+from userOpts import userOpts
+
+cands = {"cold": dict(ok=True, lap_s=18.418836, iters=1980), "via_default": dict(ok=True, lap_s=17.951937, iters=5)}
+name, msg = SS._pick_hub(cands, 1e-3)
+ok("_pick_hub: the faster converged candidate, warned when the candidates disagree (466.899 ms)",
+   name == "via_default" and msg is not None and "466.899 ms" in msg and "'cold' 18.418836 s in 1980 it" in msg)
+ok("_pick_hub: within tol -> the faster, no warning; a failed candidate skipped; none -> (None, None)",
+   SS._pick_hub({"cold": dict(ok=True, lap_s=18.0086, iters=179),
+                 "via_default": dict(ok=True, lap_s=18.0087, iters=0)}, 1e-3) == ("cold", None)
+   and SS._pick_hub({"cold": dict(ok=False, reason="error: x"),
+                     "via_default": dict(ok=True, lap_s=18.2, iters=4)}, 1e-3) == ("via_default", None)
+   and SS._pick_hub({"cold": dict(ok=False)}, 1e-3) == (None, None))
+
+hop = dict(step="star", linear_solver="ma57", mode="full+duals", status="Solve_Succeeded", iters=3)
+ok("_reject: accepted, else solver_mismatch before mode before status",
+   SS._reject(hop, "ma57") is None
+   and SS._reject(dict(hop, linear_solver="mumps", mode="cold"), "ma57")[0] == "solver_mismatch"
+   and SS._reject(dict(hop, mode="full-interp", status="Maximum_Iterations_Exceeded"), "ma57")[0] == "mode"
+   and SS._reject(dict(hop, status="Maximum_Iterations_Exceeded"), "ma57")[0] == "status")
+
+LR = os.path.join(TMP, "load_row", "rows")
+os.makedirs(LR, exist_ok=True)
+jp5, vals5 = os.path.join(LR, "5.json"), {"alpha_RW": 9.5, "hcg": 0.48}
+
+
+def put5(**kw):
+    S.write_json_atomic(jp5, dict(dict(row_id=5, fingerprint="fp", status="accepted", overrides=dict(vals5)), **kw))
+
+
+put5()
+no_mat = SS._load_row(jp5, "fp", vals5)
+open(os.path.join(LR, "5.mat"), "wb").close()
+ok("_load_row: an accepted row is reused only with its .mat, the same fingerprint and the same values",
+   no_mat is None and SS._load_row(jp5, "fp", vals5)["row_id"] == 5 and SS._load_row(jp5, "other", vals5) is None
+   and SS._load_row(jp5, "fp", dict(vals5, hcg=0.49)) is None and SS._load_row(jp5, "fp", {"alpha_RW": 9.5}) is None)
+again = []
+for st in ("crashed", "code_changed", "error", "failed", "solver_mismatch"):
+    put5(status=st)
+    again.append(SS._load_row(jp5, "fp", vals5) is None)
+with open(os.path.join(LR, "7.json"), "w") as fh:
+    fh.write("{")
+ok("_load_row: crashed / code_changed / error run again, failed / solver_mismatch are kept; "
+   "a missing or unreadable record -> None",
+   again == [True, True, True, False, False] and SS._load_row(os.path.join(LR, "6.json"), "fp", vals5) is None
+   and SS._load_row(os.path.join(LR, "7.json"), "fp", vals5) is None)
+
+RT = {1: dict(status="accepted", kind="top", nlp_lap_s=17.90, path="star", iters=5),
+      2: dict(status="accepted", kind="top", nlp_lap_s=17.95, path="star", iters=8),
+      3: dict(status="accepted", kind="top", nlp_lap_s=17.97, path="star", iters=3),
+      4: dict(status="accepted", kind="probe", nlp_lap_s=18.20, path="star", iters=10),
+      5: dict(status="accepted", kind="probe", nlp_lap_s=18.30, path="bridge2", iters=20),
+      6: dict(status="accepted", kind="probe", nlp_lap_s=18.10, path="star", iters=60),
+      7: dict(status="failed", kind="top"),
+      8: dict(status="accepted", kind="top", nlp_lap_s=17.80, path="star", iters=2, rt_ok=True),
+      9: dict(status="accepted", kind="finish", nlp_lap_s=17.70, path="star", iters=2)}
+ok("_rt_wave: 'all' = accepted rows without a round trip; 'top' = the 3 best + bridged + > 50 it; 'none'",
+   SS._rt_wave(RT, "all") == [1, 2, 3, 4, 5, 6] and SS._rt_wave(RT, "top") == [1, 2, 5, 6]
+   and SS._rt_wave(RT, "none") == [])
+
+
+class _FakeC:                                   # what _task_confirm reads of an MLTP ctx
+    def __init__(self, lap):
+        self.data = types.SimpleNamespace(lap_time=lap, nlp={"w_opt": np.zeros(2)})
+
+
+def run_confirm(tag, fail=(), mismatch=(), bad_mode=(), rt_lap=18.0004):
+    """_task_confirm (hub lap 18.0, row alpha_RW 8 -> 10) with SS._hop replaced by a stand-in:
+    steps starting with an entry of ``fail`` end Maximum_Iterations_Exceeded, ``mismatch``
+    on MUMPS, ``bad_mode`` as full-interp; forward hops give 17.95 s, the round trip rt_lap."""
+    d = os.path.join(TMP, "confirm", tag)
+    os.makedirs(d, exist_ok=True)
+    task = dict(id="row_7", kind="confirm", row_id=7, row_kind="top", row={"alpha_RW": 10.0}, rt_only=False,
+                roundtrip=True, row_mat=os.path.join(d, "7.mat"), rt_path=os.path.join(d, "7_rt.mat"),
+                circuit="Sturn", vi=60.0, ni=float("nan"), AeroConfig="Static", ATD="On",
+                Electric_4Motors="Off", TyreModel="CombinedSlip", base_ov={}, useropts={},
+                hop_ipopt={"max_iter": 250}, cold_ipopt={}, fingerprint="f", model_hash="m",
+                tol_branch_s=1e-3, bridge_steps=[2, 4], hub_vals={"alpha_RW": 8.0},
+                hub_path=os.path.join(d, "hub.mat"), hub_lap=18.0, hub_linear_solver="ma57")
+    calls = []
+
+    def fake_hop(task_, warm, overrides, step):
+        calls.append(step)
+        hit = lambda keys: any(step.startswith(k) for k in keys)   # noqa: E731
+        lap = rt_lap if step == "roundtrip" else 17.95
+        return _FakeC(lap), dict(step=step, overrides=dict(overrides), lap=lap, iters=4,
+                                 status="Maximum_Iterations_Exceeded" if hit(fail) else "Solve_Succeeded",
+                                 mode="full-interp" if hit(bad_mode) else "full+duals",
+                                 linear_solver="mumps" if hit(mismatch) else "ma57", wall=0.01, w_sha="w")
+
+    old, SS._hop = SS._hop, fake_hop
+    try:
+        return SS._task_confirm(task), calls, task
+    finally:
+        SS._hop = old
+
+
+rec, calls, task = run_confirm("star")
+ok("_task_confirm, star: accepted, its .mat written, round trip within tol -> branch_ok, delta_rev, a repro",
+   rec["status"] == "accepted" and rec["path"] == "star" and calls == ["star", "roundtrip"]
+   and os.path.isfile(task["row_mat"]) and rec["branch_ok"] is True and abs(rec["rt_residual_s"] - 4e-4) < 1e-12
+   and abs(rec["delta_rev_s"] - (17.95 - 18.0004)) < 1e-12 and abs(rec["nlp_delta_s"] + 0.05) < 1e-12
+   and rec["repro"].startswith("from MLTP import MLTP") and "warm_start=r'" in rec["repro"])
+rec, calls, _ = run_confirm("bridge2", fail=("star",))
+ok("_task_confirm: a star hop that does not converge is bridged in 2 steps (never cold), repro chains them",
+   rec["status"] == "accepted" and rec["path"] == "bridge2"
+   and calls == ["star", "bridge2 1/2", "bridge2 2/2", "roundtrip"] and "reduce(" in rec["repro"])
+rec, calls, _ = run_confirm("bridge4", fail=("star", "bridge2 2/2"))
+ok("_task_confirm: bridge2 failing -> bridge4",
+   rec["status"] == "accepted" and rec["path"] == "bridge4"
+   and calls == ["star", "bridge2 1/2", "bridge2 2/2"] + [f"bridge4 {j}/4" for j in range(1, 5)] + ["roundtrip"])
+rec, calls, task = run_confirm("fail", fail=("star", "bridge"))
+ok("_task_confirm: star and both bridges failing -> 'failed' with every reason, no .mat, no round trip",
+   rec["status"] == "failed" and rec["path"] is None and "star:" in rec["reason"] and "bridge2 1/2" in rec["reason"]
+   and "bridge4 1/4" in rec["reason"] and "roundtrip" not in calls and not os.path.isfile(task["row_mat"]))
+rec, calls, _ = run_confirm("mismatch", mismatch=("star",))
+ok("_task_confirm: another linear solver -> 'solver_mismatch', never bridged",
+   rec["status"] == "solver_mismatch" and calls == ["star"])
+rec, calls, _ = run_confirm("mode", fail=("star",), bad_mode=("bridge2 1/2",))
+ok("_task_confirm: a bridge step that is not full+duals stops the ladder ('failed')",
+   rec["status"] == "failed" and calls == ["star", "bridge2 1/2"] and "not full+duals" in rec["reason"])
+rec, calls, task = run_confirm("better", rt_lap=17.99)
+ok("_task_confirm: a round trip below the hub lap by > tol saves the better baseline branch, OFF-BRANCH",
+   rec["status"] == "accepted" and rec["branch_ok"] is False and abs(rec["rt_residual_s"] + 0.01) < 1e-12
+   and rec["rt_better_baseline_file"] == task["rt_path"] and os.path.isfile(task["rt_path"]))
+
+BADKW = [dict(roundtrip="bogus"), dict(TyreModel="Pure"), dict(sampler="grid"), dict(n_samples=0),
+         dict(n_samples=2.5), dict(top_k=-1), dict(n_probes=-2), dict(bridge_steps=(1,)), dict(workers=-1),
+         dict(workers=1.5), dict(screen_workers=0), dict(max_warm_iter=0)]
+bad_ok = []
+for i, bad in enumerate(BADKW):
+    kw = dict(dict(n_samples=8), **bad)
+    msg = raises(ValueError, SS.setup_sweep, [("alpha_RW", 4, 16)], results_root=TMP, name=f"bad_{i}",
+                 verbose=False, **kw)
+    bad_ok.append(msg is not None and not os.path.exists(os.path.join(TMP, f"bad_{i}")))
+ok(f"setup_sweep: {len(BADKW)} bad arguments (sampler included) raise ValueError before any folder exists",
+   all(bad_ok))
+
+bc = userOpts(Ctx(), circuit="Sturn")
+disc = discretise(bc.track, bc.OPT_ds, bc.OPT_d, mesh=bc.mesh, mesh_opts=bc.mesh_opts)
+st4 = nlp_structure(23, len(bc.input_keys), 0, disc["N"], bc.OPT_d, 4)
+good = dict(x_opt=np.zeros((23, disc["N"] + 1)), input_keys=list(bc.input_keys), s_full=disc["s_full"],
+            tyre_set="MF205", circuit="Sturn", nlp=dict(structure=st4, w_opt=np.zeros(3)))
+ok("_resolve_base: a missing file and a non-result raise SweepError; an in-memory full result is a 'ctx'",
+   raises(SS.SweepError, SS._resolve_base, os.path.join(TMP, "nope.mat")) is not None
+   and raises(SS.SweepError, SS._resolve_base, types.SimpleNamespace(data=dict(x_opt=np.zeros((7, 3))))) is not None
+   and SS._resolve_base(types.SimpleNamespace(data=good))[2] == "ctx")
+ok("_precheck_base accepts a base of this NLP's structure", raises(SS.SweepError, SS._precheck_base, good, bc, disc, 4,
+                                                                    "Sturn", "<good>") is None)
+BAD_BASES = [(dict(good, x_opt=np.zeros((7, 3))), "not a full 23-state result"),
+             ({k: v for k, v in good.items() if k != "nlp"}, "no saved NLP vectors"),
+             (dict(good, tyre_set="CopyB"), "tyre_set 'CopyB'"), (dict(good, circuit="BCN"), "circuit 'BCN'"),
+             (dict(good, nlp=dict(structure=dict(st4, N=st4["N"] + 1), w_opt=np.zeros(3))), "N "),
+             (dict(good, input_keys=list(bc.input_keys)[::-1]), "input_keys")]
+pre_ok = []
+for src, why in BAD_BASES:
+    msg = raises(SS.SweepError, SS._precheck_base, src, bc, disc, 4, "Sturn", "<x>")
+    pre_ok.append(msg is not None and why in msg and "does not match" in msg)
+ok("_precheck_base rejects: not a full result, no data.nlp, another tyre_set / circuit / N / input_keys",
+   pre_ok == [True] * len(BAD_BASES))
+
+
+def stub_sweep(tag, records, qss, top_ids, hub_lap, **extra):
+    """A _Sweep at the report / finish stage (one field alpha_RW, base 8), nothing solved."""
+    out = os.path.join(TMP, "stub", tag)
+    os.makedirs(os.path.join(out, "rows"), exist_ok=True)
+    sw = SS._Sweep(dict(n_samples=len(qss) - 1, circuit="Sturn", name=tag, vi=60.0, ni=float("nan"),
+                        AeroConfig="Static", ATD="On", Electric_4Motors="Off", TyreModel="CombinedSlip",
+                        sampler="sobol", seed=0, top_k=len(top_ids), n_probes=0, base=None, confirm=True,
+                        roundtrip="all", max_warm_iter=250, bridge_steps=(2, 4), tol_branch_s=1e-3,
+                        resolve_s=1e-4, finish=False, workers=1, screen_workers=1, pin_hsl=False,
+                        load_model="vehModel", ds_fine=1.0, results_root=os.path.dirname(out), plot=False,
+                        resume=True, verbose=False))
+    order = sorted(range(len(qss)), key=lambda i: (qss[i], i))
+    sw.__dict__.update(
+        n=len(qss) - 1, eATD="On", eEM4="Off", base_ov={}, kw={}, hop_ip={"max_iter": 250}, cold_ip={},
+        fp="f" * 64, mhash="m" * 64, fields=["alpha_RW"], kept=[("alpha_RW", 4.0, 16.0)],
+        base_vals={"alpha_RW": 8.0}, out_dir=out, plan={}, flags={}, dropped={}, records=dict(records),
+        samples=[dict(row_id=i, qss_lap_s=q, qss_rank=order.index(i) + 1) for i, q in enumerate(qss)],
+        top_ids=list(top_ids), shortlist=[(0, "baseline")] + [(i, "top") for i in top_ids],
+        qss=dict(reused=True, wall_s=None, workers=0), P=1, resumed=False,
+        hub=dict(lap_s=hub_lap, check=dict(iters=0, wall_s=1.0, mode="full+duals", linear_solver="ma57",
+                                           w_sha="h")),
+        paths={k: os.path.join(out, v) for k, v in dict(
+            hub="hub.mat", rows="rows", logs="logs", finish="finish", confirmed="confirmed.csv",
+            summary="summary.json", report="report.html", plan="plan.json", samples="samples.csv").items()})
+    sw.__dict__.update(extra)
+    return sw
+
+
+def acc_rec(tag, rid, lap, rt, hub_lap, alpha):
+    """rows/<id>.json of an accepted row whose round trip ended rt seconds from the hub."""
+    return dict(row_id=rid, kind="top", overrides={"alpha_RW": alpha}, status="accepted", nlp_lap_s=lap,
+                iters=5, path="star", warm_start_mode="full+duals", linear_solver="ma57", w_sha="w",
+                result_file=os.path.join(TMP, "stub", tag, "rows", f"{rid}.mat"), repro=f"repro {rid}",
+                reason=None, wall_s=1.0, rt_ok=True, rt_residual_s=rt, branch_ok=abs(rt) <= 1e-3,
+                rt_lap_s=hub_lap + rt, delta_rev_s=lap - (hub_lap + rt), rt_iters=3)
+
+
+recs = {1: acc_rec("offb", 1, H - 0.02373, -0.009994, H, 10.0), 2: acc_rec("offb", 2, H - 0.021944, 2e-5, H, 11.0),
+        3: dict(row_id=3, kind="top", overrides={"alpha_RW": 12.0}, status="failed", wall_s=9.0,
+                reason="star: Maximum_Iterations_Exceeded after 250 iterations"),
+        4: dict(acc_rec("offb", 4, H + 0.05, 0.004, H, 5.0), kind="probe")}
+sw = stub_sweep("offb", recs, qss=[18.70, 18.69, 18.68, 18.60, 18.75], top_ids=[3, 2, 1], hub_lap=H)
+res, w = caught(sw.finalise)
+b = res.best
+ok("report: best = the OFF-BRANCH row 1 with its flag, residual, delta bracket, result file and repro",
+   b["row_id"] == 1 and b["branch_ok"] is False and abs(b["rt_residual_s"] + 0.009994) < 1e-12
+   and abs(b["delta_bracket_s"][0] + 0.02373) < 1e-9 and abs(b["delta_bracket_s"][1] + 0.013736) < 1e-9
+   and os.path.normpath(b["result_file"]) == os.path.normpath(recs[1]["result_file"]) and b["repro"] == "repro 1"
+   and b["vp_overrides"] == {"alpha_RW": 10.0})
+ok("report: row 2 sits inside row 1's bracket -> unresolved both ways, although 1.8 ms apart",
+   b["unresolved_with"] == [2] and {r["row_id"]: r["unresolved_with"] for r in res.confirmed}[2] == [1])
+ok("report: warned about the OFF-BRANCH winner, 2 of 3 rows off-branch, the failed confirmation and "
+   "the untrusted screen",
+   any("best row 1 is OFF-BRANCH" in x for x in w) and any("2 of 3 round-tripped rows are OFF-BRANCH" in x for x in w)
+   and any("1 of 4 confirmation(s) did not succeed" in x for x in w)
+   and any("not trusted" in x and "fewer than 6" in x and "QSS-best row 3" in x for x in w))
+ok("report: the failed QSS-best row makes the regret unknown; failures on the result and in summary.json",
+   res.metrics["qss_best_row"] == 3 and not res.metrics["qss_best_confirmed"]
+   and math.isnan(res.metrics["top1_regret_s"]) and not res.metrics["screen_trusted"]
+   and [f["row_id"] for f in res.failures] == [3] and res.failures[0]["status"] == "failed"
+   and S.read_json(sw.paths["summary"])["failures"] == res.failures
+   and abs(S.read_json(sw.paths["summary"])["rt_residual_max_s"] - 0.009994) < 1e-12
+   and S.read_json(sw.paths["summary"])["best"]["repro"] == "repro 1")
+recs = {1: acc_rec("base", 1, H + 0.01, 2e-4, H, 10.0), 2: acc_rec("base", 2, H + 0.02, -1e-4, H, 11.0)}
+sw = stub_sweep("base", recs, qss=[18.70, 18.69, 18.68], top_ids=[2, 1], hub_lap=H)
+res, w = caught(sw.finalise)
+ok("report: the baseline as best is on the hub's branch, its result file is hub.mat, repro re-solves the hub",
+   res.best["row_id"] == 0 and res.best["branch_ok"] is True and res.best["delta_s"] == 0.0
+   and res.best["result_file"].endswith("hub.mat") and res.best["repro"].startswith("from MLTP import MLTP")
+   and "hub.mat" in res.best["repro"] and not any("OFF-BRANCH" in x for x in w) and res.failures == [])
+
+
+class FakeRunner:                               # the _Runner interface, canned results
+    def __init__(self, results):
+        self.results, self.submitted, self.inline, self.n_submitted = results, [], False, 0
+
+    def submit(self, task):
+        self.submitted.append(task)
+
+    def collect(self, ids, on_done=None):
+        out = {t: self.results[t] for t in ids}
+        for t in ids if on_done else ():
+            on_done(next(x for x in self.submitted if x["id"] == t), out[t])
+        return out
+
+
+recs = {1: acc_rec("fin", 1, H - 0.02, 2e-4, H, 10.0)}
+eligible = [["alpha_RW", 4.0, 16.0]]
+sw = stub_sweep("fin", recs, qss=[18.70, 18.69], top_ids=[1], hub_lap=H,
+                runner=FakeRunner({"finish": dict(status="skipped", reason="stand-in: warm start rejected")}))
+fjson = os.path.join(sw.paths["finish"], "finish.json")
+S.write_json_atomic(fjson, dict(fingerprint=sw.fp, winner_row=1, eligible=eligible, design_status="crashed",
+                                status="crashed"))
+fin = dict(status="skipped", fingerprint=sw.fp, eligible=eligible, excluded={})    # as run_finish passes it
+_, w = caught(sw._finish_solve, fin, eligible)
+ok("finish: a crashed finish.json is not reused, optimise_design is submitted again (stand-in runner)",
+   [t["id"] for t in sw.runner.submitted] == ["finish"] and sw.runner.submitted[0]["winner"] == {"alpha_RW": 10.0}
+   and fin["design_status"] == "skipped" and S.read_json(fjson)["design_status"] == "skipped"
+   and any("finish skipped" in x for x in w))
+sw.runner = FakeRunner({})
+fin = dict(status="skipped", fingerprint=sw.fp, eligible=eligible, excluded={})
+sw._finish_solve(fin, eligible)
+ok("finish: a skipped / failed finish.json of this sweep is reused, nothing submitted",
+   sw.runner.submitted == [] and fin["design_status"] == "skipped")
+sw.TyreModel = "PureSlip"
+sw.flags = {"alpha_RW": dict(promotion_safe=True, primary=True, phase2_free=True, scale_changed=False)}
+_, w = caught(sw.run_finish)
+ok("finish with TyreModel PureSlip: skipped with its reason (optimise_design is CombinedSlip only)",
+   sw.fin["status"] == "skipped" and "CombinedSlip" in sw.fin["reason"] and any("finish skipped" in x for x in w))
+sw.TyreModel = "CombinedSlip"
+sw.flags = {"alpha_RW": dict(promotion_safe=False, primary=False, phase2_free=True, scale_changed=False)}
+_, w = caught(sw.run_finish)
+ok("finish without a promotion-safe field: skipped, the field excluded with its reason",
+   sw.fin["reason"] == "no promotion-safe field" and "Pacejka" in sw.fin["excluded"]["alpha_RW"]
+   and any("not promotable" in x for x in w))
+
+def screen_workers_picked(n, row_s, cold, n_running):
+    """The worker count _Sweep.screen gives the n-row batch (screen_workers='auto'), with
+    screen_batch replaced by a recorder whose baseline row takes row_s seconds."""
+    sw = stub_sweep(f"scr_{n}_{cold}_{n_running}", {}, qss=[18.7, 18.7], top_ids=[], hub_lap=H)
+    U = (np.arange(n, dtype=float).reshape(-1, 1) + 0.5) / n
+    sw.__dict__.update(n=n, stored=None, U=U, u0=np.array([1 / 3]), screen_workers="auto", top_k=2, n_probes=1,
+                       hub_cold_running=cold, P=2, row_vals=[{"alpha_RW": 8.0}] + [{"alpha_RW": 4 + 12 * u} for u in U[:, 0]],
+                       runner=None if n_running is None else types.SimpleNamespace(inline=False,
+                                                                                   n_running=lambda: n_running))
+    sw.row_ovs = [{}] + sw.row_vals[1:]
+    calls = []
+
+    def recorder(circuit, ovs, workers=1, **kw):
+        calls.append(workers)
+        k = len(ovs)
+        return dict(lap_time=18.7 + np.arange(k) * 1e-3, status=["ok"] * k, vi_feasible=np.ones(k, bool),
+                    error=[None] * k, warnings=[], wall_s=row_s * k)
+
+    old, SS.screen_batch = SS.screen_batch, recorder
+    try:
+        sw.screen()
+    finally:
+        SS.screen_batch = old
+    return calls[1]
+
+
+aw = lambda n: S.auto_workers(math.ceil(n / 256))           # noqa: E731
+ok("screen_workers='auto': serial while it hides behind a cold hub (or is short); past that a pool on the "
+   "cores the NLP tasks leave",
+   screen_workers_picked(1024, 0.01, True, 1) == 1 and screen_workers_picked(200, 0.01, False, None) == 1
+   and screen_workers_picked(4096, 0.01, True, 1) == max(1, aw(4096) - 1)
+   and screen_workers_picked(4096, 0.01, True, 2) == max(1, aw(4096) - 2)
+   and screen_workers_picked(1024, 0.01, False, None) == aw(1024))
+
+seen, got = [], []
+rn = SS._Runner(0, dict(root=HERE, circuit="Sturn"), inline=True, say=lambda m: None)
+rn._init_fn, rn._run_fn = (lambda spec: seen.append("init")), (lambda t: dict(status="done", id=t["id"]))
+rn.submit(dict(id="a"))
+rn.submit(dict(id="b"))
+out = rn.collect(["a", "b"], on_done=lambda t, x: got.append(t["id"]))
+rn.collect(["a"], on_done=lambda t, x: got.append("again"))
+ok("inline runner (workers=0): the initializer once, results in order, on_done once per task",
+   seen == ["init"] and [out[k]["status"] for k in "ab"] == ["done", "done"] and got == ["a", "b"])
+
+
+def import_closure(mods, root=HERE):
+    """Repo files a plain import of ``mods`` can reach (every import statement, nested and
+    relative ones included, plus the package __init__ of a submodule)."""
+    def resolve(mod):
+        for cand in (os.path.join(root, *mod.split(".")) + ".py", os.path.join(root, *mod.split("."), "__init__.py")):
+            if os.path.isfile(cand):
+                return os.path.relpath(cand, root).replace("\\", "/")
+        return None
+
+    seen_f, todo = set(), [resolve(m) for m in mods]
+    while todo:
+        f = todo.pop()
+        if f is None or f in seen_f:
+            continue
+        seen_f.add(f)
+        pkg = os.path.dirname(f).replace("/", ".")
+        with open(os.path.join(root, f), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level <= 1:
+                base = node.module if node.level == 0 else ".".join(x for x in (pkg, node.module) if x)
+                names = [base] + [f"{base}.{a.name}" for a in node.names] if base else []
+            for nm in names:
+                parts = nm.split(".")
+                todo += [resolve(".".join(parts[:i])) for i in range(1, len(parts) + 1)]
+    return seen_f
+
+
+closure = import_closure(["MLTP", "MLTP_initial", "MLTP_screen", "MLTP_paramOptim", "setup_sweep"])
+ok("the code hash covers the import closure of the solve entry points (minus the plot-only files)",
+   {"functions/simpleMA.py", "functions/importfile.py", "setup_sweep.py"} <= closure
+   and closure - set(SS._HASH_EXEMPT) <= set(SS._CODE_FILES)
+   and all(os.path.isfile(os.path.join(HERE, f)) for f in SS._CODE_FILES))
+hroots = [os.path.join(TMP, "hash1"), os.path.join(TMP, "hash2")]   # copies: immune to concurrent edits
+for src, dst in ((HERE, hroots[0]), (hroots[0], hroots[1])):
+    for f in SS._CODE_FILES:
+        os.makedirs(os.path.dirname(os.path.join(dst, f)), exist_ok=True)
+        shutil.copyfile(os.path.join(src, f), os.path.join(dst, f))
+h1, h2 = (S.model_hash(SS._CODE_FILES, root=d) for d in hroots)
+with open(os.path.join(hroots[1], "functions", "simpleMA.py"), "a", encoding="utf-8") as fh:
+    fh.write("\n# edited\n")
+ok("model_hash: location independent (a byte copy hashes alike); an edit to functions/simpleMA.py changes it",
+   h1 == h2 and S.model_hash(SS._CODE_FILES, root=hroots[1]) != h1)
 
 # =============================================================================
 print("2. screen_batch == screen_sweep (exact ==)")
@@ -253,6 +686,10 @@ ok("a row that raises is 'invalid' with the exception text", bb["status"] == ["i
    and bb["error"][0].startswith("ZeroDivisionError") and bb["lap_time"][1] == lap0)
 ok("workers / chunk validation", raises(ValueError, screen_batch, "Sturn", [{}], workers=0) is not None
    and raises(ValueError, screen_batch, "Sturn", [{}], chunk=0) is not None)
+bb, w = caught(screen_batch, "Sturn", [{}, {"mb": 1800.0}], ATD="On", Electric_4Motors="On")
+ok("warnings are captured per row: the userOpts ATD + 4-motor guard once in bb['warnings'], none leaks",
+   len(bb["warnings"]) == 1 and "cannot both be On" in bb["warnings"][0] and w == []
+   and bb["status"] == ["ok", "ok"])
 
 if not NO_CASADI:
     code = r"""
@@ -310,6 +747,77 @@ ok("sections 1-3 pass with casadi blocked (child exit 0)",
 ok("the 4 rows screened without casadi == this process", four == list(map(float, ref["default"][:4])))
 
 # =============================================================================
+print("3b. _Runner recovery (stand-in tasks in spawn pools, `python -c` child)")
+STANDIN = '''"""Stand-in task functions for test_setup_sweep.py section 3b (written to a temp dir)."""
+import os
+import threading
+import time
+
+
+def init(spec):
+    pass
+
+
+def run(task):
+    die = task.get("die")
+    if die == "always" or (die == "once" and not os.path.exists(task["marker"])):
+        open(task["marker"], "w").close()
+        os._exit(3)                                   # a native crash / OOM kill stand-in
+    if task.get("die_idle"):
+        threading.Timer(0.3, lambda: os._exit(4)).start()
+    time.sleep(task.get("sleep", 0.0))
+    return dict(status="done", pid=os.getpid())
+'''
+SDIR = os.path.join(TMP, "standin")
+os.makedirs(SDIR, exist_ok=True)
+with open(os.path.join(SDIR, "sweep_standin.py"), "w", encoding="utf-8") as fh:
+    fh.write(STANDIN)
+code = r"""
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import setup_sweep as SS
+import sweep_standin as F
+D, out, lines = sys.argv[1], {}, []
+r = SS._Runner(2, dict(root=os.getcwd(), circuit="Sturn"), inline=False, say=lines.append)
+r._init_fn, r._run_fn = F.init, F.run
+
+
+def wave(name, tasks):
+    for t in tasks:
+        r.submit(dict(t, marker=os.path.join(D, t["id"] + ".marker")))
+    out[name] = {k: v["status"] for k, v in r.collect([t["id"] for t in tasks]).items()}
+
+
+wave("w1", [dict(id="a", die="once"), dict(id="b", sleep=0.5)])
+wave("w2", [dict(id="x", die="once")] + [dict(id=f"y{i}", sleep=0.2) for i in range(6)])
+wave("w3", [dict(id="p", die="always")] + [dict(id=f"q{i}", sleep=0.2) for i in range(3)])
+wave("w4", [dict(id="k", die_idle=True)])
+time.sleep(2.0)                                       # the worker that ran k dies while idle
+try:
+    wave("w5", [dict(id="z")])
+except Exception as exc:
+    out["w5"] = f"raised {type(exc).__name__}: {exc}"
+out["breaks"], out["lines"] = r.n_breaks, lines
+r.close()
+print("RESULT " + json.dumps(out))
+"""
+r = subprocess.run([PY, "-c", code, SDIR], cwd=HERE, capture_output=True, text=True, timeout=600)
+RR = json.loads(r.stdout.split("RESULT ", 1)[1]) if "RESULT " in r.stdout else None
+if RR is None:
+    print(r.stdout[-3000:], r.stderr[-3000:])
+ok("the runner child ran", RR is not None)
+ok("a worker that dies once: its task and its neighbour re-run one per process and finish",
+   RR["w1"] == {"a": "done", "b": "done"})
+ok("a later wave after that break: x dies once, all seven finish (no run-wide recovery budget)",
+   RR["w2"] == {"x": "done", **{f"y{i}": "done" for i in range(6)}})
+ok("a poison task: 'crashed' once it died alone too; its three neighbours finish",
+   RR["w3"] == {"p": "crashed", **{f"q{i}": "done" for i in range(3)}})
+ok("a worker that died while idle: the next submit does not raise, its task finishes",
+   RR["w4"] == {"k": "done"} and RR["w5"] == {"z": "done"})
+ok("four shared-pool breaks handled; every one that held tasks reported",
+   RR["breaks"] == 4 and sum("one per fresh worker process" in x for x in RR["lines"]) >= 3)
+
+# =============================================================================
 print("4. field classification (casadi, no solve)")
 from functions.context import Ctx
 from userOpts import userOpts
@@ -333,6 +841,11 @@ ok("ATD Off: brkB, Tdist live; Cd inert",
    [live["ATD Off"][f] for f in ("brkB", "Tdist", "Cd")] == [True, True, False])
 ok("EM4 On: Tdist inert, brkB live, Cd inert",
    [live["EM4 On"][f] for f in ("brkB", "Tdist", "Cd")] == [True, False, False])
+PO = [("brkB", 0.0, 1.0), ("Tdist", 0.0, 1.0), ("alpha_FL", 0.0, 10.0), ("alpha_FR", 0.0, 10.0),
+      ("alpha_RW", 0.0, 30.0), ("alpha_TW", -12.0, 12.0)]           # MLTP_paramOptim's defaults
+fa = SS.classify_fields(PO, "Sturn", AeroConfig="AALB")
+ok("AALB (ATD On): all six default paramOptim fields are NLP-inert (a sweep would drop them)",
+   sorted(fa) == sorted(f for f, *_ in PO) and all(fa[f]["nlp_live"] is False for f in fa))
 ok("scale_changed for Tbrake_max and Rw only",
    {f for f in FL if FL[f]["scale_changed"]} == {"Tbrake_max", "Rw"})
 ok("promotion_safe: alpha_RW yes; mb, hcg, gamma_fl, zeta_fl, Tbrake_max no",
@@ -367,7 +880,8 @@ with warnings.catch_warnings(record=True) as w:
 res["warn1"] = [str(x.message) for x in w]
 res["r1"] = dict(dropped=r1.dropped, hub=r1.hub, confirmed=r1.confirmed, n_tasks_run=r1.n_tasks_run,
                  shortlist=r1.shortlist, files=r1.files, metrics_keys=sorted(r1.metrics),
-                 best=r1.best, throughput=r1.throughput)
+                 best=r1.best, throughput=r1.throughput, failures=r1.failures,
+                 trusted=r1.metrics["screen_trusted"], n_metric=r1.metrics["n"])
 d1 = os.path.join(OUT, "mini")
 csv1 = open(os.path.join(d1, "confirmed.csv"), "rb").read()
 t = time.perf_counter()
@@ -404,6 +918,9 @@ ok("hub: solved cold in a worker, then checked full+duals, a good status, 0 iter
    r1["hub"]["source"] == "cold" and r1["hub"]["cold"]["status"] in GOOD_STATUS
    and chk["mode"] == "full+duals" and chk["status"] in GOOD_STATUS and chk["iters"] == 0
    and r1["hub"]["check_ok"] and not r1["hub"]["rehubbed"])
+ok("hub on the default base: one candidate ('cold', no continuation needed), kept as hub.mat",
+   list(r1["hub"]["candidates"]) == ["cold"] and r1["hub"]["chosen"] == "cold"
+   and r1["hub"]["candidates"]["cold"]["ok"] and os.path.isfile(os.path.join(d1, "hub_candidates", "cold.mat")))
 conf = {c["row_id"]: c for c in r1["confirmed"]}
 ok("shortlist = baseline + 2 top + 1 probe, all confirmed", len(r1["shortlist"]) == 4
    and sorted(conf) == sorted(s[0] for s in r1["shortlist"]))
@@ -448,6 +965,15 @@ ok("summary.json: metrics, noise floor, best (vp_overrides), timings, throughput
                                                 "top1_regret_s", "nlp_best_in_qss_top_k", "slope",
                                                 "sign_agreement", "screen_trusted"))
    and set(r1["best"]["vp_overrides"]) <= {"alpha_RW", "hcg"} and r1["throughput"]["nlp_workers"] == 2)
+bst = r1["best"]
+ok("best carries its branch flag, residual, delta bracket, result file and repro; failures on the result",
+   all(k in bst for k in ("branch_ok", "rt_ok", "rt_residual_s", "delta_bracket_s", "result_file", "repro"))
+   and os.path.isfile(bst["result_file"]) and "from MLTP import MLTP" in bst["repro"]
+   and bst["delta_bracket_s"][0] <= bst["delta_s"] <= bst["delta_bracket_s"][1]
+   and r1["failures"] == [] and sm["best"] == bst)
+ok("4 confirmed rows are too few to trust the screen: screen_trusted False and warned",
+   r1["n_metric"] == 4 and r1["trusted"] is False
+   and any("not trusted" in x and "fewer than 6" in x for x in R["warn1"]))
 ok("resume: 0 NLP tasks, confirmed.csv byte-identical",
    R["resume"]["n_tasks_run"] == 0 and R["resume"]["csv_same"])
 r3 = R["r3"]
