@@ -1,6 +1,6 @@
 """app/vp_params.py registry invariants (pure Python, no Qt)."""
 import os, sys
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from vehParams import default_primaries, _default_mf, _MF205_OVERRIDES, PRIMARY_KEYS, MF_KEYS
 from app.vp_params import PARAM_GROUPS, meta_for, all_vp_defaults, fmt_sci
 

@@ -3,7 +3,7 @@
 Roadmap Items 7 (+ the Item 4 enabler): a solved 23-state NLP is saved with its
 primal vector and multipliers (data["nlp"]), and a neighbouring problem of
 IDENTICAL structure can be re-solved from them in O(10) IPOPT iterations instead
-of O(1000). Everything here is casadi-free (unit-tested by test_warmstart.py):
+of O(1000). Everything here is casadi-free (unit-tested by tests/test_warmstart.py):
 
   warm_start_ipopt_opts()  the IPOPT dual warm-start recipe. Applied ONLY to a
                            dual-seeded resolve, never to a cold solve.

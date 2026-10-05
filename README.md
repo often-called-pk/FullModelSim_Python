@@ -28,7 +28,7 @@ There are two ways to use it:
 | Desktop GUI app (`app/`) | ✅ working |
 | Standalone Windows `.exe` (PyInstaller) | ✅ builds & runs; verified end-to-end |
 | Coin-HSL inside the frozen exe (`sys._MEIPASS`) | ✅ verified (`ma57`, self-contained) |
-| Automated test suite (27 files, mostly casadi-free) | ✅ 27/27 |
+| Automated test suite (28 files in `tests/`, mostly casadi-free) | ✅ 28/28 |
 
 The frozen build has been verified on the dev machine end-to-end (Sturn solve on
 `ma57` from the bundled Coin-HSL → `Optimal Solution Found`, results + plots
@@ -132,22 +132,26 @@ python bench_linear_solver.py
 
 ## Tests
 
-There is **no pytest**, the 27 `test_*.py` files are plain scripts whose asserts
+There is **no pytest**, the 28 `tests/test_*.py` files are plain scripts whose asserts
 run at module top level. Run a file directly; the finest selectable unit is a
-whole file. Run the full suite (each in turn):
+whole file. Every test starts with `import _bootstrap` (`tests/_bootstrap.py`), which puts
+the repo root on `sys.path` and makes it the working directory, so a test runs from any
+directory and writes its scratch files to a temp dir, never the repo. Run the full suite
+(each in turn):
 
 ```powershell
-foreach ($f in Get-ChildItem test_*.py) { python $f.Name }
+python tests\test_foundation.py                                   # one file
+foreach ($f in Get-ChildItem tests\test_*.py) { python $f.FullName }
 ```
 
 These cover the numerical/config core (collocation, mesh, warm start, QSS screener),
-plus the app's config/serialisation/results layer. Most need no casadi (23 of the 27
+plus the app's config/serialisation/results layer. Most need no casadi (24 of the 28
 exit 0 with it blocked, four of them only by printing SKIP); `test_casadi_opts.py`,
 `test_hsl.py`, `test_mltp_params.py` and `test_setup_sweep.py` need it, and
 `test_screen.py` builds the 23-state `vehModel` for its CasADi anchors when casadi is
 present (it needs the tracked `Data/DATA_AA.mat`). Only `test_setup_sweep.py` (about a
-minute) and `test_paramoptim_warmstart.py` (capped at 5 iterations) solve the real
-23-state NLP with IPOPT. Smoke-test the symbolic model with:
+minute), `test_paramoptim_warmstart.py` and `test_ladder.py` (both capped at 5 iterations)
+solve the real 23-state NLP with IPOPT. Smoke-test the symbolic model with:
 
 ```powershell
 python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
@@ -169,6 +173,7 @@ functions/                      # transcription engine, collocation, hsl, .mat I
 app/                            # PySide6 GUI: main, mainwindow, runconfig, solve_runner,
                                 #   results, paths, presets/default.json
 build/                          # PyInstaller spec, runtime hook, version info, build README
+tests/                          # plain-script test suite: test_*.py + _bootstrap.py
 
 Circuits/   Data/DATA_AA.mat    # inputs (real track .mat, aero coefficients)
 Results/    Plots/              # outputs (.mat results, Plotly HTML figures)

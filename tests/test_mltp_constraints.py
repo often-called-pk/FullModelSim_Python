@@ -1,6 +1,6 @@
 """23-state NLP bounds vs MLTP.m / vehModel.m (plain script, no pytest). Run from the repo root:
 
-    venv\\Scripts\\python.exe test_mltp_constraints.py
+    venv\\Scripts\\python.exe tests\\test_mltp_constraints.py
 
 Pins the two port fixes of 2026-10-04 (MATLAB is the reference; both were Python gaps):
   1. MLTP.build_path_constraints follows MLTP.m's `switch TyreModel`: CombinedSlip (the
@@ -28,16 +28,15 @@ from types import SimpleNamespace
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-os.chdir(HERE)                                   # MLTP() reads Circuits/ and Data/ relatively
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+ROOT = _bootstrap.ROOT
 
 try:
     import casadi as ca
 except ImportError as exc:                                      # pragma: no cover
     print(f"SKIP test_mltp_constraints: casadi not importable ({exc})")
     sys.exit(0)
-if not os.path.exists(os.path.join(HERE, "Data", "DATA_AA.mat")):   # pragma: no cover
+if not os.path.exists(os.path.join(ROOT, "Data", "DATA_AA.mat")):   # pragma: no cover
     print("SKIP test_mltp_constraints: Data/DATA_AA.mat missing")
     sys.exit(0)
 

@@ -1,7 +1,7 @@
 """build_solve_kwargs maps a cfg dict -> MLTP kwargs (absolute resource/output
 dirs, ni-null -> nan, overrides passed through). No solving."""
 import os, sys, math
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from headless_solve import build_solve_kwargs
 
 def ok(name, cond):

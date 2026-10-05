@@ -4,10 +4,10 @@ Sections 1-3 are casadi-free (resolution / path / opts-rewriting via an injected
 fake probe). Section 4 is a guarded smoke that only runs if a real CoinHSL DLL
 resolves on this machine. Run from the repo root:
 
-    venv\\Scripts\\python.exe test_hsl.py
+    venv\\Scripts\\python.exe tests\\test_hsl.py
 """
 import os, sys, tempfile
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 import functions.hsl as H
 

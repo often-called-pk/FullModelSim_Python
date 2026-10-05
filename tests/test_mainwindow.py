@@ -4,7 +4,7 @@ combos reach RunConfig / cfg.json and the Setup table (defaults, reset,
 changed-value highlighting) follows the selected tyre set."""
 import os, sys, shutil, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from PySide6.QtWidgets import QApplication
 from app.mainwindow import MainWindow
 from app.vp_params import all_vp_defaults
@@ -12,7 +12,7 @@ from app import results
 import headless_solve
 from vehParams import PRIMARY_KEYS, MF_KEYS, _MF205_OVERRIDES
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = _bootstrap.ROOT
 
 def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")

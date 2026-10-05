@@ -39,7 +39,7 @@ catches what the tiny floors (1e-9 1/m for |k| on a 1 km lap) let through: 1e-6
 rounding on the straights would otherwise become k_ref / dk_ref, put O(1) noise
 into M there and pin the corners at ds_min; with the test such a track gets its
 exact-zero mesh up to O(noise / peak) (the knots move ~3 mm for 1e-6 noise next
-to the 0.08 1/m hairpin in test_transcription.py). It also catches a low pct
+to the 0.08 1/m hairpin in tests/test_transcription.py). It also catches a low pct
 landing in the smoothing tails next to exact-zero straights (at OPT_ds = 30,
 pct = 75 on ZigZag or pct = 50 on VirtualTrack, which would otherwise pin 33 / 11
 intervals at ds_min). The fallback is the max, not a percentile of the samples

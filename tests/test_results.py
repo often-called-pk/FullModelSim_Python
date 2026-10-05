@@ -1,11 +1,15 @@
 """Results parser: path scheme, .mat summary (lap_time + final energy), plot listing."""
-import os, sys
+import os, sys, atexit, shutil, tempfile
 import numpy as np
 import scipy.io as sio
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from app import results
 
-TMP = os.environ.get("CLAUDE_JOB_DIR_TMP", os.path.dirname(__file__))
+# scratch files: CLAUDE_JOB_DIR_TMP when set, else a fresh temp dir removed at exit (never the repo)
+TMP = os.environ.get("CLAUDE_JOB_DIR_TMP")
+if not TMP:
+    TMP = tempfile.mkdtemp(prefix="results_test_")
+    atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
 def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")

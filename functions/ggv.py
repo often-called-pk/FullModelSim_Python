@@ -23,7 +23,7 @@ Aero      Cl_front/rear/left/right and Cd are built from ctx.aero exactly as in
           (zero for the shipped static set: Cs0 = 0, alpha_TW = 0).
 Loads     load_model='vehModel' (default) reproduces the quasi-steady vertical
           equilibrium of the 23-state model (checked against a CasADi
-          rootfinder in test_screen.py):
+          rootfinder in tests/test_screen.py):
             * total tyre load = vp.ms*g + 4*vp.mus*g + F_lift: vehModel's
               unsprung equation subtracts vp.mus*g (the TOTAL unsprung mass) at
               every corner, so the static sum is ~26.0 kN, not m*g = 20.5 kN;

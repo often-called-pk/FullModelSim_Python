@@ -3,7 +3,7 @@ empty overrides reproduce defaults; unknown keys raise; mf overrides apply.
 Also checks the override reaches the model via userOpts."""
 import os, sys, warnings
 import numpy as np
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from functions.context import Ctx
 from vehParams import vehParams, default_primaries, PRIMARY_KEYS, MF_KEYS
 from userOpts import userOpts

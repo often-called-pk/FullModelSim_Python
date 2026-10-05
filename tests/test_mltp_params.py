@@ -1,7 +1,7 @@
 """MLTP exposes plots_dir and forwards useropts_kwargs to the warm-start call.
 Signature-level checks only (no solve)."""
 import os, sys, inspect
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import MLTP as mltp_mod
 
 def ok(name, cond):

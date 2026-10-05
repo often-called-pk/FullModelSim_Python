@@ -1,7 +1,7 @@
 """MLTP_paramOptim.optimise_design warm-started from a full 23-state result (plain script,
 no pytest). Run from the repo root:
 
-    venv\\Scripts\\python.exe test_paramoptim_warmstart.py
+    venv\\Scripts\\python.exe tests\\test_paramoptim_warmstart.py
 
 optimise_design appends nP static design parameters P to the decision vector and adds no
 constraint, so a plain MLTP result of the same NLP minus that P block seeds it exactly:
@@ -31,9 +31,8 @@ from types import SimpleNamespace
 import numpy as np
 import scipy.io as sio
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-os.chdir(HERE)                                   # optimise_design reads Circuits/ and Data/ relatively
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+ROOT = _bootstrap.ROOT
 
 import functions.warmstart as W
 from functions.importfile import load_solution
@@ -173,7 +172,7 @@ except ImportError as exc:                                                   # p
     print(f"  [SKIP] sections 3-4: casadi not importable ({exc})")
     print("\nALL paramOptim warm-start TESTS PASSED")
     sys.exit(0)
-if not os.path.exists(os.path.join(HERE, "Data", "DATA_AA.mat")):            # pragma: no cover
+if not os.path.exists(os.path.join(ROOT, "Data", "DATA_AA.mat")):            # pragma: no cover
     print("  [SKIP] sections 3-4: Data/DATA_AA.mat missing")
     print("\nALL paramOptim warm-start TESTS PASSED")
     sys.exit(0)

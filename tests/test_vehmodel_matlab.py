@@ -19,7 +19,7 @@ A deliberate physics change must update these pins, functions/ggv.py
 (load_model='vehModel') and CLAUDE.md together.
 Needs casadi and Data/DATA_AA.mat (prints SKIP and exits 0 otherwise). Run from the repo root:
 
-    venv\\Scripts\\python.exe test_vehmodel_matlab.py
+    venv\\Scripts\\python.exe tests\\test_vehmodel_matlab.py
 """
 import os
 import sys
@@ -27,9 +27,8 @@ import warnings
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-DATA = os.path.join(HERE, "Data")
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+DATA = os.path.join(_bootstrap.ROOT, "Data")
 
 try:
     import casadi as ca

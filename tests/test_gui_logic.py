@@ -4,7 +4,7 @@ combos default correctly and reach RunConfig, and the inert Setup rows are
 greyed (ATD on: brkB + Tdist; 4 Motors on: Tdist only)."""
 import os, sys, warnings
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from PySide6.QtWidgets import QApplication
 from app.mainwindow import MainWindow, TYRE_SETS, MESHES
 from app.runconfig import RunConfig

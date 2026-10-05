@@ -4,7 +4,7 @@ This is the user's core requirement. Uses scipy only (no casadi/plotly)."""
 import sys, os, tempfile
 import numpy as np
 import scipy.io as sio
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 from functions.importfile import load_solution
 

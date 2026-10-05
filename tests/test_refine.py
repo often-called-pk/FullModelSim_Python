@@ -1,7 +1,7 @@
 """Adaptive h-refinement of the collocation mesh: functions/refine.py and MLTP(refine=...)
 (plain script, no pytest). Run from the repo root:
 
-    venv\\Scripts\\python.exe test_refine.py
+    venv\\Scripts\\python.exe tests\\test_refine.py
 
   1. lagrange_basis against collocation_coeff (C, D)
   2. defect_errors is zero (to rounding) for a solution that is a polynomial of degree
@@ -37,9 +37,8 @@ from types import SimpleNamespace
 import numpy as np
 import scipy.io as sio
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-os.chdir(HERE)                                   # MLTP() reads Circuits/ and Data/ relatively
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+ROOT = _bootstrap.ROOT
 
 try:
     import casadi as ca
@@ -539,7 +538,7 @@ ok("result_stem(..., mesh_requested='adaptive') ends with '_meshAdaptive' (Resul
 
 # =============================================================================
 print("11. MLTP(refine=...) wiring (stand-in build_and_solve_nlp: no NLP is solved)")
-if not os.path.exists(os.path.join(HERE, "Data", "DATA_AA.mat")):   # pragma: no cover
+if not os.path.exists(os.path.join(ROOT, "Data", "DATA_AA.mat")):   # pragma: no cover
     print("  [SKIP] Data/DATA_AA.mat missing")
     print("\nALL refine TESTS PASSED (MLTP wiring skipped)")
     sys.exit(0)

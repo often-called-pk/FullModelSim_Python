@@ -2,7 +2,7 @@
 MLTP_initial(seed=...) and MLTP(ladder=..., homotopy=...) (plain script, no pytest).
 Run from the repo root:
 
-    venv\\Scripts\\python.exe test_ladder.py
+    venv\\Scripts\\python.exe tests\\test_ladder.py
 
 Sections:
   1. registry: resolve_ladder / LADDERS / AUTO_LADDER, homotopy_schedule, friction_overrides
@@ -32,9 +32,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-os.chdir(HERE)                                   # userOpts / MLTP read Circuits/ and Data/ relatively
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 import functions.ladder as LD
 from functions.context import Ctx

@@ -5,7 +5,7 @@ interpolation behind MLTP.warmstart_guesses."""
 import sys, os
 import numpy as np
 from types import SimpleNamespace
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 from functions.transcription import (discretise, unpack_solution,
                                       reconstruct_x_full, reconstruct_track,

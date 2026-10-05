@@ -1,7 +1,7 @@
 """solve_command (dev branch) + headless arg dispatch. Offscreen Qt."""
 import os, sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from app.solve_runner import solve_command
 from app.main import is_headless
 from app.paths import resource_root

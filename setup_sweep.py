@@ -107,7 +107,7 @@ _REPO = os.path.dirname(os.path.abspath(__file__))
 
 # code whose bytes define a confirmation (plan fingerprint; checked again in every
 # worker): the whole import closure of MLTP, MLTP_initial, MLTP_screen, MLTP_paramOptim
-# and this orchestrator (test_setup_sweep.py recomputes the closure and checks this list
+# and this orchestrator (tests/test_setup_sweep.py recomputes the closure and checks this list
 # covers it), minus _HASH_EXEMPT
 _CODE_FILES = ("MLTP.py", "MLTP_initial.py", "MLTP_screen.py", "MLTP_paramOptim.py",
                "vehModel.py", "vehModel_initial.py", "vehParams.py", "userOpts.py",

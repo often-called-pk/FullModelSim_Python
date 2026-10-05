@@ -70,7 +70,7 @@ The NLP build (CasADi SX) takes about 3.5 to 4 s on Sturn and 34.0 s on BCN N=15
 
 ## Per-item results
 
-### Items 1 and 2: CSE, JIT, `f_dyn.map` (`functions/casadi_opts.py`, `functions/transcription.py`, `test_casadi_opts.py`)
+### Items 1 and 2: CSE, JIT, `f_dyn.map` (`functions/casadi_opts.py`, `functions/transcription.py`, `tests/test_casadi_opts.py`)
 
 | change | result |
 |---|---|
@@ -93,7 +93,7 @@ Reference: fine uniform `OPT_ds` 15 (N=36), corrected tyre, Sturn: 17.887 s, 339
 
 BCN (corrected tyre): uniform N=155 (`OPT_ds` 30): 117.423 s, 852 iterations, 968 s wall (its 7-state init ended `Error_In_Step_Computation`); curvature N=103 (`OPT_ds` 45): 117.403 s, 497 iterations, 392 s wall. Factorisation per iteration also falls (860 vs 500 ms), so IPOPT time drops from 853 to 300 s. Default is now `mesh='auto'` (curvature on tracks of 2000 m or more, i.e. BCN-size; uniform below; see Decisions), which only redistributes the knots: N stays round(L / `OPT_ds`), so BCN at the default `OPT_ds` 30 gets a curvature mesh with N=155, the same interval count as before. A reviewer run of the default call (ma57, full `tyre_set='MF205'`) measured auto on BCN at `OPT_ds` 30: 614 iterations, a 116.523 s lap and 566 s solve (pre-fix NLP; after the fix 247 iterations, 116.441 s and ~250 s) against 852 iterations, 117.42 s and 968 s for the uniform N=155 run above (five-coefficient corrected tyre, pre-fix), i.e. 1.7x wall at equal N, and its 7-state init now converges (1072 iterations, Optimal; the uniform-mesh init ended `Error_In_Step_Computation`). ZigZag (auto resolves to curvature, N=79): `Solve_Succeeded`, 481 iterations, 56.216 s; Jarama and Spa also resolve to curvature under auto and are unmeasured. The BCN speedup above (2.5x in wall time) is curvature at `OPT_ds` 45 (N=103) against uniform at `OPT_ds` 30 (N=155); to get the interval reduction pass `OPT_ds=45` or larger with the curvature mesh, e.g. `MLTP(circuit='BCN', OPT_ds=45)`. At equal N the gain is also accuracy (Sturn N=18, table above: lap error +0.72% to +0.16%, 257 to 240 iterations). A result saved on another mesh seeds a new solve by interpolation only (no dual re-injection), so warm-start chains must keep the mesh fixed.
 
-### Items 4 and 7: warm start with duals (`functions/warmstart.py`, `test_warmstart.py`)
+### Items 4 and 7: warm start with duals (`functions/warmstart.py`, `tests/test_warmstart.py`)
 
 `data["nlp"]` is saved with every result; `MLTP(warm_start=<full result .mat or the ctx of an earlier call>, warm_start_duals=True)` re-injects primal and dual solution when the NLP structure matches; `userOpts(ipopt_overrides=)` merges any IPOPT option last. IPOPT recipe (`warm_start_ipopt_opts`): `warm_start_init_point=yes`, all push/frac options 1e-10, `mu_init` 1e-6 (push 1e-8 re-centres for 18 iterations on an identical re-solve).
 
@@ -106,7 +106,7 @@ BCN (corrected tyre): uniform N=155 (`OPT_ds` 30): 117.423 s, 852 iterations, 96
 
 Wall speedup 4.4x to 7.5x. Primal-only (no duals): identical re-solve 30 iterations / 6.0 s; `mb` +3% 76 / 9.7 s. Re-check with the full `tyre_set='MF205'` (nine lateral coefficients), +3% mass: 10 iterations warm with duals, 109 primal-only, 505 cold. Caveats: (1) `brkB` and `Tdist` are inert with ATD On (`vehModel.py:492-496`); a +3% `brkB` re-solved in 0 iterations. (2) Cold solves scatter ~0.01 s between local optima, more than many setup effects: `alpha_RW` +3% reads -6.7 ms cold-vs-cold but +2.2 ms warm-vs-base, and the three warm laps sit 5.3 to 9.4 ms above their cold counterparts. Sweeps should chain warm starts from one reference.
 
-### Item 5: QSS screen (`functions/ggv.py`, `MLTP_screen.py`, `test_screen.py`)
+### Item 5: QSS screen (`functions/ggv.py`, `MLTP_screen.py`, `tests/test_screen.py`)
 
 Envelope + march ~7 ms (Sturn) and ~30 ms (BCN) per setup. It copies `vehModel`'s aero, loads (26.0 kN total with unsprung mass subtracted per corner; aero load split l_r/L), peak mu from the Pacejka coefficients (exact match to the symbolic mu) and the powertrain/brake limits. Fixed centreline, point mass, no transients, static aero angles, no combined ax+ay load transfer.
 
@@ -216,7 +216,7 @@ Same machine and tools as above (IPOPT 3.14.11, CasADi 3.7.2, HSL ma57 with MC64
 
 ### Model audit verdicts
 
-`vehModel.py` was compared with `vehModel.m` (MATLAB R2025a + CasADi 3.7.2, the same normalised point, `Powertrain.m` + `vehParams.m` defaults = `tyre_set='MF205'`, Static aero). It reproduces every reference value bit for bit at the pinned point and at 14 random points (single motor, ATD, EM4, AALB at the static wing angles). `test_vehmodel_matlab.py` pins the values and the four relations below. All four "Model observations" above are inherited from `vehModel.m`: they are kept for parity and are not port bugs.
+`vehModel.py` was compared with `vehModel.m` (MATLAB R2025a + CasADi 3.7.2, the same normalised point, `Powertrain.m` + `vehParams.m` defaults = `tyre_set='MF205'`, Static aero). It reproduces every reference value bit for bit at the pinned point and at 14 random points (single motor, ATD, EM4, AALB at the static wing angles). `tests/test_vehmodel_matlab.py` pins the values and the four relations below. All four "Model observations" above are inherited from `vehModel.m`: they are kept for parity and are not port bugs.
 
 | observation (2026-10-04) | verdict |
 |---|---|
@@ -229,7 +229,7 @@ Still open: the active-aero inputs are live in `vehModel.py` and dead in `vehMod
 
 ### Two NLP port bugs (fixed in commit 37e1e4e)
 
-The audit found no model bug, but the 23-state NLP assembly differed from `MLTP.m` / `vehModel.m` in two places. `test_mltp_constraints.py` pins both fixes.
+The audit found no model bug, but the 23-state NLP assembly differed from `MLTP.m` / `vehModel.m` in two places. `tests/test_mltp_constraints.py` pins both fixes.
 
 1. **Input-rate bounds were not divided by `u_s`.** The NLP bounds the rate of the normalised inputs, and `vehModel.m` (L377-379) divides the physical Nm/s, rad/s and deg/s limits by the input scales; the port applied the physical values to the normalised rates. Steering was held to 0.061 rad/s (documented: 0.1 rad/s) while the motor, brake and wing rates were 602x, 4000x and 10-30x looser than specified. Now `m.duk_lb/ub = ctx.duk_* / u_s`. Steering is divided by the model's own scale `delta_max` (0.1 rad/s); `vehModel.m` divides by a `delta_s = pi/8` leaked from `vehModel_initial.m` (0.156 rad/s as MATLAB runs), so matching that instead would be a one-line owner decision in `vehModel.py`.
 2. **Friction-circle path rows for every `TyreModel`.** `MLTP.m` adds the four friction-circle rows (`rho_lim_*` <= 1) only under `TyreModel='PureSlip'`. The default `'CombinedSlip'` has powertrain rows only (nh = 3 / 4 / 12 for ATD Off / ATD On / EM4; PureSlip 7 / 8 / 16). The default Sturn NLP now has MATLAB's size (n_w = 1812, n_g = 1904).

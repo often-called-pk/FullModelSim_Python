@@ -1,7 +1,7 @@
 """MLTP.py warm-start helpers: warmstart_guesses, warmstart_guesses_full, warmstart_full
 (plain script, no pytest). Run from the repo root:
 
-    venv\\Scripts\\python.exe test_mltp_warmstart.py
+    venv\\Scripts\\python.exe tests\\test_mltp_warmstart.py
 
 test_warmstart.py covers functions/warmstart.py (the casadi-free engine). This file covers
 the three MLTP.py functions on top of it, the ones that hand the starting point to
@@ -22,8 +22,7 @@ exits 0.
 import contextlib, copy, io, os, sys
 from types import SimpleNamespace
 import numpy as np
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 try:
     import casadi as ca

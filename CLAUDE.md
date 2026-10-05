@@ -58,14 +58,17 @@ gcc/clang/cl on PATH, else it warns once and builds without JIT.
 Symbols: SX by default; `MLTP_SYM_TYPE=MX` (or `build_and_solve_nlp(sym_type='MX')`) builds the
 NLP ~15x faster but evaluates the Jacobian/Hessian ~8x slower and takes a different IPOPT path.
 
-**Tests.** There is **no pytest/unittest** and no runner script in the repo: the `test_*.py`
+**Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
 files (28 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
-failing assert aborts that file). Run one directly, or loop over all (each exits non-zero on failure):
+failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
+repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
+directory and its scratch files go to a temp dir, never the repo. Run one directly, or loop over
+all (each exits non-zero on failure):
 
 ```powershell
-python test_foundation.py        # one file
-foreach ($f in Get-ChildItem test_*.py) { "== $($f.Name)"; python $f.Name; if ($LASTEXITCODE) { "FAILED: $($f.Name)" } }
+python tests\test_foundation.py        # one file
+foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullName; if ($LASTEXITCODE) { "FAILED: $($f.Name)" } }
 ```
 
 - `test_foundation.py`: casadi-free helpers (collocation, geometry, simpleMA, Powertrain constants)
@@ -90,9 +93,8 @@ foreach ($f in Get-ChildItem test_*.py) { "== $($f.Name)"; python $f.Name; if ($
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
 `test_paramoptim_warmstart.py` (section 4) and `test_ladder.py` (section 9), both capped at
-`max_iter=5`; the others use stand-ins, toy NLPs or no solve. `test_runconfig.py` / `test_results.py` write scratch files into
-the repo root unless `CLAUDE_JOB_DIR_TMP` is set. Smoke-test the symbolic models (CasADi needed),
-and a real solve (~20 s, default MF205 tyre), with:
+`max_iter=5`; the others use stand-ins, toy NLPs or no solve. Smoke-test the symbolic models
+(CasADi needed), and a real solve (~20 s, default MF205 tyre), with:
 
 ```powershell
 python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"

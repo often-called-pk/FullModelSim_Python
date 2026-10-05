@@ -3,7 +3,7 @@ userOpts.py (config, boundary, rate-limit/regularisation assembly). No casadi
 required."""
 import sys, os, warnings
 import numpy as np
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 from functions.context import Ctx
 from userOpts import userOpts, SCREENING_IPOPT, MESH_AUTO_MIN_LENGTH

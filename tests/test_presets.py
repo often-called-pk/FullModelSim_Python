@@ -1,7 +1,7 @@
 """Shipped presets are valid override files and default.json reproduces the
 baseline car."""
 import os, sys, json, warnings
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from functions.context import Ctx
 from vehParams import vehParams, default_primaries, PRIMARY_KEYS, MF_KEYS
 
@@ -9,7 +9,7 @@ def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
     assert cond, name
 
-ppath = os.path.join(os.path.dirname(__file__), "app", "presets", "default.json")
+ppath = os.path.join(_bootstrap.ROOT, "app", "presets", "default.json")
 ok("default.json exists", os.path.exists(ppath))
 preset = json.load(open(ppath))
 ok("all keys are known overrides", set(preset) <= (PRIMARY_KEYS | MF_KEYS))

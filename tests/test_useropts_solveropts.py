@@ -1,6 +1,6 @@
 """userOpts exposes solver/collocation kwargs; defaults unchanged."""
 import os, sys, warnings
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from functions.context import Ctx
 from userOpts import userOpts
 

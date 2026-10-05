@@ -4,17 +4,17 @@ Compiler detection and the compile probe are injected, so this runs on a machine
 with no C compiler. Section 8 is a guarded smoke that only runs a real JIT build if
 a working compiler is on PATH. Run from the repo root:
 
-    venv\\Scripts\\python.exe test_casadi_opts.py
+    venv\\Scripts\\python.exe tests\\test_casadi_opts.py
 """
 import os, re, sys, warnings
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 import casadi as ca
 import functions.casadi_opts as C
 from functions.context import Ctx
 from userOpts import userOpts
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = _bootstrap.ROOT
 
 def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
@@ -154,7 +154,7 @@ def function_calls(src):
             i += 1
         yield src[mt.start():i]
 for fname, n_expected in (("MLTP.py", 4), ("MLTP_initial.py", 4), ("MLTP_paramOptim.py", 3)):
-    calls = list(function_calls(open(os.path.join(HERE, fname)).read()))
+    calls = list(function_calls(open(os.path.join(ROOT, fname)).read()))
     ok(f"{fname}: {n_expected} Functions, all built with fn_opts(ctx)",
        len(calls) == n_expected and all(c.rstrip().endswith("fn_opts(ctx))") for c in calls))
 

@@ -315,7 +315,7 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     rep = np.repeat(np.arange(N), OPT_d).tolist()       # interval index per point
 
     # functions/refine.py (nlp_inputs, defect_errors) mirrors this arithmetic and
-    # test_refine.py pins it with a tiny solve: change both together.
+    # tests/test_refine.py pins it with a tiny solve: change both together.
     def _at_points(V, dV):
         if OPT_uinter == "linear":
             tau_rep = ca.DM(np.tile(np.asarray(tau).reshape(1, -1), (V.size1(), N)))

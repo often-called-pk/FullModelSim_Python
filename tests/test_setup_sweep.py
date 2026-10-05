@@ -1,7 +1,7 @@
 """setup_sweep.py, functions/sweep.py and MLTP_screen.screen_batch (plain script, no pytest).
 Run from the repo root:
 
-    venv\\Scripts\\python.exe test_setup_sweep.py
+    venv\\Scripts\\python.exe tests\\test_setup_sweep.py
 
   1. functions.sweep units: validate_specs, sample_box (the qmc generator keyword of old and
      new scipy), select_shortlist, bridge_points, rank_metrics on synthetic data (lap
@@ -56,9 +56,8 @@ import warnings
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-os.chdir(HERE)                                     # userOpts reads Circuits/ and Data/ relatively
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+ROOT = _bootstrap.ROOT
 NO_CASADI = os.environ.get("TEST_SETUP_SWEEP_NO_CASADI") == "1"
 if NO_CASADI:
     sys.modules["casadi"] = None                   # any 'import casadi' now raises
@@ -601,7 +600,7 @@ ok("seed=None under the name of a fixed-seed sweep is another sweep (SweepError)
    msg is not None and "another sweep" in msg)
 
 # the default sweep folder is git-ignored (Results/ itself is tracked for the baselines)
-gi = [ln.strip() for ln in open(os.path.join(HERE, ".gitignore"), encoding="utf-8").read().splitlines()]
+gi = [ln.strip() for ln in open(os.path.join(ROOT, ".gitignore"), encoding="utf-8").read().splitlines()]
 default_root = inspect.signature(SS.setup_sweep).parameters["results_root"].default
 ok(f"the default sweep folder ({default_root}) is listed in .gitignore, the tracked Results/ baselines are not",
    default_root.replace(os.sep, "/") + "/" in gi
@@ -860,7 +859,7 @@ ok("screen_workers='auto': serial while it hides behind a cold hub (or is short)
    and screen_workers_picked(1024, 0.01, False, None) == aw(1024))
 
 seen, got = [], []
-rn = SS._Runner(0, dict(root=HERE, circuit="Sturn"), inline=True, say=lambda m: None)
+rn = SS._Runner(0, dict(root=ROOT, circuit="Sturn"), inline=True, say=lambda m: None)
 rn._init_fn, rn._run_fn = (lambda spec: seen.append("init")), (lambda t: dict(status="done", id=t["id"]))
 rn.submit(dict(id="a"))
 rn.submit(dict(id="b"))
@@ -870,7 +869,7 @@ ok("inline runner (workers=0): the initializer once, results in order, on_done o
    seen == ["init"] and [out[k]["status"] for k in "ab"] == ["done", "done"] and got == ["a", "b"])
 
 
-def import_closure(mods, root=HERE):
+def import_closure(mods, root=ROOT):
     """Repo files a plain import of ``mods`` can reach (every import statement, nested and
     relative ones included, plus the package __init__ of a submodule)."""
     def resolve(mod):
@@ -905,9 +904,9 @@ closure = import_closure(["MLTP", "MLTP_initial", "MLTP_screen", "MLTP_paramOpti
 ok("the code hash covers the import closure of the solve entry points (minus the plot-only files)",
    {"functions/simpleMA.py", "functions/importfile.py", "setup_sweep.py"} <= closure
    and closure - set(SS._HASH_EXEMPT) <= set(SS._CODE_FILES)
-   and all(os.path.isfile(os.path.join(HERE, f)) for f in SS._CODE_FILES))
+   and all(os.path.isfile(os.path.join(ROOT, f)) for f in SS._CODE_FILES))
 hroots = [os.path.join(TMP, "hash1"), os.path.join(TMP, "hash2")]   # copies: immune to concurrent edits
-for src, dst in ((HERE, hroots[0]), (hroots[0], hroots[1])):
+for src, dst in ((ROOT, hroots[0]), (hroots[0], hroots[1])):
     for f in SS._CODE_FILES:
         os.makedirs(os.path.dirname(os.path.join(dst, f)), exist_ok=True)
         shutil.copyfile(os.path.join(src, f), os.path.join(dst, f))
@@ -933,7 +932,7 @@ for label, cfg in CONFIGS.items():
     ref[label] = bb["lap_time"]
     ok(f"Sturn {label}: 16 laps == screen_sweep, all 'ok'",
        list(bb["lap_time"]) == a and bb["status"] == ["ok"] * 16 and bb["error"] == [None] * 16)
-HAVE_BCN = os.path.exists(os.path.join(HERE, "Circuits", "Barcelona_circuit.mat"))
+HAVE_BCN = os.path.exists(os.path.join(ROOT, "Circuits", "Barcelona_circuit.mat"))
 if HAVE_BCN:
     a = [r["lap_time"] for r in screen_sweep("BCN", OVS)]
     ok("BCN default: 16 laps == screen_sweep", list(screen_batch("BCN", OVS)["lap_time"]) == a)
@@ -977,7 +976,7 @@ for chunk in (1, 7):
     out[str(chunk)] = [list(map(float, r["lap_time"][:16])), r["status"]]
 print("RESULT " + json.dumps(out))
 """
-    r = subprocess.run([PY, "-c", code, json.dumps(F10)], cwd=HERE, capture_output=True, text=True,
+    r = subprocess.run([PY, "-c", code, json.dumps(F10)], cwd=ROOT, capture_output=True, text=True,
                        timeout=600)
     res = json.loads(r.stdout.split("RESULT ", 1)[1]) if "RESULT " in r.stdout else None
     if res is None:
@@ -1009,7 +1008,7 @@ if NO_CASADI:
     sys.exit(0)
 
 print("3. casadi blocked (this file re-run in a child with sys.modules['casadi'] = None)")
-r = subprocess.run([PY, os.path.abspath(__file__)], cwd=HERE, capture_output=True, text=True,
+r = subprocess.run([PY, os.path.abspath(__file__)], cwd=ROOT, capture_output=True, text=True,
                    timeout=900, env=dict(os.environ, TEST_SETUP_SWEEP_NO_CASADI="1"))
 four = (json.loads(r.stdout.split("FOUR ", 1)[1].splitlines()[0]) if "FOUR " in r.stdout else None)
 if r.returncode != 0:
@@ -1073,7 +1072,7 @@ out["breaks"], out["lines"] = r.n_breaks, lines
 r.close()
 print("RESULT " + json.dumps(out))
 """
-r = subprocess.run([PY, "-c", code, SDIR], cwd=HERE, capture_output=True, text=True, timeout=600)
+r = subprocess.run([PY, "-c", code, SDIR], cwd=ROOT, capture_output=True, text=True, timeout=600)
 RR = json.loads(r.stdout.split("RESULT ", 1)[1]) if "RESULT " in r.stdout else None
 if RR is None:
     print(r.stdout[-3000:], r.stderr[-3000:])
@@ -1176,7 +1175,7 @@ for label, extra in (("opt_ds", dict(name="mini_c", base=hub, OPT_ds=60)),
 print("RESULT " + json.dumps(res))
 """
 out5 = os.path.join(TMP, "nlp")
-r = subprocess.run([PY, "-c", code, out5], cwd=HERE, capture_output=True, text=True, timeout=1500)
+r = subprocess.run([PY, "-c", code, out5], cwd=ROOT, capture_output=True, text=True, timeout=1500)
 R = json.loads(r.stdout.split("RESULT ", 1)[1]) if "RESULT " in r.stdout else None
 if R is None:
     print(r.stdout[-4000:], r.stderr[-4000:])

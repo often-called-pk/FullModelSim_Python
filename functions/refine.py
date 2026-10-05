@@ -36,7 +36,7 @@ and kappa(s) = interp(track.s, track.k). On n_sub = 2d equal sub-segments of
 The NLP enforces p_k' = h_k f at the d collocation points only; E is how far the
 polynomial drifts from the ODE in between. It is zero to rounding for a solution
 that is a polynomial of degree <= d and O(h^(d+1)) for a smooth one (both pinned by
-test_refine.py). The max is taken at the n_sub + 1 sub-segment ends only: on
+tests/test_refine.py). The max is taken at the n_sub + 1 sub-segment ends only: on
 converged Sturn solutions a dense sampling (48 points) reads up to 15-20% higher,
 so tol acts as about 1.2 x tol. The lap-time quadrature defect
 dT_k = h_k (B.L(X_kj) - int L(p_k)) is returned as a diagnostic only.

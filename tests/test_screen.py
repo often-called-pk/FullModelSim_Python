@@ -12,8 +12,8 @@ Plain top-level assertions, like the other test_*.py files. Sections:
 """
 import os, sys, math, tempfile, subprocess, warnings
 import numpy as np
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+ROOT = _bootstrap.ROOT
 
 from functions.context import Ctx
 from functions.ggv import (Envelope, build_envelope, march, apex_speeds, aero_coefficients,
@@ -94,7 +94,7 @@ ok("real circle: v_ap = sqrt(ay_max(v_ap)*R)",
    rel(v_ap, math.sqrt(np.interp(v_ap, env.v_grid, env.ay_max) * R)) < 1e-9)
 
 # =============================================================================
-HAVE_BCN = os.path.exists(os.path.join(HERE, "Circuits", "Barcelona_circuit.mat"))
+HAVE_BCN = os.path.exists(os.path.join(ROOT, "Circuits", "Barcelona_circuit.mat"))
 print(f"3. causality / monotonicity on {'BCN' if HAVE_BCN else 'VirtualTrack (BCN .mat missing)'}")
 ctxb = Ctx()
 userOpts(ctxb, circuit="BCN" if HAVE_BCN else "VirtualTrack")
@@ -347,7 +347,7 @@ p = G.march(G.build_envelope(ctx), s, k, 50.0)
 assert "casadi" not in sys.modules or sys.modules["casadi"] is None
 print("LAP %.12f" % p["lap_time"])
 """
-r = subprocess.run([sys.executable, "-c", code], cwd=HERE, capture_output=True, text=True, timeout=300)
+r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=300)
 ok("build_envelope + march run with casadi unavailable", r.returncode == 0 and "LAP" in r.stdout)
 if r.returncode != 0:
     print(r.stdout, r.stderr)

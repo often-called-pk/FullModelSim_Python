@@ -5,7 +5,7 @@ formulas are correct before building the model on top of them.
 """
 import sys, os
 import numpy as np
-sys.path.insert(0, os.path.dirname(__file__))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 from functions.rotatePoint2D import rotatePoint2D
 from functions.curv2cart import curv2cart

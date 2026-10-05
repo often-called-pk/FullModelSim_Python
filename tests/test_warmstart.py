@@ -2,13 +2,13 @@
 warm-start source classification and planning (plain script, no pytest, no
 casadi). Run from the repo root:
 
-    venv\\Scripts\\python.exe test_warmstart.py
+    venv\\Scripts\\python.exe tests\\test_warmstart.py
 """
 import os, sys, tempfile, warnings
 import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 import functions.warmstart as W
 from functions.importfile import importfile, load_solution

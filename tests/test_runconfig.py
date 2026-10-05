@@ -1,12 +1,16 @@
 """RunConfig: vp-dict round-trip, diff-from-default -> vp_overrides, expert-file
 merge, solver fields at top level (not in vp_overrides), unknown-key rejection."""
-import os, sys, json, tempfile
-sys.path.insert(0, os.path.dirname(__file__))
+import os, sys, json, tempfile, atexit, shutil
+import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from app.runconfig import RunConfig
 from app.vp_params import all_vp_defaults
 from vehParams import _MF205_OVERRIDES
 
-TMP = os.environ.get("CLAUDE_JOB_DIR_TMP", os.path.dirname(__file__))
+# scratch files: CLAUDE_JOB_DIR_TMP when set, else a fresh temp dir removed at exit (never the repo)
+TMP = os.environ.get("CLAUDE_JOB_DIR_TMP")
+if not TMP:
+    TMP = tempfile.mkdtemp(prefix="runconfig_test_")
+    atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
 def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
