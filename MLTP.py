@@ -34,7 +34,8 @@ from functions.ladder import (quasi_static_states, resolve_ladder, qss_profile, 
                               homotopy_record, MA57_PRE_ALLOC)
 from functions.mesh import solution_knots, mesh_opts_record
 from functions.refine import (refine_options, run_refinement, defect_errors, state_rows,
-                              interval_polynomials, eval_states, nlp_inputs, refine_record)
+                              interval_polynomials, eval_states, nlp_inputs, refine_record,
+                              pass_accepted, lap_rise)
 from functions.warmstart import (resolve_source, guesses_from_full, nlp_structure,
                                  plan_full_warm_start, nlp_record, GOOD_STATUS)
 from functions.transcription import (discretise, build_and_solve_nlp,
@@ -229,10 +230,17 @@ def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
     Primal only. Interpolating all 23 states instead (guesses_from_full,
     'full-interp') leaves stiff-state defects of order |lambda| h delta: IPOPT
     had not converged after 1885-2964 iterations on Sturn N 12 -> 20 / 18 -> 36.
-    This reseed converges in ~90-300 iterations on most passes but not on all
-    (the NLP is path-sensitive: Sturn N 18 -> 36 took 171 iterations from one seed
-    and did not converge in 1000 from a seed differing in the last bits), hence
-    MLTP's pass_max_iter cap, cold retry and keep-the-last-converged-pass rule."""
+    This reseed converges in ~90-500 iterations on most default-config Sturn / BCN
+    passes, but often not elsewhere, coarse meshes included (runs differing by
+    1e-10 relative seed perturbations): Sturn EM4 / AALB N 12 -> 18 hit 1000
+    iterations in 2 of 3 runs; Hairpin PureSlip N 11 -> 15 ended
+    Restoration_Failed in 2 of 4 (the other 2 converged to optima 4.5-5.2% slower)
+    and N 15 -> 17 hit 1000 in 2 of 2; Sturn N 18 -> 36 took 171 iterations from
+    one seed and did not converge in 1000 from another. The outcome is chaotic (a
+    1e-10 seed change moved N 18 -> 24 from 87 to 269 iterations) and the
+    alternatives tried (linear input knots, all-state polynomial carry-over) were
+    no better, hence MLTP's pass_max_iter cap, cold retry, lap check and
+    keep-the-last-accepted-pass rule."""
     Xk, Uk, Xkj = prev_sol
     Z = interval_polynomials(prev_disc, Xk, Xkj)
     x0 = eval_states(prev_disc, Z, disc_new["s_knot"], x_end=np.asarray(Xk)[:, -1])
@@ -261,19 +269,23 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     turns on adaptive h-refinement of the collocation mesh (functions/refine.py):
     True for the defaults or a dict with any of passes (2), tol (1e-2), max_N
     (4 x the base N), merge (False), ds_min (0.125 OPT_ds), ds_max (2.5 OPT_ds),
-    max_split (2), pass_max_iter (1000) and states (('n', 'eps')); an unknown key
-    or a bad value raises ValueError before any solve. After the base solve each
-    pass computes the integrated defect of the n / eps state polynomials per
-    interval, bisects the intervals above tol (nested knots, OPT_d fixed) and
-    re-solves from the previous solution (warmstart_refined; primal only, IPOPT
-    max_iter capped at pass_max_iter; a pass that does not converge is retried
-    once from the 7-state init, and if that fails too the last converged pass is
-    kept). Stops when every interval is below tol, after `passes` passes, at
-    max_N or when nothing can be split. The per-attempt log is ctx.refine_log and
+    max_split (2), pass_max_iter (1000), states (('n', 'eps')) and max_lap_rise
+    (3e-3); an unknown key, a bad value or a state name the model does not have
+    raises ValueError before any solve. After the base solve each pass computes
+    the integrated defect of the n / eps state polynomials per interval, bisects
+    the intervals above tol (nested knots, OPT_d fixed) and re-solves from the
+    previous solution (warmstart_refined; primal only, IPOPT max_iter capped at
+    pass_max_iter). A pass that does not converge, or converges to a lap more
+    than max_lap_rise (relative) slower than the pass it refines (a worse local
+    optimum), is retried once from the 7-state init; if the retry fails either
+    test too, the last accepted pass is kept (stop 'solve-failed' / 'lap-rise').
+    Each pass can thus cost up to 2 x pass_max_iter iterations. Stops when every
+    interval is below tol, after `passes` passes, or when nothing over tol can be
+    split (max_N, ds_min). The per-attempt log is ctx.refine_log and
     data['refine'] (functions.refine.refine_record); once a refinement pass was
-    solved, data.mesh = data.mesh_requested = ctx.mesh_requested = 'adaptive', so
-    the result saves as <stem>_meshAdaptive, and data.nlp.warm_start is 'refine'
-    ('init7' after a cold retry).
+    accepted, data.mesh = data.mesh_requested = ctx.mesh_requested = 'adaptive',
+    so the result saves as <stem>_meshAdaptive, and data.nlp.warm_start is
+    'refine' ('init7' after a cold retry).
 
     ``ladder`` (functions/ladder.py) picks the fidelity ladder that builds every cold
     start (warm_start=None, a full result refused for its tyre set, refine's cold
@@ -327,6 +339,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
 
     # ---- friction homotopy (homotopy=...): one solve per scale, the last = this problem
     if sched is not None:
+        if ropts is not None:           # refine's state names need the model: check before step 1
+            state_rows(vehModel(ctx, TyreModel=TyreModel).m23, ropts["states"])
         base_ov = useropts_kwargs.get("vp_overrides")
         steps, prev, c = [], warm_start, None
         for i, scale in enumerate(sched):
@@ -354,6 +368,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     # ---- full model -------------------------------------------------------
     vehModel(ctx, TyreModel=TyreModel)
     m = ctx.m23
+    # refine's indicator rows (a bad state name raises ValueError here, before any solve)
+    ind_rows = None if ropts is None else state_rows(m, ropts["states"])
 
     # ---- OCP: dynamics + objective ---------------------------------------
     L = m.sf
@@ -451,8 +467,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     # ---- adaptive mesh refinement (refine=...; functions/refine.py) --------
     if ropts is not None:
         t_ref = time.time()
+        init_ref = elapsed["init"]      # a cold retry's lazy init is booked to 'init' only
         elapsed["solve_base"] = elapsed["solve"]
-        ind_rows = state_rows(m, ropts["states"])
         ip = dict(ctx.opts.get("ipopt", {}))
         ip["max_iter"] = min(int(ip.get("max_iter", ropts["pass_max_iter"])), ropts["pass_max_iter"])
         pass_opts = dict(ctx.opts, ipopt=ip)    # cold IPOPT options, max_iter capped
@@ -477,14 +493,19 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             g = warmstart_refined(ctx, m, prev["disc"], prev["scaled"], disc_new)
             out = _pass(_solve(disc_new, g, None, pass_opts), disc_new, "reseed", "refine",
                         time.time() - t1)
-            if out["status"] in GOOD_STATUS:
+            if pass_accepted(out, cur, ropts):
                 return out
-            print(f"[MLTP] refine: the reseeded N={disc_new['N']} solve ended {out['status']} after "
-                  f"{out['iters']} iterations; retrying once from the 7-state init")
+            why = (f"ended {out['status']} after {out['iters']} iterations"
+                   if out["status"] not in GOOD_STATUS else
+                   f"converged to a lap {100.0 * lap_rise(out, cur):.2f}% slower than the pass it refines "
+                   f"({out['lap']:.4f} s vs {cur['lap']:.4f} s: a worse local optimum)")
+            print(f"[MLTP] refine: the reseeded N={disc_new['N']} solve {why}; retrying once from the "
+                  "7-state init")
             out["payload"] = None
+            g0 = _init_guesses(disc_new)        # its own time goes to elapsed['init']
             t1 = time.time()
-            retry = _pass(_solve(disc_new, _init_guesses(disc_new), None, pass_opts), disc_new,
-                          "cold", "init7", time.time() - t1)
+            retry = _pass(_solve(disc_new, g0, None, pass_opts), disc_new, "cold", "init7",
+                          time.time() - t1)
             retry["attempts"] = [out]
             return retry
 
@@ -499,9 +520,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         final, refine_log, refine_stop = run_refinement(
             first, _step, _evaluate, ropts, order=ctx.OPT_d + 1,
             report=lambda msg: print(f"[MLTP] refine {msg}"))
-        accepted = [e for e in refine_log if e["converged"]]
+        accepted = [e for e in refine_log if e["accepted"]]
         refine_passes = int(accepted[-1]["pass"]) if accepted else 0
-        if final is not first:          # postprocess the last converged refined pass
+        if final is not first:          # postprocess the last accepted refined pass
             pl = final["payload"]
             res, disc = pl["res"], pl["disc"]
             N = disc["N"]
@@ -513,7 +534,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             elapsed["warm_start"] = ws_mode
             elapsed["duals"] = bool(winfo["duals"])
         elapsed["solve"] = time.time() - t0 - elapsed["init"]
-        elapsed["refine"] = time.time() - t_ref
+        elapsed["refine"] = time.time() - t_ref - (elapsed["init"] - init_ref)
         elapsed["ipopt_iters_total"] = int(sum(max(e["iters"], 0) for e in refine_log))
         elapsed["refine_passes"] = refine_passes
         elapsed["refine_stop"] = refine_stop
@@ -635,8 +656,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         summary += f"  ladder={lname}"
     if ropts is not None:
         chain_N = "->".join(str(e["N"]) for e in accepted) or str(N)
+        chain_lap = "->".join(f"{e['lap']:.3f}" for e in accepted) or "n/a"
         chain_eta = "->".join(f"{e['eta_max']:.3f}" for e in accepted) or "n/a"
-        summary += (f"  refine: N {chain_N}, eta_max {chain_eta}, stop={refine_stop}"
+        summary += (f"  refine: N {chain_N}, lap {chain_lap} s, eta_max {chain_eta}, stop={refine_stop}"
                     f" (IPOPT iters total {elapsed['ipopt_iters_total']})")
     print(summary)
 

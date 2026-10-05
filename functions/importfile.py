@@ -47,7 +47,10 @@ def load_solution(path):
     Works for both full-solve files ({'data': {...}}) and warm-start files
     ({'data': {'init': {...}}}). A full result's primal/dual NLP record comes
     back as data.nlp with 1-D float arrays (w_opt, lam_g, lam_x, x_s, u_s),
-    even where loadmat squeezed a length-1 vector to a scalar."""
+    even where loadmat squeezed a length-1 vector to a scalar; the same holds
+    for the per-attempt arrays of a refinement record (data.refine: N, lap_time,
+    ..., s_knot0, eta), which a single-attempt run would otherwise reload as
+    scalars."""
     loaded = importfile(path)
     data = loaded["data"]
     if hasattr(data, "init") and not hasattr(data, "x_opt"):
@@ -58,6 +61,12 @@ def load_solution(path):
             if hasattr(nlp, key):
                 setattr(nlp, key, np.atleast_1d(np.asarray(getattr(nlp, key),
                                                            dtype=float)).reshape(-1))
+    ref = getattr(data, "refine", None)
+    if isinstance(ref, SimpleNamespace):
+        from .refine import RECORD_COLUMNS          # numpy only; lazy to keep this module light
+        for key in RECORD_COLUMNS + ("s_knot0", "eta"):
+            if hasattr(ref, key):
+                setattr(ref, key, np.atleast_1d(np.asarray(getattr(ref, key))).reshape(-1))
     return data
 
 

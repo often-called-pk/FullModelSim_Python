@@ -82,7 +82,7 @@ foreach ($f in Get-ChildItem test_*.py) { "== $($f.Name)"; python $f.Name; if ($
 - `test_mltp_warmstart.py`: `warmstart_guesses` / `warmstart_full` on the real 23-state model (row layout, input seeding by channel across configs, non-uniform grids, the warm-start modes; casadi, no solve)
 - `test_mltp_constraints.py`: `build_path_constraints` per `TyreModel` / config vs `MLTP.m`, input-rate bounds divided by `u_s`, what `MLTP()` / `MLTP_paramOptim` hand to `build_and_solve_nlp` (captured, no solve), `plotSDI.friction_usage`
 - `test_paramoptim_warmstart.py`: `optimise_design(warm_start=...)` from a full 23-state result (`extend_full_start`, the `plan_design_warm_start` modes `full+duals` / `full-primal` / `full-interp` / `cold`, what `MLTP_paramOptim` / `MLTP_TyreOptim` hand to `build_and_solve_nlp` captured by a stand-in, one real solve capped at `max_iter=5`; sections 3-4 need casadi + `Data/DATA_AA.mat`)
-- `test_refine.py`: `functions/refine.py` (defect indicator exact for polynomial solutions, O(h^(d+1)), localised; the NLP's input arithmetic pinned by one tiny real solve; `refine_knots`, `run_refinement` stop reasons, options, record round trip) and the `MLTP(refine=...)` wiring with a stand-in solver (casadi + `Data/DATA_AA.mat`, no 23-state solve)
+- `test_refine.py`: `functions/refine.py` (defect indicator exact for polynomial solutions, O(h^(d+1)), localised; the NLP's input arithmetic pinned by one tiny real solve; `refine_knots` incl. merge under `max_N`, `run_refinement` stop reasons and the lap-rise rule, options, record round trip) and the `MLTP(refine=...)` wiring with a stand-in solver (reseed, indicator and lap against an independent evaluation, cold retry, lap-rise rejection, `save=True`, time accounting, state names checked before any solve; casadi + `Data/DATA_AA.mat`, no 23-state solve)
 - `test_ladder.py`: `functions/ladder.py` (ladder registry, `homotopy_schedule`, exact-mu `friction_overrides`, the longitudinal torque rules, `qss_profile` = the screen's march, `seed_m7` / `seed_m23` on the real model scales across configs and meshes incl. the Xi-box clip) and the wiring: `MLTP_initial(seed='const')` guesses bit-identical to the legacy constants, `MLTP(ladder=...)` / `MLTP(homotopy=...)` with stand-ins, one real Sturn solve capped at `max_iter=5` (~17 s; sections 4-10 need casadi + `Data/DATA_AA.mat`)
 - `test_setup_sweep.py`: `setup_sweep.py`, `functions/sweep.py` and `MLTP_screen.screen_batch` (Sobol/LHS design, shortlist, bridges, rank metrics, `screen_batch == screen_sweep` exactly incl. a worker pool, a casadi-blocked child run, field classification; section 5 is a ~1 min real Sturn mini-sweep in a child process: hub check at 0 iterations, resume, determinism, `SweepError`s)
 - `test_vehmodel_matlab.py`: `vehModel.py` vs `vehModel.m` reference values and the inherited model quirks (casadi + `Data/DATA_AA.mat`)
@@ -254,31 +254,48 @@ mesh (e.g. an older uniform-mesh BCN result) seeds by interpolation (no dual re-
 **Adaptive mesh refinement (`MLTP(refine=...)`, `functions/refine.py`; off by default).**
 `refine=None` is the unchanged single solve. `refine=True` or a dict (`passes` 2, `tol` 1e-2,
 `max_N` 4 x N0, `merge` False, `ds_min` 0.125 `OPT_ds`, `ds_max` 2.5 `OPT_ds`, `max_split` 2,
-`pass_max_iter` 1000, `states` `('n', 'eps')`; a bad key or value raises `ValueError` before any
-solve) solves on the userOpts mesh, then per pass scores every interval by the integrated defect
-of the n / eps state polynomials (`defect_errors`: max |p(sigma) - X_k - h int f| over 2d
-sub-segments, Gauss quadrature of `f_dyn` with the NLP's own near-hold input arithmetic; `tol`
-1e-2 = 5 cm of n, 10 mrad of eps), bisects the intervals above `tol` (nested knots, `OPT_d` fixed)
-and re-solves from `MLTP.warmstart_refined` (vx, vy, r, n, eps from the previous polynomials,
-inputs from the previous NLP, wheel / suspension / tyre states re-seeded quasi-statically; primal
-only, IPOPT `max_iter` capped at `pass_max_iter`). Only n / eps are scored because the model is
-stiff (wheel spin |lambda| h ~ 1e4): the all-state defect is ~1e3 on every interval and cannot
-localise. A pass that does not converge is retried once from the 7-state init, else the last
-converged pass is kept (stop `solve-failed`; the others are `tol`, `passes`, `max_N`,
-`no-split`). `ctx.refine_log` / `data.refine` hold one row per solve attempt; once a refined pass
-is solved, `data.mesh = data.mesh_requested = 'adaptive'` (saved as `<stem>_meshAdaptive`,
-`data.nlp.warm_start = 'refine'`, or `'init7'` after a cold retry). Measured (ma57, MF205; Sturn
-lap error vs the uniform `OPT_ds=15` N=36 optimum 17.856 s, which a cold solve does not reach in
-6000 iterations): uniform N=18 +0.85% (179 iterations, 20 s); from `OPT_ds=45` (N=12, +2.07%)
-the default two passes give N 12 -> 21 -> 27 at +0.007% (625 iterations, ~57 s) and a third pass
-meets `tol` at N=30 (-0.09%, 917 iterations, 93 s); `refine=True` on the default N=18 mesh stops
-on `tol` after one pass at N=24 (-0.02%, 278 iterations, 33 s). BCN from `OPT_ds=60` (curvature
-N=78): N 78 -> 130 -> 139, 116.747 s in 363 s, against 116.441 s in 315 s for the default N=155
-solve (no gain). Fine meshes are fragile: 2 of 8 measured passes did not converge (Sturn
-N 18 -> 36 bisect-all, which a seed differing only in the last bits had solved in 171
-iterations, and N 36 -> 40), each burning ~2 x `pass_max_iter` iterations (5-7 min on Sturn)
-before the fallback; laps on one mesh differ by up to ~0.3% between seeds, so judge against a fine
-reference, not pass to pass. `refine` is an `MLTP` kwarg only (no GUI widget).
+`pass_max_iter` 1000, `states` `('n', 'eps')`, `max_lap_rise` 3e-3; a bad key or value, or a state
+name the model does not have, raises `ValueError` before any solve) solves on the userOpts mesh,
+then per pass scores every interval by the integrated defect of the n / eps state polynomials
+(`defect_errors`: max |p(sigma) - X_k - h int f| at the 2d+1 sub-segment ends, Gauss quadrature of
+`f_dyn` with the NLP's own near-hold input arithmetic; `tol` 1e-2 = 5 cm of n, 10 mrad of eps; a
+dense sampling reads up to 15-20% higher on Sturn solutions, so `tol` acts as ~1.2 x `tol`),
+bisects the intervals above `tol` (nested knots, `OPT_d` fixed; with `merge=True` the knots merges
+free count towards `max_N`, and a pass with nothing to split ends the run) and re-solves from
+`MLTP.warmstart_refined` (vx, vy, r, n, eps from the previous polynomials, inputs from the previous
+NLP, wheel / suspension / tyre states re-seeded quasi-statically; primal only, IPOPT `max_iter`
+capped at `pass_max_iter`). Only n / eps are scored because the model is stiff (wheel spin
+|lambda| h ~ 1e4): the all-state defect is ~1e3 on every interval and cannot localise. A pass that
+does not converge, or converges to a lap more than `max_lap_rise` slower than the pass it refines
+(a worse local optimum: Hairpin PureSlip N 11 -> 15 converged 4.5% slower than its base where other
+seeds on the same knots were 0.5-2% faster), is retried once from the 7-state init, else the last
+accepted pass is kept (stop `solve-failed` / `lap-rise`; the others are `tol`, `passes`, `max_N`,
+`no-split`), so a pass can cost 2 x `pass_max_iter` iterations (BCN runs ~0.6 s per iteration).
+`ctx.refine_log` / `data.refine` hold one row per solve attempt (`converged` = IPOPT status,
+`accepted` = kept; `pass_no`, `N`, `lap_time`, `eta_max`, ...); once a refined pass is accepted,
+`data.mesh = data.mesh_requested = 'adaptive'` (saved as `<stem>_meshAdaptive`,
+`data.nlp.warm_start = 'refine'`, or `'init7'` after a cold retry; no entry rebuilds those knots, so
+such a result seeds a later solve by interpolation only). Measured (ma57, MF205; every pass of these
+runs lowered the lap, so the lap check keeps them; Sturn lap error vs the uniform `OPT_ds=15` N=36
+optimum 17.856 s, which a cold solve does not reach in 6000 iterations and which is not itself
+mesh-converged): uniform N=18 +0.85% (179 iterations, 20 s); `refine=True` on it stops on `tol`
+after one pass at N=24 (-0.02%, 278 iterations, 33 s); from `OPT_ds=45` (N=12, +2.07%) two passes
+give N 12 -> 21 -> 27 (+0.007%, 625 iterations, ~57 s) and a third meets `tol` at N=30 (-0.09%, 917
+iterations, 93 s). A one-shot `mesh='curvature'` solve at equal N does as well for less: N=18 +0.15%
+(109 iterations, 17 s), N=24 -0.10% (171, 33 s), N=27 -0.10% (210, 30 s); `refine=True` on a
+curvature N=18 base ends at N=28, -0.001%, after 387 iterations. BCN from `OPT_ds=60` (curvature
+N=78): N 78 -> 130 -> 139, 116.747 s in 363 s, against 116.501 s (274 iterations, 290 s) for a
+curvature N=139 solve and 116.441 s in 315 s for the default N=155 one. Differences under ~0.1% do
+not rank these: reseeds from seeds 1e-10 apart land up to 0.06% apart (one pair took 87 and 269
+iterations), a cold and a reseeded solve on one mesh 0.05% apart, and the objective depends on the mesh (the
+input-rate regularisation is summed per interval without `dsk`, as in `MLTP.m`: 0.26-0.34% of the
+lap, growing with N). The reseed is fragile, coarse meshes included: Sturn N 18 -> 36 and 36 -> 40
+did not converge (5-7 min each before the fallback), Sturn EM4 / AALB N 12 -> 18 hit 1000
+iterations in 2 of 3 runs from seeds 1e-10 apart, Hairpin PureSlip N 11 -> 15 ended
+`Restoration_Failed` in 2 of 4 and 15 -> 17 hit 1000 in 2 of 2; the cold retry rescued EM4 (965 iterations) and
+Hairpin 15 -> 17 (231), never Sturn N >= 36. Use refinement to reach N=24-30 meshes that cold
+uniform solves do not converge on; for speed or accuracy at a given N prefer `mesh='curvature'`.
+`refine` is an `MLTP` kwarg only (no GUI widget).
 
 ### Configuration: `userOpts.py`
 Builds `ctx`: calls `Powertrain`+`vehParams`, loads or **synthesizes** the track, sets `Xi/Xf`,

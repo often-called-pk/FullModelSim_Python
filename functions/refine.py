@@ -10,8 +10,15 @@ testable without it. MLTP(refine=...) drives it:
              bisect every interval with eta_k > tol (refine_knots, nested knots)
              re-solve on the new knots from the previous solution
              (MLTP.warmstart_refined; one cold retry from the 7-state init)
+             accept the pass only if IPOPT converged and its lap is at most
+             max_lap_rise slower than the pass it refines (pass_accepted)
 
-The collocation degree OPT_d never changes (h-refinement only).
+The collocation degree OPT_d never changes (h-refinement only). The lap check
+exists because the 23-state NLP is path sensitive: a re-solve can converge to a
+worse local optimum (Hairpin PureSlip N 11 -> 15: Solve_Succeeded at 11.558 s
+against the 11.056 s base, +4.5%, where other seeds on the same knots reached
+11.002 and 10.831 s), while every other measured pass (Sturn, BCN, EM4) lowered
+the lap.
 
 Error indicator (defect_errors): the integrated defect of the state polynomial
 (GPOPS-II style integrated residual), in scaled units. For interval k (length h_k,
@@ -29,8 +36,10 @@ and kappa(s) = interp(track.s, track.k). On n_sub = 2d equal sub-segments of
 The NLP enforces p_k' = h_k f at the d collocation points only; E is how far the
 polynomial drifts from the ODE in between. It is zero to rounding for a solution
 that is a polynomial of degree <= d and O(h^(d+1)) for a smooth one (both pinned by
-test_refine.py). The lap-time quadrature defect dT_k = h_k (B.L(X_kj) - int L(p_k))
-is returned as a diagnostic only.
+test_refine.py). The max is taken at the n_sub + 1 sub-segment ends only: on
+converged Sturn solutions a dense sampling (48 points) reads up to 15-20% higher,
+so tol acts as about 1.2 x tol. The lap-time quadrature defect
+dT_k = h_k (B.L(X_kj) - int L(p_k)) is returned as a diagnostic only.
 
 Indicator states: n and eps (``states`` option). Their f_dyn rows,
 dn/ds = sf (vx sin eps + vy cos eps) and deps/ds = sf r - kappa, contain no tyre,
@@ -57,9 +66,11 @@ Knot update (refine_knots): bisect every interval with eta_k > tol (or
 clip(ceil((eta_k/tol)^(1/(d+1))), 2, max_split) equal parts), skipped where the
 parts would be shorter than ds_min; above max_N the worst intervals are split
 first (the pass is flagged capped). merge=True also joins adjacent intervals not
-split in this pass whose eta are both below merge_ratio * tol (default
-2^-(d+1) / 2, 1/32 at d=3) when the union is at most ds_max. Knots are nested
-(every old knot kept) unless merged; the end points never move.
+over tol whose eta are both below merge_ratio * tol (default 2^-(d+1) / 2, 1/32
+at d=3) when the union is at most ds_max; the knots a merge frees count towards
+max_N in the same pass. Knots are nested (every old knot kept) unless merged; the
+end points never move. A pass in which nothing can be split ends the loop, so
+merge=True never re-solves only to coarsen.
 
 Records: run_refinement returns a per-attempt log (ctx.refine_log) and
 refine_record() its savemat-safe summary (data['refine']).
@@ -84,11 +95,16 @@ REFINE_DEFAULTS = {
     "max_split": 2,          # parts per refined interval (2 = bisection)
     "pass_max_iter": 1000,   # IPOPT max_iter of a refinement pass (min with the configured)
     "states": ("n", "eps"),  # indicator states (symbol stems of m.x, see state_rows)
+    "max_lap_rise": 3e-3,    # a pass whose lap is more than this fraction slower than the
+                             # pass it refines counts as failed (worse local optimum); inf = off
 }
 DS_MIN_FRAC = 0.125          # 3 bisections of a uniform mesh, 1 below the curvature-mesh floor
 DS_MAX_FRAC = 2.5            # the curvature mesh's own ds_max
 MAX_N_FACTOR = 4             # default max_N = 4 * N0
-STOP_REASONS = ("tol", "passes", "max_N", "no-split", "solve-failed", "base-failed")
+STOP_REASONS = ("tol", "passes", "max_N", "no-split", "solve-failed", "lap-rise", "base-failed")
+# per-attempt columns of refine_record (1-D arrays; load_solution keeps them 1-D)
+RECORD_COLUMNS = ("pass_no", "N", "lap_time", "eta_max", "eta_mean", "s_argmax", "iters", "wall",
+                  "n_split", "n_merged", "capped", "converged", "accepted", "dT_sum")
 _STATE_ALIASES = {"r": "yawrate"}   # vehModel names the yaw-rate symbol 'yawrate_n'
 
 
@@ -133,8 +149,9 @@ def refine_options(refine, OPT_ds):
     OPT_ds : the nominal collocation step [m]; ds_min / ds_max default to
              DS_MIN_FRAC / DS_MAX_FRAC times it.
     An unknown key or a bad value raises ValueError (MLTP calls this before any
-    solve). max_N stays None when not given; resolve_max_N() turns it into
-    MAX_N_FACTOR * N0 once the base mesh is known."""
+    solve; the state names need the model, MLTP checks them with state_rows right
+    after building it, also before any solve). max_N stays None when not given;
+    resolve_max_N() turns it into MAX_N_FACTOR * N0 once the base mesh is known."""
     if refine is None or refine is False:
         return None
     if refine is True:
@@ -163,6 +180,7 @@ def refine_options(refine, OPT_ds):
         raise ValueError(f"refine options need ds_min < ds_max (got {o['ds_min']:g}, {o['ds_max']:g})")
     o["max_split"] = _as_int(o["max_split"], "max_split", 2)
     o["pass_max_iter"] = _as_int(o["pass_max_iter"], "pass_max_iter", 1)
+    o["max_lap_rise"] = _as_float(o["max_lap_rise"], "max_lap_rise", 0.0, strict=False, allow_inf=True)
     states = o["states"]
     if isinstance(states, str):
         states = (states,)
@@ -427,10 +445,11 @@ def refine_knots(s_knot, eta, tol, ds_min=0.0, ds_max=np.inf, max_N=None, merge=
     n_k = clip(ceil((eta_k / tol)^(1/order)), 2, max_split) equal parts (order =
     OPT_d + 1, the defect's convergence order; max_split=2 is plain bisection),
     fewer where the parts would be shorter than ds_min (blocked when not even two
-    fit). If N would exceed max_N the largest eta are split first and the rest is
-    dropped (capped). merge=True also joins adjacent pairs that are not split in
-    this pass, both with eta below merge_ratio * tol (default 2^-order / 2) and a
-    union of at most ds_max; left to right, each interval at most once.
+    fit). merge=True also joins adjacent pairs that are not over tol, both with eta
+    below merge_ratio * tol (default 2^-order / 2) and a union of at most ds_max;
+    left to right, each interval at most once. If N (after the merges) would
+    exceed max_N the largest eta are split first and the rest is dropped (capped);
+    the knots merges free are part of that budget.
     Returns (s_new, info): s_new keeps every old knot unless merged and never moves
     the end points; info = dict(n_split, n_merged, blocked, capped, split (bool
     mask of the old intervals), parts, merged (bool mask), n_over, N_old, N_new)."""
@@ -454,10 +473,28 @@ def refine_knots(s_knot, eta, tol, ds_min=0.0, ds_max=np.inf, max_N=None, merge=
         parts[k] = n_k if n_k >= 2 else 1
     blocked = int(np.sum(over & (parts < 2)))
 
+    drop = np.zeros(N + 1, dtype=bool)                 # interior knots removed by a merge
+    merged = np.zeros(N, dtype=bool)
+    n_merged = 0
+    if merge:                                          # never an interval over tol (split or not)
+        ratio = 2.0 ** (-order) / 2.0 if merge_ratio is None else float(merge_ratio)
+        lim = ratio * tol
+        k = 0
+        while k < N - 1:
+            if (not over[k] and not over[k + 1] and eta[k] < lim and eta[k + 1] < lim
+                    and h[k] + h[k + 1] <= ds_max * (1.0 + 1e-12)):
+                drop[k + 1] = True
+                merged[k] = merged[k + 1] = True
+                n_merged += 1
+                k += 2
+            else:
+                k += 1
+
     capped = False
-    if max_N is not None and N + int(np.sum(parts - 1)) > int(max_N):
+    n_kept = N - n_merged                              # intervals before the splits
+    if max_N is not None and n_kept + int(np.sum(parts - 1)) > int(max_N):
         capped = True
-        budget = max(int(max_N) - N, 0)
+        budget = max(int(max_N) - n_kept, 0)
         kept = np.ones(N, dtype=int)
         for k in np.argsort(-eta, kind="stable"):
             if budget <= 0:
@@ -469,23 +506,6 @@ def refine_knots(s_knot, eta, tol, ds_min=0.0, ds_max=np.inf, max_N=None, merge=
                     budget -= n_k - 1
         parts = kept
     split = parts >= 2
-
-    drop = np.zeros(N + 1, dtype=bool)                 # interior knots removed by a merge
-    merged = np.zeros(N, dtype=bool)
-    n_merged = 0
-    if merge:
-        ratio = 2.0 ** (-order) / 2.0 if merge_ratio is None else float(merge_ratio)
-        lim = ratio * tol
-        k = 0
-        while k < N - 1:
-            if (not split[k] and not split[k + 1] and eta[k] < lim and eta[k + 1] < lim
-                    and h[k] + h[k + 1] <= ds_max * (1.0 + 1e-12)):
-                drop[k + 1] = True
-                merged[k] = merged[k + 1] = True
-                n_merged += 1
-                k += 2
-            else:
-                k += 1
 
     out = [s[0]]
     for k in range(N):
@@ -508,6 +528,30 @@ def _converged(result):
     return str(result.get("status", "")) in GOOD_STATUS
 
 
+def lap_rise(result, parent):
+    """Relative lap change of a pass against the pass it refines,
+    (lap - lap_parent) / lap_parent; NaN when either lap is missing or not finite."""
+    try:
+        new, old = float(result.get("lap", np.nan)), float(parent.get("lap", np.nan))
+    except (TypeError, ValueError):
+        return float("nan")
+    if not (math.isfinite(new) and math.isfinite(old)) or old <= 0.0:
+        return float("nan")
+    return (new - old) / old
+
+
+def pass_accepted(result, parent, opts):
+    """True when the refinement pass ``result`` may replace ``parent`` (the pass it
+    refines): IPOPT converged and its lap is at most opts['max_lap_rise'] (relative)
+    slower than the parent's. A slower lap is a worse local optimum of the
+    path-sensitive NLP, not a mesh effect (module docstring); laps that are not
+    known are not judged."""
+    if not _converged(result):
+        return False
+    rise = lap_rise(result, parent)
+    return not (math.isfinite(rise) and rise > float(opts.get("max_lap_rise", math.inf)))
+
+
 def _entry(p, result, info=None):
     """One log row (one solve attempt) from a step / base result dict."""
     s_knot = _vec(result["s_knot"])
@@ -521,6 +565,7 @@ def _entry(p, result, info=None):
         "iters": int(result.get("iters", -1)),
         "status": str(result.get("status") or "unknown"),
         "converged": _converged(result),
+        "accepted": False,              # set by run_refinement for the base / an accepted pass
         "wall": float(result.get("wall", np.nan)),
         "n_split": int(info["n_split"]) if info else 0,
         "n_merged": int(info["n_merged"]) if info else 0,
@@ -554,22 +599,25 @@ def run_refinement(first, step, evaluate, opts, order=4, report=None):
                step / evaluate need; never copied into the log)
     step     : step(result, s_new) -> result dict of a solve on the knots s_new
                seeded from ``result`` (s_knot defaults to s_new). A step may list
-               failed attempts that preceded it (e.g. a reseed before a cold
-               retry) as result['attempts'] (result dicts): they are logged too.
+               attempts that preceded it and were not accepted (pass_accepted; e.g. a
+               reseed before a cold retry) as result['attempts'] (result dicts):
+               they are logged too.
     evaluate : evaluate(result) -> (eta (N,), extras dict with optional dT, t_eval)
     opts     : refine_options() output (tol, passes, max_N, merge, ds_min, ds_max,
-               max_split); order = OPT_d + 1 (refine_knots)
+               max_split, max_lap_rise); order = OPT_d + 1 (refine_knots)
     report   : optional callable(str) for progress lines
-    Returns (final, log, stop_reason): final = the last CONVERGED result (the base
-    when no pass converged), log = one dict per solve attempt (pass, seed, N,
-    s_knot, lap, iters, status, converged, wall, n_split, n_merged, capped, eta,
-    eta_max, eta_mean, s_argmax, n_over, dT_sum, t_eval; eta None and the eta_*
-    NaN where not evaluated), stop_reason in STOP_REASONS:
+    Returns (final, log, stop_reason): final = the last ACCEPTED result (the base
+    when no pass was accepted), log = one dict per solve attempt (pass, seed, N,
+    s_knot, lap, iters, status, converged, accepted, wall, n_split, n_merged,
+    capped, eta, eta_max, eta_mean, s_argmax, n_over, dT_sum, t_eval; eta None and
+    the eta_* NaN where not evaluated), stop_reason in STOP_REASONS:
       tol          every eta <= tol on the final mesh
       passes       `passes` refinement passes done
-      max_N        the knot vector cannot change because of max_N
+      max_N        nothing over tol can be split because of max_N
       no-split     nothing over tol can be split (ds_min)
       solve-failed a refinement pass did not converge (previous result kept)
+      lap-rise     a refinement pass converged to a lap more than max_lap_rise
+                   slower than the pass it refines (previous result kept)
       base-failed  the base solve did not converge (no refinement)"""
     say = report or (lambda msg: None)
     tol = float(opts["tol"])
@@ -578,6 +626,7 @@ def run_refinement(first, step, evaluate, opts, order=4, report=None):
     N0 = _vec(first["s_knot"]).size - 1
     max_N = resolve_max_N(opts, N0)
     entry = _entry(0, cur)
+    entry["accepted"] = entry["converged"]
     log = [entry]
     if not _converged(cur):
         say(f"base solve ended {entry['status']}: no refinement")
@@ -600,9 +649,9 @@ def run_refinement(first, step, evaluate, opts, order=4, report=None):
                                    ds_max=opts.get("ds_max", np.inf), max_N=max_N,
                                    merge=bool(opts.get("merge", False)),
                                    max_split=int(opts.get("max_split", 2)), order=order)
-        if s_new.size == s_old.size and np.array_equal(s_new, s_old):
+        if info["n_split"] == 0:        # nothing to refine (a merge-only pass is not re-solved)
             reason = "max_N" if info["capped"] else "no-split"
-            say(f"knots unchanged ({info['blocked']} interval(s) blocked by ds_min"
+            say(f"no interval over tol can be split ({info['blocked']} blocked by ds_min"
                 + (f", max_N = {max_N} reached" if info["capped"] else "") + ")")
             break
         say(f"pass {p + 1}: N {info['N_old']} -> {info['N_new']} ({info['n_split']} split, "
@@ -621,6 +670,14 @@ def run_refinement(first, step, evaluate, opts, order=4, report=None):
         if not _converged(res):
             reason = "solve-failed"
             break
+        if not pass_accepted(res, cur, opts):
+            reason = "lap-rise"
+            say(f"pass {p}: lap {entry['lap']:.4f} s is {100.0 * lap_rise(res, cur):.2f}% slower than "
+                f"pass {p - 1}'s {float(cur.get('lap', np.nan)):.4f} s (max_lap_rise "
+                f"{100.0 * float(opts.get('max_lap_rise', np.inf)):g}%): a worse local optimum, "
+                "rejected; previous result kept")
+            break
+        entry["accepted"] = True
         cur = res
     say(f"stop: {reason}")
     return cur, log, reason
@@ -629,9 +686,12 @@ def run_refinement(first, step, evaluate, opts, order=4, report=None):
 def refine_record(log, opts, stop_reason, base_mesh):
     """savemat-safe summary of a refinement run (data['refine']): the options
     (max_N resolved), the base mesh, the stop reason, one array entry per solve
-    attempt (pass, N, lap_time, eta_max, eta_mean, s_argmax, iters, wall, n_split,
-    n_merged, capped, converged, dT_sum; NaN where not evaluated), status / seed
-    joined with ', ', the base knots s_knot0 and the final (last converged) eta."""
+    attempt (RECORD_COLUMNS: pass_no, N, lap_time, eta_max, eta_mean, s_argmax,
+    iters, wall, n_split, n_merged, capped, converged, accepted, dT_sum; NaN where
+    not evaluated; load_solution keeps them 1-D for a single attempt), status /
+    seed joined with ', ', the base knots s_knot0 and the final (last accepted) eta.
+    converged = IPOPT converged; accepted = the attempt became the current result
+    (a converged pass rejected for its lap has converged 1, accepted 0)."""
     log = list(log)
     if not log:
         raise ValueError("refine_record: empty log")
@@ -657,14 +717,14 @@ def refine_record(log, opts, stop_reason, base_mesh):
         return np.array([e.get(key, np.nan) if dtype is float else e.get(key, -1) for e in log],
                         dtype=dtype)
 
-    done = [e for e in log if e.get("converged") and e.get("eta") is not None]
+    done = [e for e in log if e.get("accepted") and e.get("eta") is not None]
     final_eta = _vec(done[-1]["eta"]) if done else np.array([np.nan])
     return {
         "opts": o,
         "base_mesh": str(base_mesh or "unknown"),
         "stop_reason": str(stop_reason),
         "n_attempts": len(log),
-        "pass": col("pass", int),
+        "pass_no": col("pass", int),
         "N": col("N", int),
         "lap_time": col("lap", float),
         "eta_max": col("eta_max", float),
@@ -676,6 +736,7 @@ def refine_record(log, opts, stop_reason, base_mesh):
         "n_merged": col("n_merged", int),
         "capped": np.array([int(bool(e.get("capped"))) for e in log], dtype=int),
         "converged": np.array([int(bool(e.get("converged"))) for e in log], dtype=int),
+        "accepted": np.array([int(bool(e.get("accepted"))) for e in log], dtype=int),
         "dT_sum": col("dT_sum", float),
         "status": ", ".join(str(e.get("status") or "unknown") for e in log),
         "seed": ", ".join(str(e.get("seed") or "unknown") for e in log),
