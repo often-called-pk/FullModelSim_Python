@@ -5,7 +5,9 @@
 
 casadi>=3.6        # symbolic modelling, ca.Function, nlpsol('ipopt'), collocation helpers
 numpy>=1.24
-scipy>=1.10        # scipy.io  (loadmat / savemat),  scipy.signal.lfilter (moving average)
+scipy>=1.10        # scipy.io  (loadmat / savemat),  scipy.signal.lfilter (moving average);
+                   # setup_sweep: scipy.stats.qmc (Sobol' / Latin hypercube; functions/sweep.py picks the
+                   # generator keyword rng= (scipy >= 1.15) or seed= (older)), rankdata, spearmanr, kendalltau
 plotly>=5.18       # interactive HTML figures (replaces Simulink Data Inspector)
 kaleido>=0.2.1     # OPTIONAL: static PNG/PDF export of Plotly figures (figure.write_image)
 

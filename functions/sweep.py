@@ -17,19 +17,21 @@ sampling, shortlist and statistics layers are testable without the NLP stack.
   noise_floor(), lap_bracket(), bracket_gap(), unresolved_pairs()
   fingerprint(), model_hash(), sha256_file(), array_sha()
   free_ram_mb(), auto_workers(), blas_single_thread()
-  write_text_atomic(), write_json_atomic(), read_json(), write_csv_atomic(), read_csv(),
-  num(), dedup()
+  replace_retry(), write_text_atomic(), write_json_atomic(), read_json(),
+  write_csv_atomic(), read_csv(), num(), dedup()
 """
 
 import contextlib
 import csv
 import ctypes
 import hashlib
+import inspect
 import io
 import json
 import math
 import os
 import sys
+import time
 import warnings
 
 import numpy as np
@@ -39,6 +41,11 @@ BLAS_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 UNKNOWN_REASON = "unknown (vp_overrides would raise)"
 MIN_TRUST_N = 6            # fewer confirmed rows never give screen_trusted (rho = 1 by chance: 1/n!)
 SPEARMAN_EXACT_MAX_N = 8   # exact permutation p-value of Spearman's rho up to this n (8! orders)
+BOOT_CHUNK_MAX = 256       # bootstrap resamples per chunk, at most ...
+BOOT_CHUNK_ELEMS = 2_000_000   # ... and (resamples x row pairs) at most this many (~65 MB peak at any n)
+REPLACE_TRIES = 8          # os.replace attempts per atomic write (Windows: a target open elsewhere)
+REPLACE_WAIT_S = 0.05      # pause after the first failed attempt; doubles each time ...
+REPLACE_MAX_WAIT_S = 0.5   # ... up to this (8 attempts wait 2.25 s in all)
 
 
 # ============================================================================
@@ -94,15 +101,27 @@ def validate_specs(param_specs, known=None):
     return specs, dropped
 
 
+def _qmc_engine(cls, d, rng, **kw):
+    """``cls(d, **kw)`` (a scipy.stats.qmc engine) driven by the numpy Generator
+    ``rng``. The generator keyword is ``rng`` since scipy 1.15 (SPEC 7) and ``seed``
+    before, so it is picked from the constructor's signature: requirements.txt
+    allows scipy >= 1.10."""
+    key = "rng" if "rng" in inspect.signature(cls).parameters else "seed"
+    return cls(d, **{key: rng}, **kw)
+
+
 def sample_box(specs, n, sampler="sobol", seed=0):
     """Space-filling design over the box of ``specs``: returns (U, X), both
     (n, d): U in the unit cube, X = qmc.scale(U, lower, upper).
 
-    sampler='sobol': qmc.Sobol(d, scramble=True, rng=default_rng(seed));
+    sampler='sobol': qmc.Sobol(d, scramble=True) driven by default_rng(seed);
     random_base2(m) when n == 2**m, else a UserWarning (the balance properties
-    need a power of 2) and random(n). sampler='lhs': qmc.LatinHypercube(d,
-    rng=default_rng(seed)).random(n). The same (specs, n, sampler, seed) gives
-    the same design (the stored samples.csv of a sweep stays authoritative)."""
+    need a power of 2) and random(n). sampler='lhs': qmc.LatinHypercube(d)
+    driven by default_rng(seed), random(n) (the generator keyword is ``rng`` or,
+    before scipy 1.15, ``seed``: _qmc_engine). The same (specs, n, sampler, seed)
+    gives the same design (the stored samples.csv of a sweep stays authoritative).
+    seed=None draws OS entropy, i.e. a different design on every call (setup_sweep
+    replaces it by a drawn, stored seed)."""
     from scipy.stats import qmc
     if sampler not in SAMPLERS:
         raise ValueError(f"sampler must be one of {SAMPLERS}, got {sampler!r}")
@@ -115,7 +134,7 @@ def sample_box(specs, n, sampler="sobol", seed=0):
     hi = np.array([float(s[2]) for s in specs])
     rng = np.random.default_rng(seed)
     if sampler == "sobol":
-        eng = qmc.Sobol(d, scramble=True, rng=rng)
+        eng = _qmc_engine(qmc.Sobol, d, rng, scramble=True)
         m = n.bit_length() - 1
         if n == 1 << m:
             U = eng.random_base2(m)
@@ -127,7 +146,7 @@ def sample_box(specs, n, sampler="sobol", seed=0):
                 warnings.simplefilter("ignore", UserWarning)    # scipy's own balance warning
                 U = eng.random(n)
     else:
-        U = qmc.LatinHypercube(d, rng=rng).random(n)
+        U = _qmc_engine(qmc.LatinHypercube, d, rng).random(n)
     return U, qmc.scale(U, lo, hi)
 
 
@@ -286,10 +305,22 @@ def spearman_exact_p(q, y):
     return float(np.mean(np.abs(rho) >= abs(obs) - 1e-12))
 
 
+def _boot_chunk(n):
+    """Bootstrap resamples per chunk for n rows. kendall_b_rows holds a few
+    (resamples x n (n - 1) / 2) float arrays, so a fixed chunk of 256 needs
+    O(256 n^2) memory (about 1 GB at n = 500); the chunk is the largest number of
+    resamples (at most BOOT_CHUNK_MAX, at least 1) that keeps that product within
+    BOOT_CHUNK_ELEMS."""
+    pairs = max(n * (n - 1) // 2, 1)
+    return int(max(1, min(BOOT_CHUNK_MAX, BOOT_CHUNK_ELEMS // pairs)))
+
+
 def _corr_block(q, y, seed, n_boot, label=None):
     """Spearman rho / Kendall tau-b with p-values (Spearman exact by permutation for
     n <= SPEARMAN_EXACT_MAX_N, else scipy's), plus percentile bootstrap 95% CIs
-    (``n_boot`` resamples of the rows, seeded; skipped when n < 6) for one subset."""
+    (``n_boot`` resamples of the rows, seeded; skipped when n < 6) for one subset.
+    The resamples are processed in chunks of _boot_chunk(n), which bounds the memory
+    (the CIs do not depend on the chunk size)."""
     from scipy.stats import spearmanr, kendalltau
     q, y = np.asarray(q, float), np.asarray(y, float)
     n = int(q.size)
@@ -309,9 +340,9 @@ def _corr_block(q, y, seed, n_boot, label=None):
     if n >= 6 and n_boot > 0:
         rng = np.random.default_rng(seed)
         idx = rng.integers(0, n, size=(int(n_boot), n))
-        rho, tau = [], []
-        for a in range(0, idx.shape[0], 256):            # chunks keep the n^2 arrays small
-            sl = idx[a:a + 256]
+        rho, tau, step = [], [], _boot_chunk(n)
+        for a in range(0, idx.shape[0], step):           # chunks keep the n^2 arrays small
+            sl = idx[a:a + step]
             rho.append(spearman_rows(q[sl], y[sl]))
             tau.append(kendall_b_rows(q[sl], y[sl]))
         for key, vals in (("spearman_ci95", np.concatenate(rho)), ("kendall_ci95", np.concatenate(tau))):
@@ -563,6 +594,42 @@ def _json_clean(obj):
     return obj
 
 
+def replace_retry(src, dst, tries=None, wait_s=None, max_wait_s=None, discard=False):
+    """os.replace(src, dst) that survives a target another program holds open for a
+    moment. On Windows os.replace raises PermissionError (WinError 5 / 32) while a
+    viewer, an editor, a spreadsheet or a virus scanner has ``dst`` open; such a lock
+    is usually short, so a failed attempt is retried: ``tries`` attempts in all
+    (default REPLACE_TRIES), pausing wait_s, 2 wait_s, ... between them (default
+    REPLACE_WAIT_S, capped at REPLACE_MAX_WAIT_S). When the last attempt fails too, a
+    PermissionError that names ``dst`` and what to do (chained to the original) is
+    raised. Any other error is raised at once, not retried. ``discard`` removes ``src``
+    when an error leaves this function (a temporary file; otherwise it is left for the
+    caller)."""
+    tries = max(REPLACE_TRIES if tries is None else int(tries), 1)
+    wait_s = REPLACE_WAIT_S if wait_s is None else float(wait_s)
+    cap = REPLACE_MAX_WAIT_S if max_wait_s is None else float(max_wait_s)
+    try:
+        for k in range(tries):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError as exc:
+                if k < tries - 1:
+                    time.sleep(min(wait_s * 2.0 ** k, cap))
+                    continue
+                raise PermissionError(
+                    exc.errno, f"cannot replace {dst}: {exc.strerror or exc} after {tries} attempts. On "
+                               "Windows another program has the file open: close the viewer, editor or "
+                               "spreadsheet that shows it and run again (a sweep call with resume=True "
+                               "continues from the rows on disk); elsewhere check the folder "
+                               "permissions") from exc
+    except BaseException:
+        if discard:
+            with contextlib.suppress(OSError):
+                os.remove(src)
+        raise
+
+
 def _replace_into(path, data, mode):
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
@@ -571,7 +638,7 @@ def _replace_into(path, data, mode):
         fh.write(data)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    replace_retry(tmp, path, discard=True)
 
 
 def write_text_atomic(path, text):

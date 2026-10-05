@@ -3,17 +3,23 @@ Run from the repo root:
 
     venv\\Scripts\\python.exe test_setup_sweep.py
 
-  1. functions.sweep units: validate_specs, sample_box, select_shortlist, bridge_points,
-     rank_metrics on synthetic data (lap brackets, the trust rule: minimum n, an
-     unconfirmed QSS-best row, the exact small-n Spearman p), noise floor / brackets /
-     unresolved pairs, fingerprint, writers
+  1. functions.sweep units: validate_specs, sample_box (the qmc generator keyword of old and
+     new scipy), select_shortlist, bridge_points, rank_metrics on synthetic data (lap
+     brackets, the trust rule: minimum n, an unconfirmed QSS-best row, the exact small-n
+     Spearman p, a bootstrap whose memory does not grow as n^2), noise floor / brackets /
+     unresolved pairs, fingerprint, writers (an atomic write over a target another program
+     holds open: retried, then a clear PermissionError, no temp file left)
   1b. setup_sweep internals with stand-ins (casadi-free, no solve): the hub candidate pick,
-     _reject, _load_row, _rt_wave, _task_confirm with a stand-in hop (star, bridge ladder,
-     solver mismatch, a better baseline branch), the argument ValueErrors (no folder),
-     _resolve_base / _precheck_base, the finish stage with a stand-in runner (reuse rules,
-     skips), the report on a stub sweep (an OFF-BRANCH winner, a failed QSS-best row:
-     best provenance, unresolved brackets, warnings, failures), the inline runner, and the
-     code hash (covers the import closure; an edit to functions/simpleMA.py changes it)
+     _reject, _load_row (solver_mismatch is retried), _rebranch (a resume with another
+     tol_branch_s), _rt_wave, _task_confirm with a stand-in hop (star, bridge ladder,
+     solver mismatch, a better baseline branch), the hub check with the uncapped cold
+     options, the argument ValueErrors (no folder), seed=None (a drawn, stored seed that
+     resumes), the default sweep folder in .gitignore, _resolve_base / _precheck_base, the
+     finish stage with a stand-in runner
+     (reuse rules, skips), the report on a stub sweep (an OFF-BRANCH winner, a failed
+     QSS-best row: best provenance, unresolved brackets, warnings, failures; a confirmed
+     finish row as the best setup), the inline runner, and the code hash (covers the
+     import closure; an edit to functions/simpleMA.py changes it)
   2. screen_batch == screen_sweep, exact ==: 16 seeded Sobol setups over 10 fields in 4
      configs on Sturn (+ BCN when its .mat exists), the MLTP_screen baseline, an invalid row
      isolated, warnings captured; workers=2 with chunk 1 / 7 in a `python -c` child (Windows
@@ -126,6 +132,28 @@ ok("lhs: every column stratified (one point per 1/n bin)",
 ok("unknown sampler / n=0 raise ValueError",
    raises(ValueError, S.sample_box, sp3, 8, sampler="grid") is not None
    and raises(ValueError, S.sample_box, sp3, 0) is not None)
+
+
+class _QmcOld:                                     # a scipy < 1.15 engine: the generator keyword is seed
+    def __init__(self, d, *, scramble=True, seed=None):
+        self.got = ("seed", d, scramble, seed)
+
+
+class _QmcNew:                                     # scipy >= 1.15: rng (seed kept only for a while)
+    def __init__(self, d, *, scramble=True, rng=None, seed=None):
+        self.got = ("rng", d, scramble, rng)
+
+
+gen = np.random.default_rng(0)
+ok("_qmc_engine: the Generator goes to seed= for an engine without rng= (scipy < 1.15), else to rng=",
+   S._qmc_engine(_QmcOld, 3, gen, scramble=False).got == ("seed", 3, False, gen)
+   and S._qmc_engine(_QmcNew, 3, gen).got == ("rng", 3, True, gen))
+from scipy.stats import qmc as _qmc
+import inspect
+_kw = "rng" if "rng" in inspect.signature(_qmc.Sobol).parameters else "seed"
+ok(f"sample_box == the installed scipy's own scrambled Sobol' draw (generator keyword {_kw}=), bitwise",
+   np.array_equal(U1, _qmc.Sobol(3, scramble=True, **{_kw: np.random.default_rng(0)}).random_base2(6))
+   and np.array_equal(U5, _qmc.LatinHypercube(3, **{_kw: np.random.default_rng(0)}).random(50)))
 
 q = np.array([10.0, 3.0, 1.0, 2.0, 2.0, np.nan, 5.0, 4.0, 6.0, 7.0, 8.0])
 okm = np.array([True] * 11)
@@ -248,6 +276,33 @@ m = S.rank_metrics(mrows(qd, [0.8 * x for x in qd]), 1e-4, [1, 2, 3],
 ok("an unconfirmed row that is not the QSS best leaves the verdict alone",
    m["screen_trusted"] and m["qss_best_row"] == 1 and m["qss_best_confirmed"] and m["n_unconfirmed"] == 1)
 
+pairs_of = lambda n: n * (n - 1) // 2                                   # noqa: E731
+ok("bootstrap chunk: 256 resamples for few rows, fewer as n grows so (resamples x pairs) stays "
+   "<= BOOT_CHUNK_ELEMS (one resample at the least)",
+   S._boot_chunk(8) == 256 and S._boot_chunk(100) == 256 and S._boot_chunk(500) < 32
+   and all(S._boot_chunk(n) * pairs_of(n) <= S.BOOT_CHUNK_ELEMS for n in (50, 200, 500, 1400))
+   and S._boot_chunk(5000) == 1 and S._boot_chunk(2) >= 1)
+rs = np.random.RandomState(11)
+qb = rs.rand(40)
+yb = qb + 0.4 * rs.rand(40)
+cb_ref = S._corr_block(qb, yb, 3, 300)
+elems, S.BOOT_CHUNK_ELEMS = S.BOOT_CHUNK_ELEMS, 2000                    # 2 resamples per chunk at n = 40
+try:
+    cb_two = S._corr_block(qb, yb, 3, 300)
+finally:
+    S.BOOT_CHUNK_ELEMS = elems
+ok("the bootstrap CIs do not depend on the chunk size", cb_ref["spearman_ci95"] is not None
+   and cb_ref["kendall_ci95"] is not None and cb_ref == cb_two)
+import tracemalloc
+qb = rs.rand(300)
+yb = qb + 0.4 * rs.rand(300)
+tracemalloc.start()
+S._corr_block(qb, yb, 3, 256)
+peak_mib = tracemalloc.get_traced_memory()[1] / 2.0 ** 20
+tracemalloc.stop()
+ok(f"bootstrap memory at n = 300 stays small ({peak_mib:.0f} MiB peak; fixed 256-resample chunks "
+   "needed ~350 MiB)", peak_mib < 150)
+
 f1 = S.fingerprint({"b": [1, 2.5], "a": {"y": np.float64(0.1), "x": (1, 2)}})
 f2 = S.fingerprint({"a": {"x": [1, 2], "y": 0.1}, "b": [np.int64(1), 2.5]})
 ok("fingerprint: key order / tuple / numpy scalar invariant, value sensitive",
@@ -264,6 +319,65 @@ rows = S.read_csv(cp)
 ok("write_csv_atomic: repr floats round-trip, nan / None empty, bools, ';' lists",
    float(rows[0]["v"]) == 0.1 + 0.2 and rows[0]["flag"] == "True" and rows[0]["lst"] == "3;4"
    and rows[0]["none"] == "" and rows[1]["v"] == "" and math.isnan(S.num(rows[1]["v"])))
+
+# atomic writers over a target that another program holds open (Windows: PermissionError)
+real_replace, rep_calls = os.replace, []
+
+
+def flaky_replace(n_fail, exc=PermissionError, code=13):
+    def fn(src, dst):
+        rep_calls.append(os.path.basename(dst))
+        if len(rep_calls) <= n_fail:
+            raise exc(code, "Access is denied")
+        return real_replace(src, dst)
+    return fn
+
+
+lockd = os.path.join(TMP, "lock")
+wp, pj = os.path.join(lockd, "confirmed.csv"), os.path.join(lockd, "plan.json")
+S.write_csv_atomic(wp, ["a"], [dict(a=1)])
+wait0, tries0 = S.REPLACE_WAIT_S, S.REPLACE_TRIES
+S.REPLACE_WAIT_S = 0.0
+try:
+    os.replace = flaky_replace(3)
+    S.write_json_atomic(pj, {"v": 2})                  # 3 PermissionErrors, then it goes through
+    retried = len(rep_calls) == 4 and S.read_json(pj) == {"v": 2}
+    rep_calls.clear()
+    os.replace = flaky_replace(10 ** 6)                # never goes through
+    msg = raises(PermissionError, S.write_csv_atomic, wp, ["a"], [dict(a=2)])
+    gave_up = (msg is not None and "confirmed.csv" in msg and f"{S.REPLACE_TRIES} attempts" in msg
+               and "close" in msg and len(rep_calls) == S.REPLACE_TRIES)
+    rep_calls.clear()
+    os.replace = flaky_replace(10 ** 6, exc=OSError, code=5)       # EIO: not a PermissionError
+    other = raises(OSError, S.write_csv_atomic, wp, ["a"], [dict(a=3)])
+    one_try = other is not None and len(rep_calls) == 1
+finally:
+    os.replace = real_replace
+    S.REPLACE_WAIT_S = wait0
+ok("atomic writers: a PermissionError on os.replace is retried (3 failures, then it goes through)", retried)
+ok("... after REPLACE_TRIES attempts a PermissionError names the file and says what to do; the old "
+   "content stays and no temp file is left", gave_up and S.read_csv(wp) == [{"a": "1"}]
+   and sorted(os.listdir(lockd)) == ["confirmed.csv", "plan.json"])
+ok("... an OSError that is no PermissionError is raised at once, not retried", one_try)
+if sys.platform.startswith("win"):
+    import threading
+    fh = open(pj, "r")                     # Python's open(): no FILE_SHARE_DELETE, like a viewer or Excel
+    threading.Timer(0.25, fh.close).start()
+    S.write_json_atomic(pj, {"v": 3})      # WinError 5 for 0.25 s, then released
+    ok("Windows: a target held open for 0.25 s is replaced once it is released (real lock)",
+       S.read_json(pj) == {"v": 3} and sorted(os.listdir(lockd)) == ["confirmed.csv", "plan.json"])
+    fh = open(pj, "r")
+    S.REPLACE_TRIES, S.REPLACE_WAIT_S = 3, 0.01
+    try:
+        msg = raises(PermissionError, S.write_json_atomic, pj, {"v": 4})
+    finally:
+        S.REPLACE_TRIES, S.REPLACE_WAIT_S = tries0, wait0
+        fh.close()
+    ok("Windows: a target that stays open -> a clear PermissionError after 3 attempts, content and folder intact",
+       msg is not None and "plan.json" in msg and "3 attempts" in msg and S.read_json(pj) == {"v": 3}
+       and sorted(os.listdir(lockd)) == ["confirmed.csv", "plan.json"])
+else:
+    print("  [SKIP] real file lock (Windows only)")
 ok("auto_workers in [1, n_tasks]", S.auto_workers(1) == 1 and 1 <= S.auto_workers(64, rss_mb=260) <= 64)
 with S.blas_single_thread():
     inside = [os.environ.get(k) for k in S.BLAS_VARS]
@@ -317,10 +431,18 @@ for st in ("crashed", "code_changed", "error", "failed", "solver_mismatch"):
     again.append(SS._load_row(jp5, "fp", vals5) is None)
 with open(os.path.join(LR, "7.json"), "w") as fh:
     fh.write("{")
-ok("_load_row: crashed / code_changed / error run again, failed / solver_mismatch are kept; "
-   "a missing or unreadable record -> None",
-   again == [True, True, True, False, False] and SS._load_row(os.path.join(LR, "6.json"), "fp", vals5) is None
+ok("_load_row: crashed / code_changed / error / solver_mismatch (machine-dependent) run again, 'failed' "
+   "(a pure function of hub, setup and options) is kept; a missing or unreadable record -> None",
+   again == [True, True, True, False, True] and SS._load_row(os.path.join(LR, "6.json"), "fp", vals5) is None
    and SS._load_row(os.path.join(LR, "7.json"), "fp", vals5) is None)
+
+rbr = dict(rt_ok=True, rt_residual_s=4e-4, branch_ok=True)
+ok("_rebranch: the flag follows the stored round-trip residual and THIS call's tol_branch_s (True = it "
+   "changed); a row without a converged round trip has no flag and is left alone",
+   SS._rebranch(rbr, 1e-4) is True and rbr["branch_ok"] is False and SS._rebranch(rbr, 1e-4) is False
+   and SS._rebranch(rbr, 4e-4) is True and rbr["branch_ok"] is True      # |r| <= tol: on-branch
+   and SS._rebranch(dict(rt_ok=False, rt_residual_s=None, branch_ok=False), 1.0) is False
+   and SS._rebranch(dict(rt_ok=None, branch_ok=None), 1.0) is False)
 
 RT = {1: dict(status="accepted", kind="top", nlp_lap_s=17.90, path="star", iters=5),
       2: dict(status="accepted", kind="top", nlp_lap_s=17.95, path="star", iters=8),
@@ -401,6 +523,42 @@ ok("_task_confirm: a round trip below the hub lap by > tol saves the better base
    rec["status"] == "accepted" and rec["branch_ok"] is False and abs(rec["rt_residual_s"] + 0.01) < 1e-12
    and rec["rt_better_baseline_file"] == task["rt_path"] and os.path.isfile(task["rt_path"]))
 
+
+def run_hub_check(iters, tag):
+    """_task_hub_check with SS._mltp replaced by a stand-in that records the IPOPT options it was
+    given and 'solves' in ``iters`` iterations (full+duals, Solve_Succeeded, 18.0 s on ma57)."""
+    d = os.path.join(TMP, "hubcheck", tag)
+    os.makedirs(d, exist_ok=True)
+    task = dict(id="hub_check", hub_path=os.path.join(d, "hub.mat"), rehub_path=os.path.join(d, "hub_rehub.mat"),
+                hop_ipopt={"print_level": 0, "sb": "yes", "max_iter": 250}, cold_ipopt={"print_level": 0, "sb": "yes"})
+    seen = []
+
+    def fake_mltp(task_, warm, overrides, ipopt):
+        seen.append((warm, dict(overrides), dict(ipopt)))
+        return types.SimpleNamespace(
+            data=types.SimpleNamespace(lap_time=18.0, nlp={"w_opt": np.zeros(2), "linear_solver": "ma57"}),
+            elapsed={"ipopt_iters": iters, "warm_start": "full+duals"},
+            solve_stats={"return_status": "Solve_Succeeded"})
+
+    old, SS._mltp = SS._mltp, fake_mltp
+    try:
+        out = SS._task_hub_check(task)
+        SS._hop(task, "w", {"a": 1.0}, "star")              # a row's hop, for comparison
+    finally:
+        SS._mltp = old
+    return out, seen, task
+
+
+out0, seen0, task0 = run_hub_check(0, "ok")
+out4, seen4, task4 = run_hub_check(400, "far")
+ok("hub check: runs with the cold options (no max_iter cap), while a row's hop keeps the max_warm_iter cap",
+   seen0[0] == (task0["hub_path"], {}, {"print_level": 0, "sb": "yes"}) and "max_iter" not in seen0[0][2]
+   and seen0[1] == ("w", {"a": 1.0}, {"print_level": 0, "sb": "yes", "max_iter": 250}))
+ok("hub check of a base far from a solution (400 iterations, more than the 250 cap): done, the re-solve is "
+   "written as the candidate hub; a base that is already a solution (0 iterations) writes nothing",
+   out4["status"] == "done" and out4["hop"]["iters"] == 400 and os.path.isfile(task4["rehub_path"])
+   and out0["hop"]["iters"] == 0 and not os.path.isfile(task0["rehub_path"]))
+
 BADKW = [dict(roundtrip="bogus"), dict(TyreModel="Pure"), dict(sampler="grid"), dict(n_samples=0),
          dict(n_samples=2.5), dict(top_k=-1), dict(n_probes=-2), dict(bridge_steps=(1,)), dict(workers=-1),
          dict(workers=1.5), dict(screen_workers=0), dict(max_warm_iter=0)]
@@ -412,6 +570,42 @@ for i, bad in enumerate(BADKW):
     bad_ok.append(msg is not None and not os.path.exists(os.path.join(TMP, f"bad_{i}")))
 ok(f"setup_sweep: {len(BADKW)} bad arguments (sampler included) raise ValueError before any folder exists",
    all(bad_ok))
+
+# seed=None: a drawn, stored seed (QSS-only sweeps: no NLP, casadi not needed)
+SK = dict(confirm=False, top_k=1, n_probes=1, results_root=TMP, verbose=False)
+spec2 = [("alpha_RW", 4, 16), ("mb", 1730, 1910)]
+ra, _ = caught(SS.setup_sweep, spec2, 4, name="seed_none", seed=None, **SK)
+plan_a = S.read_json(os.path.join(TMP, "seed_none", "plan.json"))
+seed_a = plan_a["call"]["seed"]
+smp_a = open(os.path.join(TMP, "seed_none", "samples.csv"), "rb").read()
+rb2, _ = caught(SS.setup_sweep, spec2, 4, name="seed_none", seed=None, **SK)        # the same call again
+rc2, _ = caught(SS.setup_sweep, spec2, 4, seed=None, **SK)                          # no name: a new sweep
+rd2, _ = caught(SS.setup_sweep, spec2, 4, name="seed_none", seed=seed_a, **SK)      # the drawn seed, explicit
+re2, _ = caught(SS.setup_sweep, spec2, 4, name="seed_fixed", seed=3, **SK)
+ok("seed=None: a concrete int seed is drawn and stored (plan call.seed, seed_drawn, fingerprint inputs)",
+   isinstance(seed_a, int) and not isinstance(seed_a, bool) and plan_a["call"]["seed_drawn"] is True
+   and plan_a["fingerprint_inputs"]["seed"] == seed_a and plan_a["call"]["n_samples"] == 4)
+ok("repeating the same call (same name, seed=None) resumes it: same fingerprint, the stored design, 2 runs "
+   "recorded; the drawn seed passed explicitly resumes it too",
+   rb2.fingerprint == ra.fingerprint and rd2.fingerprint == ra.fingerprint
+   and open(os.path.join(TMP, "seed_none", "samples.csv"), "rb").read() == smp_a
+   and rb2.samples == ra.samples and len(S.read_json(os.path.join(TMP, "seed_none", "plan.json"))["runs"]) == 3)
+ok("without a name every seed=None call is its own sweep (another drawn seed, folder and fingerprint); "
+   "an explicit seed is not marked as drawn",
+   rc2.fingerprint != ra.fingerprint and rc2.name != ra.name
+   and S.read_json(os.path.join(rc2.out_dir, "plan.json"))["call"]["seed"] != seed_a
+   and S.read_json(os.path.join(TMP, "seed_fixed", "plan.json"))["call"]["seed"] == 3
+   and S.read_json(os.path.join(TMP, "seed_fixed", "plan.json"))["call"]["seed_drawn"] is False)
+msg = raises(SS.SweepError, SS.setup_sweep, spec2, 4, name="seed_fixed", seed=None, **SK)
+ok("seed=None under the name of a fixed-seed sweep is another sweep (SweepError), never a silent adoption",
+   msg is not None and "another sweep" in msg)
+
+# the default sweep folder is git-ignored (Results/ itself is tracked for the baselines)
+gi = [ln.strip() for ln in open(os.path.join(HERE, ".gitignore"), encoding="utf-8").read().splitlines()]
+default_root = inspect.signature(SS.setup_sweep).parameters["results_root"].default
+ok(f"the default sweep folder ({default_root}) is listed in .gitignore, the tracked Results/ baselines are not",
+   default_root.replace(os.sep, "/") + "/" in gi
+   and not {"Results", "Results/", "/Results", "/Results/", "Results/*", "*.mat"} & set(gi))
 
 bc = userOpts(Ctx(), circuit="Sturn")
 disc = discretise(bc.track, bc.OPT_ds, bc.OPT_d, mesh=bc.mesh, mesh_opts=bc.mesh_opts)
@@ -552,6 +746,84 @@ _, w = caught(sw.run_finish)
 ok("finish without a promotion-safe field: skipped, the field excluded with its reason",
    sw.fin["reason"] == "no promotion-safe field" and "Pacejka" in sw.fin["excluded"]["alpha_RW"]
    and any("not promotable" in x for x in w))
+
+recs = {1: acc_rec("finbest", 1, H - 0.020, 2e-4, H, 10.0), 2: acc_rec("finbest", 2, H - 0.010, -1e-4, H, 11.0),
+        3: dict(acc_rec("finbest", 3, H - 0.03, 1e-4, H, 11.5), kind="finish")}
+sw = stub_sweep("finbest", recs, qss=[18.70, 18.69, 18.68], top_ids=[2, 1], hub_lap=H,
+                fin=dict(confirm_row=3, qss_lap_s=18.66))
+res, w = caught(sw.finalise)
+ok("a confirmed finish row that beats every sampled row is res.best (kind 'finish', its setup, file and repro) ...",
+   res.best["row_id"] == 3 and res.best["kind"] == "finish" and res.best["vp_overrides"] == {"alpha_RW": 11.5}
+   and res.best["nlp_lap_s"] == H - 0.03 and abs(res.best["delta_s"] + 0.03) < 1e-12
+   and res.best["repro"] == "repro 3" and res.best["branch_ok"] is True
+   and S.read_json(sw.paths["summary"])["best"]["row_id"] == 3 and S.read_json(sw.paths["summary"])["tol_branch_s"] == 1e-3)
+ok("... but stays out of the rank metrics and the ranking (nlp_rank empty, listed after the ranked rows)",
+   res.metrics["row_ids"] == [0, 1, 2] and res.metrics["n"] == 3
+   and [(r["row_id"], r["nlp_rank"]) for r in res.confirmed] == [(1, 1), (2, 2), (0, 3), (3, None)])
+recs[3] = dict(acc_rec("finbest", 3, H - 0.015, 1e-4, H, 11.5), kind="finish")        # slower than row 1
+sw = stub_sweep("finbest2", recs, qss=[18.70, 18.69, 18.68], top_ids=[2, 1], hub_lap=H,
+                fin=dict(confirm_row=3, qss_lap_s=18.66))
+res2, _ = caught(sw.finalise)
+recs[3] = dict(acc_rec("finbest", 3, H - 0.020, 1e-4, H, 11.5), kind="finish")        # ties row 1 exactly
+sw = stub_sweep("finbest3", recs, qss=[18.70, 18.69, 18.68], top_ids=[2, 1], hub_lap=H,
+                fin=dict(confirm_row=3, qss_lap_s=18.66))
+res3, _ = caught(sw.finalise)
+recs[3] = dict(acc_rec("finbest", 3, H - 0.05, 1e-4, H, 11.5), kind="finish", status="failed",
+               reason="stand-in: the re-confirmation did not converge")                  # a failed finish row
+sw = stub_sweep("finbest4", recs, qss=[18.70, 18.69, 18.68], top_ids=[2, 1], hub_lap=H,
+                fin=dict(confirm_row=3, qss_lap_s=18.66))
+res4, _ = caught(sw.finalise)
+ok("a finish row that is slower than the best sampled row, ties it, or failed leaves res.best on the sampled row",
+   res2.best["row_id"] == 1 and res3.best["row_id"] == 1 and res4.best["row_id"] == 1)
+recs[3] = dict(acc_rec("finbest", 3, H - 0.02005, 1e-4, H, 11.5), kind="finish")      # best by 0.05 ms, inside row 1's bracket
+sw = stub_sweep("finbest5", recs, qss=[18.70, 18.69, 18.68], top_ids=[2, 1], hub_lap=H,
+                fin=dict(confirm_row=3, qss_lap_s=18.66))
+res5, _ = caught(sw.finalise)
+ok("a finish row the noise floor cannot separate from a sampled row: best, unresolved with it (both ways)",
+   res5.best["row_id"] == 3 and res5.best["unresolved_with"] == [1]
+   and {r["row_id"]: r["unresolved_with"] for r in res5.confirmed}[1] == [3])
+
+
+def resume_stub(tag, tol, runner):
+    """A resumed stub sweep at the confirm stage with rows/<id>.json written by 'an earlier call'
+    (tol_branch_s 1 ms): 1 on-branch (0.4 ms), 2 OFF-BRANCH (2 ms), 3 round trip failed, 4 solver_mismatch,
+    5 failed. run_confirms reuses what a resume may reuse; ``runner`` records what is submitted."""
+    ids = [1, 2, 3, 4, 5]
+    vals = [{"alpha_RW": 8.0}] + [{"alpha_RW": 9.0 + i} for i in ids]
+    sw = stub_sweep(tag, {}, qss=[18.70] + [18.69 - 0.001 * i for i in ids], top_ids=ids, hub_lap=H,
+                    resumed=True, tol_branch_s=tol, runner=runner, row_vals=vals, row_ovs=[{}] + vals[1:],
+                    U=np.linspace(0.1, 0.9, 5).reshape(-1, 1), u0=np.array([0.3]))
+    disk = {1: acc_rec(tag, 1, H - 0.020, 4e-4, H, 10.0), 2: acc_rec(tag, 2, H - 0.015, 2e-3, H, 11.0),
+            3: dict(acc_rec(tag, 3, H - 0.010, 0.0, H, 12.0), rt_ok=False, rt_residual_s=None, branch_ok=False,
+                    rt_lap_s=None, delta_rev_s=None),
+            4: dict(row_id=4, kind="top", overrides={"alpha_RW": 13.0}, status="solver_mismatch", wall_s=1.0,
+                    reason="star: linear solver mumps != hub's ma57"),
+            5: dict(row_id=5, kind="top", overrides={"alpha_RW": 14.0}, status="failed", wall_s=2.0,
+                    reason="star: Maximum_Iterations_Exceeded after 250 iterations")}
+    for rid, rec in disk.items():
+        S.write_json_atomic(os.path.join(sw.paths["rows"], f"{rid}.json"), dict(rec, fingerprint=sw.fp))
+        if rec["status"] == "accepted":
+            open(os.path.join(sw.paths["rows"], f"{rid}.mat"), "wb").close()
+    sw.run_confirms()
+    return sw
+
+
+rn = FakeRunner({"row_4": dict(status="crashed", reason="stand-in")})
+sw = resume_stub("tol_a", 1e-4, rn)
+ok("resume with a smaller tol_branch_s (0.1 ms): the stored branch flag of a reused row is re-derived from its "
+   "stored residual (row 1 now OFF-BRANCH), the residuals and the files stay as they were",
+   sw.records[1]["branch_ok"] is False and sw.records[1]["rt_residual_s"] == 4e-4
+   and sw.records[2]["branch_ok"] is False and sw.records[2]["rt_residual_s"] == 2e-3
+   and S.read_json(os.path.join(sw.paths["rows"], "1.json"))["branch_ok"] is True)
+ok("... a row whose round trip failed keeps no flag; the solver_mismatch row is submitted again, the "
+   "'failed' row and the accepted rows are reused",
+   sw.records[3]["branch_ok"] is False and sw.records[3]["rt_ok"] is False
+   and [t["id"] for t in rn.submitted] == ["row_4"] and sw.records[4]["status"] == "crashed"
+   and sw.records[5]["status"] == "failed" and sorted(sw.records) == [1, 2, 3, 4, 5])
+rn = FakeRunner({"row_4": dict(status="crashed", reason="stand-in")})
+sw = resume_stub("tol_b", 5e-3, rn)
+ok("resume with a larger tol_branch_s (5 ms): row 2 (2 ms) is now on the hub's branch, row 1 stays",
+   sw.records[1]["branch_ok"] is True and sw.records[2]["branch_ok"] is True)
 
 def screen_workers_picked(n, row_s, cold, n_running):
     """The worker count _Sweep.screen gives the n-row batch (screen_workers='auto'), with

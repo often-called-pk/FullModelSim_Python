@@ -24,7 +24,9 @@ every MLTP / optimise_design call runs with save=False, plot=False):
             default setup to the base setup by one warm hop; the faster of the two is
             kept (warned when they disagree)          -> hub_candidates/<name>.mat
             Then checked: a warm re-solve with duals at the base setup must be
-            'full+duals', converge and take 0 IPOPT iterations  -> hub.mat, hub.json
+            'full+duals', converge and take 0 IPOPT iterations (a base that needs
+            more is replaced by the re-solve, which runs with the cold solve's
+            options, not the max_warm_iter cap of a row's hop)   -> hub.mat, hub.json
   screen    QSS lap of every row (MLTP_screen.screen_batch, bitwise screen_sweep),
             run while the hub solves
   shortlist baseline + the QSS top_k + n_probes rows at QSS-rank quantiles of the rest
@@ -33,13 +35,17 @@ every MLTP / optimise_design call runs with save=False, plot=False):
             not converge is retried along a private bridge (2, then 4 equal steps from
             the hub), never cold; a round trip back to the base setup measures the
             branch                                  -> rows/<id>.json|mat, logs/<id>.log
+            A resume reuses the rows on disk (crashed / code_changed / error /
+            solver_mismatch rows, which depend on the machine, run again) and
+            re-derives their branch flags with its own tol_branch_s
   report    ranking with a noise floor and per-row lap brackets (unresolved pairs),
             QSS-vs-NLP rank metrics (Spearman / Kendall tau-b + bootstrap CIs,
             resolved-pair concordance, regret, slope, whether the screen can be
             trusted), the best setup with its branch flag, result file and repro
                                               -> confirmed.csv, summary.json, report.html
   finish    (finish=True) optimise_design over the promotion-safe fields, warm-started
-            from the winner's row; its p* is re-confirmed through the star  -> finish/
+            from the winner's row; its p* is re-confirmed through the star (kept out
+            of the rank metrics; res.best when it beats every sampled row) -> finish/
 
 Why a star: cold solves of this NLP land on local optima about 0.01 s apart at the
 default setup and up to 2 s apart off it (Sturn, base mb=1800: 18.419 s cold against
@@ -77,6 +83,7 @@ import hashlib
 import importlib
 import math
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -115,7 +122,11 @@ _CODE_FILES = ("MLTP.py", "MLTP_initial.py", "MLTP_screen.py", "MLTP_paramOptim.
 _HASH_EXEMPT = ("plotSDI.py", "gg_plots.py")
 
 ROUNDTRIP_MODES = ("all", "top", "none")
-_RETRY = ("crashed", "code_changed", "error")   # row statuses a resume runs again
+# row statuses a resume runs again: the ones that depend on the machine, not on the setup
+# (a died worker, a changed code hash, an exception, an HSL library that did not load in a
+# worker so the hop ran on MUMPS). 'failed' (no convergence even through the bridges) is a
+# pure function of the hub bytes, the setup and the options, so it is kept.
+_RETRY = ("crashed", "code_changed", "error", "solver_mismatch")
 _QUIET = {"print_level": 0, "sb": "yes"}         # silence IPOPT; never changes its path
 _RT_FIELDS = ("rt_lap_s", "rt_iters", "rt_status", "rt_mode", "rt_wall_s", "rt_ok", "rt_reason",
               "rt_residual_s", "branch_ok", "rt_better_baseline_file")
@@ -216,14 +227,16 @@ def _to_mat(obj):
 
 
 def _savemat_atomic(path, data):
-    """{'data': data} -> path (MLTP's own result format) via a temporary file."""
+    """{'data': data} -> path (MLTP's own result format) via a temporary file
+    (S.replace_retry: a target another program holds open is retried, then a clear
+    PermissionError)."""
     import scipy.io as sio
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f".{os.path.basename(path)}.{os.getpid()}.tmp")
     with open(tmp, "wb") as fh:
         sio.savemat(fh, {"data": _to_mat(data)}, do_compression=True)
-    os.replace(tmp, path)
+    S.replace_retry(tmp, path, discard=True)
 
 
 def _copy_atomic(src, dst):
@@ -231,7 +244,7 @@ def _copy_atomic(src, dst):
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f".{os.path.basename(dst)}.{os.getpid()}.tmp")
     shutil.copyfile(src, tmp)
-    os.replace(tmp, dst)
+    S.replace_retry(tmp, dst, discard=True)
 
 
 def _field_value(ctx, field):
@@ -446,10 +459,11 @@ def _hop_info(c, t0, step, overrides):
                 wall=time.perf_counter() - t0, w_sha=S.array_sha(nlp["w_opt"]))
 
 
-def _hop(task, warm, overrides, step):
-    """One warm MLTP solve at base_ov | overrides from ``warm`` (a path or a ctx)."""
+def _hop(task, warm, overrides, step, ipopt=None):
+    """One warm MLTP solve at base_ov | overrides from ``warm`` (a path or a ctx), with
+    the hop's IPOPT options (capped at max_warm_iter) unless ``ipopt`` is given."""
     t0 = time.perf_counter()
-    c = _mltp(task, warm, overrides, task["hop_ipopt"])
+    c = _mltp(task, warm, overrides, task["hop_ipopt"] if ipopt is None else ipopt)
     return c, _hop_info(c, t0, step, overrides)
 
 
@@ -553,7 +567,12 @@ def _pick_hub(cands, tol_s):
 
 
 def _task_hub_check(task):
-    c, h = _hop(task, task["hub_path"], {}, task["id"])
+    """Warm re-solve of hub.mat at the base setup (with duals): 0 iterations when hub.mat
+    is a solution of this NLP. Run with the cold solve's options, NOT the max_warm_iter
+    cap of a row's hop: a base that is far from a solution here (another setup's result,
+    a looser tolerance) needs more than that cap, and capped it would end
+    Maximum_Iterations_Exceeded and abort the sweep instead of being re-hubbed."""
+    c, h = _hop(task, task["hub_path"], {}, task["id"], ipopt=task["cold_ipopt"])
     if h["iters"] > 0 and _reject(h, h["linear_solver"]) is None:
         _savemat_atomic(task["rehub_path"], vars(c.data))     # the parent may promote it
     return dict(status="done", hop=h)
@@ -924,6 +943,20 @@ def _load_row(path, fp, vals):
     return r
 
 
+def _rebranch(rec, tol_branch_s):
+    """Re-derive the branch flag of a stored row (changed in place) from its stored
+    round-trip residual and THIS call's tol_branch_s: the tolerance is not part of the
+    fingerprint, so a resume may use another one than the call that wrote the row, whose
+    stored flag would otherwise stand (and feed the noise floor and the report). A row
+    without a converged round trip has no flag. True when the flag changed."""
+    if not (rec.get("rt_ok") and _fin(rec.get("rt_residual_s"))):
+        return False
+    new = bool(abs(float(rec["rt_residual_s"])) <= float(tol_branch_s))
+    changed = rec.get("branch_ok") is not new
+    rec["branch_ok"] = new
+    return changed
+
+
 def _rt_wave(records, roundtrip):
     """Rows still missing a round trip: 'top' -> the 3 best accepted rows plus rows with a
     bridge path or > 50 forward iterations; 'all' -> every accepted row without one."""
@@ -1064,6 +1097,7 @@ class _Sweep:
 
         # 4. fingerprint, folder, plan
         import scipy
+        self._resolve_seed()
         self.mhash = _model_hash(self.circuit, kw.get("circuits_dir", "Circuits"),
                                  kw.get("data_dir", "Data"))
         fp_in = dict(specs=self.kept, dropped=self.dropped, n_samples=self.n, sampler=self.sampler,
@@ -1109,14 +1143,39 @@ class _Sweep:
                  f"{', resumed' if self.resumed else ''}) -> {out}")
         if self.dropped:
             self.say(f"[sweep] dropped: {self.dropped}")
+        if self.seed_drawn:
+            self.say(f"[sweep] seed=None: using seed {self.seed}, stored in plan.json (call.seed); "
+                     f"pass seed={self.seed} to resume this sweep")
+
+    def _resolve_seed(self):
+        """seed=None -> a concrete seed (secrets.randbits(32)), which enters the fingerprint
+        and plan.json (call.seed, call.seed_drawn). np.random.default_rng(None) would draw a
+        different design on every call: the sweep could never be resumed (the resume
+        regenerates the design and refuses a samples.csv that differs) and its bootstrap
+        CIs would not be reproducible. A named folder whose plan.json recorded a drawn seed
+        hands that seed back, so repeating the same call (same name, seed=None) resumes it;
+        without a name every seed=None call is a new sweep, resumed with seed=<call.seed>."""
+        self.seed_drawn = self.seed is None
+        if not self.seed_drawn:
+            return
+        if self.name:
+            try:
+                call = S.read_json(os.path.join(self.results_root, self.name, "plan.json"))["call"]
+                old = call.get("seed")
+                if call.get("seed_drawn") and isinstance(old, int) and not isinstance(old, bool):
+                    self.seed = old
+                    return
+            except Exception:                    # no plan.json / not a plan: draw a new seed
+                pass
+        self.seed = secrets.randbits(32)
 
     def _plan(self, param_specs, fp_in, scipy_version):
         bc = self.base_ctx
         call = dict(param_specs=[list(s) if isinstance(s, (list, tuple)) else repr(s) for s in param_specs],
                     n_samples=self.n, circuit=self.circuit, vi=self.vi, ni=self.ni,
                     AeroConfig=self.AeroConfig, ATD=self.ATD, Electric_4Motors=self.Electric_4Motors,
-                    TyreModel=self.TyreModel, sampler=self.sampler, seed=self.seed, top_k=self.top_k,
-                    n_probes=self.n_probes,
+                    TyreModel=self.TyreModel, sampler=self.sampler, seed=self.seed,
+                    seed_drawn=bool(self.seed_drawn), top_k=self.top_k, n_probes=self.n_probes,
                     base=(self.base_path if self.base_kind == "file" else
                           None if self.base is None else f"<{type(self.base).__name__}>"),
                     confirm=bool(self.confirm), roundtrip=self.roundtrip,
@@ -1373,7 +1432,7 @@ class _Sweep:
                                      f"at the base setup; see {log_path}")
                 self.warn(f"base is not a solution of this NLP at the base setup ({h['iters']} "
                           f"iterations to {h['lap']:.6f} s); re-hubbed")
-                os.replace(p["rehub"], p["hub"])
+                S.replace_retry(p["rehub"], p["hub"])
                 hub["rehubbed"] = True
                 self.runner.submit(dict(self.task_base(), id="hub_check2", kind="hub_check",
                                         rehub_path=p["rehub"],
@@ -1452,19 +1511,24 @@ class _Sweep:
 
     def run_confirms(self):
         t0 = time.perf_counter()
-        todo = []
+        todo, rebranched = [], []
         for rid, kind in self.shortlist:
             if rid == 0:
                 continue
             prev = (_load_row(os.path.join(self.paths["rows"], f"{rid}.json"), self.fp, self.row_vals[rid])
                     if self.resumed else None)
             if prev is not None:                 # its shortlist kind follows this call's top_k
+                if _rebranch(prev, self.tol_branch_s):
+                    rebranched.append(rid)
                 self.records[rid] = dict(prev, kind=kind)
             else:
                 todo.append((rid, kind))
         todo.sort(key=lambda t: (-float(np.linalg.norm(self.U[t[0] - 1] - self.u0)), t[0]))
         if self.records:
             self.say(f"[sweep] confirm: {len(self.records)} row(s) reused from rows/")
+        if rebranched:
+            self.say(f"[sweep] tol_branch_s is {self.tol_branch_s:g} s in this call: the branch flag of "
+                     f"row(s) {rebranched} was re-derived from their stored round-trip residuals")
         if todo:
             self.say(f"[sweep] confirm: {len(todo)} warm hop(s) from the hub "
                      f"({self.P or 'in-process'} worker(s), longest hops first)")
@@ -1556,6 +1620,7 @@ class _Sweep:
             self.runner.submit(self.confirm_task(rid, "finish", row, self.roundtrip != "none"))
             self.runner.collect([f"row_{rid}"], on_done=self.on_row)
         else:
+            _rebranch(prev_row, self.tol_branch_s)
             self.records[rid] = prev_row
         scr = screen_batch(self.circuit, [row], vi=self.vi, AeroConfig=self.AeroConfig, ATD=self.eATD,
                            Electric_4Motors=self.eEM4, load_model=self.load_model,
@@ -1574,7 +1639,9 @@ class _Sweep:
         """confirmed.csv rows: accepted metric rows ranked by (nlp_lap, row_id), then the
         finish row and the failures (with their reasons). Two metric rows are unresolved
         when their lap brackets (sweep.lap_bracket: [lap, lap - rt_residual] once a round
-        trip converged) are within the noise floor."""
+        trip converged) are within the noise floor. The finish row has no nlp_rank (it is no
+        sample of the screen) but is placed against the ranked rows (unresolved_with) and can
+        be the best setup (_best_row)."""
         hub = self.hub
         hub_lap = float(hub["lap_s"])
         chk = hub.get("rehub_check") or hub["check"]
@@ -1590,7 +1657,10 @@ class _Sweep:
         floor = S.noise_floor([recs[rid] for rid in metric], self.resolve_s)
         brackets = {rid: S.lap_bracket(r["nlp_lap_s"], r.get("rt_residual_s") if r.get("rt_ok") else None)
                     for rid, r in recs.items() if r.get("status") == "accepted"}
-        unres = S.unresolved_pairs({rid: recs[rid]["nlp_lap_s"] for rid in metric}, floor, brackets)
+        # the confirmed finish row stays out of the floor and the rank metrics, but it can be
+        # the best setup (_best_row), so it is placed against the metric rows like any row
+        fins = [rid for rid, r in recs.items() if r.get("status") == "accepted" and r.get("kind") == "finish"]
+        unres = S.unresolved_pairs({rid: recs[rid]["nlp_lap_s"] for rid in metric + fins}, floor, brackets)
         ranked = sorted(metric, key=lambda rid: (recs[rid]["nlp_lap_s"], rid))
         rest = sorted([rid for rid in recs if rid not in metric],
                       key=lambda rid: (recs[rid].get("kind") != "finish", rid))
@@ -1619,7 +1689,7 @@ class _Sweep:
                 branch_ok=r.get("branch_ok") if (acc and r.get("rt_ok")) else None,
                 rt_ok=r.get("rt_ok") if acc else None,
                 nlp_bracket_s=list(brackets[rid]) if acc else None,
-                unresolved_with=unres.get(rid, []) if rid in ranked else [],
+                unresolved_with=unres.get(rid, []) if rid in ranked or rid in fins else [],
                 iters=r.get("iters"), rt_iters=r.get("rt_iters"), wall_s=r.get("wall_s"),
                 warm_start_mode=r.get("warm_start_mode"), path=r.get("path"), status=r.get("status"),
                 linear_solver=r.get("linear_solver"), w_sha=r.get("w_sha"),
@@ -1755,7 +1825,7 @@ class _Sweep:
             unconf = [dict(row_id=r["row_id"], kind=r["kind"], qss_lap=r["qss_lap_s"]) for r in table
                       if r["status"] != "accepted" and r["kind"] in sel]
             self.metrics = S.rank_metrics(mrows, floor, self.top_ids, seed=self.seed, unconfirmed=unconf)
-            best = self._best(next(r for r in table if r["nlp_rank"] == 1))
+            best = self._best(self._best_row(table))
             self._report_warnings(best, table)
             S.write_csv_atomic(self.paths["confirmed"], ["nlp_rank", "row_id", "kind"] + self.fields + _CSV_TAIL,
                                table)
@@ -1778,6 +1848,7 @@ class _Sweep:
                        fields=self.flags, dropped=self.dropped, warnings=self.wlist, hub=self.hub,
                        shortlist=[list(s) for s in self.shortlist], metrics=self.metrics,
                        noise_floor_s=floor, rt_residual_max_s=max(rt_res) if rt_res else None,
+                       tol_branch_s=float(self.tol_branch_s),    # of THIS call (plan.call has the first run's)
                        best=best, finish=self.fin, failures=failures,
                        timings=self.timings, throughput=thr, n_tasks_run=thr["nlp_tasks_run"],
                        files=self.files, history=self._history())
@@ -1799,6 +1870,17 @@ class _Sweep:
                            hub=self.hub or {}, warnings=list(self.wlist), failures=failures,
                            timings=self.timings, throughput=thr, files=dict(self.files),
                            n_tasks_run=thr["nlp_tasks_run"])
+
+    @staticmethod
+    def _best_row(table):
+        """The NLP-best accepted row of the confirmed table: nlp_rank 1 (baseline and sampled
+        rows) or, when it is faster still, the confirmed finish row (optimise_design's p*,
+        re-confirmed through the star). The finish row is no sample of the screen, so it never
+        enters the rank metrics, but a setup that beats every sampled row is the best one.
+        A tie goes to the sampled row (the finish row has the highest row_id)."""
+        cands = [r for r in table if r["nlp_rank"] == 1
+                 or (r["kind"] == "finish" and r["status"] == "accepted")]
+        return min(cands, key=lambda r: (r["nlp_lap_s"], r["row_id"]))
 
     def _best(self, b):
         """res.best from the NLP-best table row: the setup and its lap, plus what they rest
@@ -1896,6 +1978,9 @@ def setup_sweep(param_specs, n_samples=256, circuit="Sturn", *, name=None, vi=60
                     ignores in this configuration are dropped with a warning; malformed
                     specs raise ValueError.
     n_samples       design size (a power of 2 for Sobol'); row 0, the baseline, is extra.
+    seed            seed of the design (and of the bootstrap CIs). None draws a fresh one,
+                    stored in plan.json (call.seed) and in the fingerprint: pass it back to
+                    resume that sweep (with a name, repeating the call resumes it too).
     base            None (the hub is solved first: cold at the base setup and, when
                     vp_overrides moves the base off the default setup, also continued from
                     a cold solve at the default setup; the faster is kept), a full
@@ -1911,12 +1996,16 @@ def setup_sweep(param_specs, n_samples=256, circuit="Sturn", *, name=None, vi=60
                     bridge path or > 50 forward iterations) or 'none'.
     max_warm_iter   IPOPT max_iter of a warm hop (~ one cold solve); a hop that needs more
                     goes to the bridge ladder ``bridge_steps`` (never a cold solve).
-    tol_branch_s    round-trip residual within which a row is on the hub's branch.
+    tol_branch_s    round-trip residual within which a row is on the hub's branch (not part
+                    of the fingerprint: a resume re-derives the flag of stored rows from
+                    their stored residuals with the tolerance of the resuming call).
     resolve_s       minimum noise floor: NLP laps closer than the floor are unresolved,
                     and so are rows within the floor of an off-branch row's bracket
                     [lap, lap - round-trip residual].
     finish          co-optimise the promotion-safe fields with optimise_design from the
-                    NLP-best row, then re-confirm p* through the star (kind 'finish').
+                    NLP-best row, then re-confirm p* through the star (kind 'finish'). The
+                    confirmed finish row stays out of the rank metrics; when it beats every
+                    sampled row it is res.best.
     workers         NLP processes: 'auto' (cores and free RAM) or an int; 0 runs the NLP
                     tasks in this process (debugging only, not bitwise comparable).
     screen_workers  'auto' or an int, the processes of MLTP_screen.screen_batch. 'auto'

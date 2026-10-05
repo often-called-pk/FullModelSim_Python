@@ -203,3 +203,7 @@ build/*
 !build/rthook_casadi.py
 !build/version_info.txt
 !build/app.ico
+
+# setup_sweep output (Results/sweeps/<name>/: plan, samples, rows, hub, reports). Results/ itself is
+# tracked for the baseline solutions, so only the default sweep folder is ignored.
+Results/sweeps/
