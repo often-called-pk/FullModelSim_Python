@@ -57,9 +57,19 @@ JIT: `userOpts(jit=True)` (e.g. `MLTP(circuit='BCN', jit=True)`) or env `MLTP_JI
 gcc/clang/cl on PATH, else it warns once and builds without JIT.
 Symbols: SX by default; `MLTP_SYM_TYPE=MX` (or `build_and_solve_nlp(sym_type='MX')`) builds the
 NLP ~15x faster but evaluates the Jacobian/Hessian ~8x slower and takes a different IPOPT path.
+NLP functions: env `MLTP_KEEP_NLP=1` keeps `ctx.nlp_fg` (casadi Function w -> (f, g)) and
+`ctx.nlp_bounds` (lbw, ubw, lbg, ubg, w0) after the 23-state build, for the MATLAB parity gate; off by
+default because the SX graph is large (peak commit ~8 GB at BCN N=465).
+
+**MATLAB validation (`validation/`, plan and results in `docs/validation_matlab_vs_python.md`).**
+`matlab_batch.py` runs patched scratch copies of the MATLAB original through `matlab -batch`
+(`export`: parameter dump + NLP numbers at IPOPT max_iter 0; `solve`: MATLAB as shipped, plots cut);
+`py_export.py` is the Python side (`PARITY` settings, `matlab_seed()` = MATLAB's 23-state start point);
+`run_py.py` runs the Python tiers with split timers; `compare.py` diffs parameters, NLPs and runs.
+Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (28 today) are plain scripts whose assertions run at module top level (no
+files (29 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -89,6 +99,7 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_ladder.py`: `functions/ladder.py` (ladder registry, `homotopy_schedule`, exact-mu `friction_overrides`, the longitudinal torque rules, `qss_profile` = the screen's march, `seed_m7` / `seed_m23` on the real model scales across configs and meshes incl. the Xi-box clip) and the wiring: `MLTP_initial(seed='const')` guesses bit-identical to the legacy constants, `MLTP(ladder=...)` / `MLTP(homotopy=...)` with stand-ins, one real Sturn solve capped at `max_iter=5` (~17 s; sections 4-10 need casadi + `Data/DATA_AA.mat`)
 - `test_setup_sweep.py`: `setup_sweep.py`, `functions/sweep.py` and `MLTP_screen.screen_batch` (Sobol/LHS design, shortlist, bridges, rank metrics, `screen_batch == screen_sweep` exactly incl. a worker pool, a casadi-blocked child run, field classification; section 5 is a ~1 min real Sturn mini-sweep in a child process: hub check at 0 iterations, resume, determinism, `SweepError`s)
 - `test_vehmodel_matlab.py`: `vehModel.py` vs `vehModel.m` reference values and the inherited model quirks (casadi + `Data/DATA_AA.mat`)
+- `test_matlab_parity.py`: MATLAB parity gates against stored MATLAB exports in `tests/data/` (section 1: parameter dump of Sturn ds30, BCN and NBR ds10, only hit the dormant CG_p table; section 2: 23-state NLP bounds exact, f and g within 1e-10 at the MATLAB start point, a random point and the MATLAB solution, Sturn N=18 at IPOPT max_iter 0; casadi + `Data/DATA_AA.mat`, no solve)
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -304,7 +315,8 @@ Builds `ctx`: calls `Powertrain`+`vehParams`, loads or **synthesizes** the track
 collocation options, the IPOPT options dict, and the config switches the models branch on
 (`vp.ActAero`, `pt.ATD`, `pt.EM4`). Circuit selection: `_REAL_CIRCUITS` maps names to `.mat`
 files in `Circuits/` (`BCN` -> `Barcelona_circuit.mat`, the sector splits `BCN_S1`/`BCN_S2`/`BCN_S3`,
-plus `Jarama`, `Spa`, `BCNAssetto`); any other name is treated as **synthetic** and its curvature
+plus `Jarama`, `Spa`, `NBR` (Nurburgring GP, 5139 m; not in the GUI list), `BCNAssetto`); any other
+name is treated as **synthetic** and its curvature
 is generated analytically by `_synthetic_curvature` (`Straight`, `Hairpin`, `Sturn`, `Circle`,
 `ZigZag`, `ZigZagMirror`, `VirtualTrack`), no `.mat` needed. Guard: if `ATD` **and**
 `Electric_4Motors` are both `On`, it forces `ATD=Off` with a warning.
@@ -414,9 +426,14 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   Two port gaps were closed. (1) The input-rate bounds are divided by `u_s` (`m.duk_lb/ub`, as `vehModel.m`
   L377-379 and the 7-state model do). Before, the physical Nm/s, rad/s and deg/s values bounded the normalised
   rates, which held steering to 0.061 rad/s and left the motor, brake and wing rates 602x, 4000x and 10-30x
-  looser than specified. Steering is divided by the model's own scale `delta_max`, giving the documented
-  0.1 rad/s; `vehModel.m` divides by a `delta_s = pi/8` leaked from `vehModel_initial.m` (0.156 rad/s as MATLAB
-  runs), so matching that instead is a one-line owner call in `vehModel.py`. (2) The four friction-circle rows
+  looser than specified. Steering scale (owner call 2026-10-07): `vehModel.py` uses `u_s = pi/8` for the
+  steering input exactly as `vehModel.m` runs it (its `delta_s` leaks from `vehModel_initial.m`), while both
+  keep `delta = 35 deg * delta_n`. So the rate bound is 0.1/(pi/8) per second on `delta_n`, 0.1556 rad/s
+  physical, and the steering initial guess, the `u_opt` steering row and the plotSDI trace carry MATLAB's
+  pi/8 scale (9/14 of the physical angle; `data.vehicle` has no steering channel). Every lap, iteration
+  count and baseline quoted in this file was measured with the earlier 0.1 rad/s bound (`delta_max` scale)
+  and is re-measured after the MATLAB validation (`docs/validation_matlab_vs_python.md`, Phase 5).
+  (2) The four friction-circle rows
   exist only with `TyreModel='PureSlip'`, as in `MLTP.m`. The default Sturn NLP now has MATLAB's size
   (n_w = 1812, n_g = 1904). Default solves after the fix (ma57, MF205): Sturn 179 iterations, 18.00859 s lap
   (before: 489, 18.00934 s; MATLAB 18.008 s); BCN (`'auto'` = curvature, N=155) 247 iterations, 116.441 s,

@@ -9,8 +9,9 @@ Pins the two port fixes of 2026-10-04 (MATLAB is the reference; both were Python
      (nh = 7 / 8 / 16)
   2. input-rate bounds are divided by u_s (vehModel.m L377-379): the NLP bounds the rate
      of the NORMALISED inputs, so vehModel exposes m.duk_* = ctx.duk_* / u_s (motor
-     33.2226 and brake 36.25 per second as in MATLAB; steering 0.1 rad/s / delta_max,
-     where MATLAB divides by a delta_s = pi/8 leaked from vehModel_initial.m)
+     33.2226 and brake 36.25 per second as in MATLAB; steering u_s = pi/8 as MATLAB runs it
+     (a delta_s leaked from vehModel_initial.m, owner call 2026-10-07): 0.1 / (pi/8) = 0.25465
+     per second on delta_n, 0.1 * 14/9 = 0.1556 rad/s physical, as delta = delta_max * delta_n)
   3. MLTP() and MLTP_paramOptim hand exactly these to build_and_solve_nlp (a stand-in
      captures the call: nothing is solved, an in-memory 7-state init skips the init solve)
   4. plotSDI.friction_usage: the rho_lim rows when present, else the same formula on
@@ -140,14 +141,17 @@ for label, kw in (("Static, ATD On (default)", {}), ("Static, ATD Off", dict(ATD
 c = model()
 m = c.m23
 delta_max = 35.0 * np.pi / 180.0
-ok("u_s = [Tmax 602, Tbrake_max 4000, ATD 1 x4, delta_max] for the default config",
-   np.allclose(m.u_s, [602.0, 4000.0, 1, 1, 1, 1, delta_max], rtol=1e-15, atol=0))
+ok("u_s = [Tmax 602, Tbrake_max 4000, ATD 1 x4, pi/8] for the default config (steering as vehModel.m runs it)",
+   np.allclose(m.u_s, [602.0, 4000.0, 1, 1, 1, 1, np.pi / 8], rtol=1e-15, atol=0))
 ok(f"default bounds: motor {m.duk_ub[0]:.4f} and brake {m.duk_ub[1]:.2f} per second = MATLAB "
    "(vehModel.m run: 33.2226, 36.25), ATD 2e4 (u_s = 1)",
    abs(m.duk_ub[0] - 33.2226) < 5e-5 and m.duk_ub[1] == 36.25 and np.all(m.duk_ub[2:6] == 2e4))
-ok(f"steering: {m.duk_ub[-1]:.5f} per second = 0.1 rad/s / delta_max, the documented 0.1 rad/s "
-   "(MATLAB as run: 0.1 / (pi/8) = 0.25465)",
-   m.duk_ub[-1] == 0.1 / delta_max and abs(m.duk_ub[-1] * m.u_s[-1] - 0.1) < 1e-15)
+ok(f"steering: {m.duk_ub[-1]:.5f} per second on delta_n = 0.1 / (pi/8) (MATLAB as run), physical "
+   "m.duk_ub[-1] * delta_max = 0.1 * 14/9 = 0.1556 rad/s",
+   m.duk_ub[-1] == 0.1 / (np.pi / 8) and abs(m.duk_ub[-1] * delta_max - 0.1 * 14 / 9) < 1e-15)
+f_delta = ca.Function("f_delta", [m.u], [m.delta])
+ok("the dynamics keep delta = delta_max * delta_n (35 deg at delta_n = 1), whatever u_s says",
+   abs(float(f_delta(np.r_[np.zeros(m.nu - 1), 1.0])) - delta_max) < 1e-15)
 cA = model(AeroConfig="AALB")
 ok("AALB: wing-rate bounds 20/10, 20/10, 60/30, 24/12 = 2 per second (FW, FW, RW, TW)",
    np.allclose(cA.m23.duk_ub[6:10], 2.0, rtol=1e-15, atol=0))

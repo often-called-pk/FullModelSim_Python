@@ -58,6 +58,7 @@ Status: plan, 2026-10-07. Results appended per phase in section 14.
 | active aero inputs | dead | live | moot (Static) |
 | CG_p table | set | None | dormant, listed |
 | 7-state init | inline every run | ladder legacy, same path | same |
+| 23-state seed, states 9-22 | OPT_e (MLTP.m:229-251) | quasi-static (suspension 0, zt static) | OPT_e, validation runner only |
 | result, timing | workspace + txt, no stats | .mat, no timing | runners capture |
 
 Equal: max_iter 6000, fixed_variable_treatment make_constraint, mu_init 0.1, bound_push and
@@ -88,7 +89,8 @@ ipopt_overrides={'acceptable_tol': 1e-6, 'mu_strategy': 'monotone'})`.
   (clipped to bounds): |a - b| <= 1e-10 * max(1, |a|) per element.
 - BCN/NBR w* exists only after Phase 2: Phase 1 runs w0 + random, w* added in Phase 2.
   Sturn N=18 (MATLAB w* from 2026-10-04 run) = permanent regression, test section 2.
-- Python hook: NLP function and bounds kept on ctx after build (never saved to .mat).
+- Python hook: env `MLTP_KEEP_NLP=1` keeps NLP function and bounds on ctx (never saved to .mat).
+- Info check: start point w0 equal with parity seed (states 9-22 at OPT_e).
 - Skipped gradient/Hessian comparison, add when f, g pass but solves disagree.
 
 ## 6. Reference bundle (single source of truth)
@@ -187,8 +189,10 @@ Basis: Sturn 2026-10-04 gap 0.3 ms; BCN cold-start scatter ~10 ms; distinct opti
 5. No mesh-converged truth (regularisation depends on N): reference pinned to fixed NLP.
 6. MATLAB timer excludes init, `elapsedTime(4)` includes NLP build: runner times externally and
    reads `solver.stats()`.
-7. pi/8 default inherits MATLAB reporting quirk: `u_opt` steering row = delta_n * pi/8, physical
-   steer = delta_n * 35 deg (use `data.vehicle`). Documented laps and `Results/` stale until Phase 5.
+7. pi/8 default inherits MATLAB reporting quirk: `u_opt` steering row and plotSDI trace =
+   delta_n * pi/8 = 9/14 of physical steer delta_n * 35 deg; `data.vehicle` has no steering
+   channel. Compare steering as normalised delta_n. Skipped physical steering channel, add when a
+   plot needs true steer. Documented laps and `Results/` stale until Phase 5.
 8. NBR file provenance unknown, already public in `circuits/`.
 9. Parity proves fidelity, not physics: inherited quirks (sa_rr uses toe_front vehModel.m:544,
    EM4 motor speed via gear, unsprung mass sum) stay in both.
@@ -196,4 +200,32 @@ Basis: Sturn 2026-10-04 gap 0.3 ms; BCN cold-start scatter ~10 ms; distinct opti
 
 ## 14. Results
 
-Pending. Phase 1 gate numbers, then Phase 2-3 tables (lap, gaps, cross-feasibility, RMS, timers).
+### Phase 1 (2026-10-07, no solves)
+
+Code changes: steering u_s = pi/8 default (owner call, vehModel.py:169); state bounds formed as
+x_lim * (1/x_s) like vehModel.m:130-138 (was 1 ulp off on wheel speeds, vehModel.py:88); 'NBR'
+registered; parity seed `matlab_seed()` in validation tooling only.
+
+Gate 1, parameter parity (MATLAB export vs Python, 1e-12 rel):
+
+| Track | Hits | Info |
+|---|---|---|
+| Sturn ds30 | vp.CG_p_deg_per_deg_table (MATLAB 14 values, Python None; dormant, CamberGain Off) | print_timing_statistics Python only |
+| BCN ds10 | same single hit | same |
+| NBR ds10 | same single hit | same |
+
+Everything else equal: vp (102), pt, mf (59), aero, Xi/Xf, OPT_*, N, x_s/u_s (steering pi/8 both),
+x/u limits, scaled duk, h bounds and names, ru/rdu/rdu2, track sha, DATA_AA sha.
+
+Gate 2, NLP-function equivalence (strict, IPOPT max_iter 0 both):
+
+| Track | n_w / n_g | Bounds | w0 (parity seed) | max scaled diff f / g | Python build, peak commit |
+|---|---|---|---|---|---|
+| Sturn ds30 | 1812 / 1904 | bit-exact | bit-exact | 0 / 4.1e-15 (F(w*) = 18.054014070188256 both) | 3.4 s, 3.3 GB |
+| BCN ds10 | 46065 / 47945 | bit-exact | bit-exact | 1.0e-15 / 2.7e-13 | 81 s, 7.7 GB |
+| NBR ds10 | 50916 / 52992 | bit-exact | bit-exact | 2.2e-15 / 2.9e-13 | 82 s, 8.3 GB |
+
+BCN/NBR w* column follows in Phase 2-3. MATLAB export (startup + build): BCN 96 s, NBR 97 s.
+Peak commit 7.7-8.3 GB for a build alone: full N=465-514 solves likely 8-12 GB, one at a time.
+
+Phase 2-3 tables pending (lap, gaps, cross-feasibility, RMS, timers).

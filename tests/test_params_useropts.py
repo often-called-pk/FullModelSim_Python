@@ -6,6 +6,7 @@ import numpy as np
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 from functions.context import Ctx
+from functions.transcription import discretise
 from userOpts import userOpts, SCREENING_IPOPT, MESH_AUTO_MIN_LENGTH
 from vehParams import vehParams, _default_mf, _MF205_OVERRIDES, MF_KEYS, TYRE_SETS
 
@@ -299,5 +300,19 @@ try:
 except ValueError as e:
     raised = "Slick" in str(e)
 ok("userOpts(tyre_set='Slick') raises ValueError", raised)
+
+print("track building (real circuit NBR, Nurburgring GP)")
+cn = _uo(circuit="NBR")
+Ln = float(cn.track.s[-1] - cn.track.s[0])
+ok("NBR lap length 5139.104 m (within 0.01 m)", abs(Ln - 5139.104) < 0.01)
+ok("NBR track has x and y, same length as s",
+   hasattr(cn.track, "x") and hasattr(cn.track, "y")
+   and cn.track.x.shape == cn.track.y.shape == cn.track.s.shape)
+ok("NBR mesh 'auto' resolves to 'curvature' (lap >= MESH_AUTO_MIN_LENGTH), request kept",
+   Ln >= MESH_AUTO_MIN_LENGTH and cn.mesh == "curvature" and cn.mesh_requested == "auto")
+for ds, n_exp in ((30, 171), (10, 514)):
+    c_ds = _uo(circuit="NBR", OPT_ds=ds)
+    d_ds = discretise(c_ds.track, c_ds.OPT_ds, c_ds.OPT_d, mesh=c_ds.mesh, mesh_opts=c_ds.mesh_opts)
+    ok(f"NBR OPT_ds={ds}: N = round(L/OPT_ds) = {n_exp}", round(Ln / ds) == n_exp and d_ds["N"] == n_exp)
 
 print("\nALL vehParams / userOpts TESTS PASSED")

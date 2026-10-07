@@ -85,7 +85,7 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     x_s = np.array([vx_s, vy_s, r_s, n_s, eps_s, Om_fl_s, Om_fr_s, Om_rl_s, Om_rr_s,
                     zs_s, zsdot_s, theta_s, thetadot_s, phi_s, phidot_s,
                     wu_fl_s, wu_fr_s, wu_rl_s, wu_rr_s, zt_fl_s, zt_fr_s, zt_rl_s, zt_rr_s])
-    x_lim = x_lim / x_s[:, None]
+    x_lim = x_lim * (1.0 / x_s[:, None])    # vehModel.m:130-138 multiplies by 1/x_s (lim / x_s is 1 ulp off)
     x_min, x_max = x_lim[:, 0], x_lim[:, 1]
 
     x = ca.vertcat(vx_n, vy_n, r_n, n_n, eps_n, Om_fl_n, Om_fr_n, Om_rl_n, Om_rr_n,
@@ -166,7 +166,7 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
                    (activeAeroFR_n, activeAeroFR_s, activeAeroFR_lim),
                    (activeAeroRW_n, activeAeroRW_s, activeAeroRW_lim),
                    (activeAeroTW_n, activeAeroTW_s, activeAeroTW_lim)]
-    u_list.append((delta_n, delta_max, delta_lim))
+    u_list.append((delta_n, np.pi / 8, delta_lim))  # pi/8 as vehModel.m runs it, not delta_max
 
     u = ca.vertcat(*[s for (s, _, _) in u_list])
     u_s = np.array([sc for (_, sc, _) in u_list], dtype=float)
@@ -176,9 +176,9 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
 
     # rate-of-input limits: userOpts gives them per second in physical units (Nm/s,
     # rad/s, deg/s, 1/s, order = ctx.input_keys = u); the NLP bounds the rate of the
-    # NORMALISED inputs, so divide by u_s as vehModel.m L377-379 does. Steering uses
-    # this model's own scale delta_max, i.e. the documented 0.1 rad/s; vehModel.m
-    # divides by delta_s = pi/8 leaked from vehModel_initial.m (0.156 rad/s).
+    # NORMALISED inputs, so divide by u_s as vehModel.m L377-379 does. Steering u_s is
+    # pi/8 as vehModel.m runs it (delta_s leaked from vehModel_initial.m L88) although
+    # delta = delta_max * delta_n: bound 0.1/(pi/8) = 0.2546 /s on delta_n, 0.1556 rad/s.
     duk_ub = np.asarray(ctx.duk_ub, dtype=float).reshape(-1) / u_s
     duk_lb = np.asarray(ctx.duk_lb, dtype=float).reshape(-1) / u_s
     assert nu == duk_ub.size == duk_lb.size, "Rate limits (ctx.input_keys) do not match the inputs"

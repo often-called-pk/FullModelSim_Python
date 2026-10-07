@@ -38,6 +38,7 @@ _REAL_CIRCUITS = {
     "BCN_S3":     "Barcelona_circuit_s3.mat",
     "Jarama":     "Jarama_circuit.mat",
     "Spa":        "Spa_circuit.mat",
+    "NBR":        "Nurburgring_circuit.mat",
     "BCNAssetto": "Barcelona_circuit_fromassetto.mat",
 }
 

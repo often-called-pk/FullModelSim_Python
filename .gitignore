@@ -199,3 +199,6 @@ build/*
 # setup_sweep output (Results/sweeps/<name>/: plan, samples, rows, hub, reports). Results/ itself is
 # tracked for the baseline solutions, so only the default sweep folder is ignored.
 Results/sweeps/
+
+# validation run matrix (docs/validation_matlab_vs_python.md): result .mat/.json/.log and the reference bundles
+Results/validation/

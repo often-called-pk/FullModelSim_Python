@@ -366,7 +366,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         return c
 
     # ---- full model -------------------------------------------------------
+    t_mb = time.time()
     vehModel(ctx, TyreModel=TyreModel)
+    elapsed["model_build"] = time.time() - t_mb
     m = ctx.m23
     # refine's indicator rows (a bad state name raises ValueError here, before any solve)
     ind_rows = None if ropts is None else state_rows(m, ropts["states"])
@@ -425,6 +427,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                               m7_status=str(el7.get("return_status", "unknown")),
                               m7_lap_s=float(getattr(init, "lap_time", np.nan)),
                               m7_wall_s=dt - float(el7.get("qss", 0.0)))
+            elapsed["init_iters"] = ladder_rec["m7_iters"]      # validation/run_py.py timers
+            elapsed["init_ipopt"] = float((getattr(ctx_init, "solve_stats", None) or {}).get("t_wall_total", np.nan))
             if el7 and ladder_rec["m7_status"] not in GOOD_STATUS:
                 print(f"[MLTP] note: the 7-state init ended {ladder_rec['m7_status']} after "
                       f"{ladder_rec['m7_iters']} iterations; continuing from it (data['ladder'])")
@@ -453,9 +457,12 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, opts_, warm=warm_)
 
     res = _solve(disc, guesses, warm, ctx.opts)
+    if "nlp_fg" in res:                 # MLTP_KEEP_NLP=1 (validation gate 2): kept on ctx, never saved
+        ctx.nlp_fg, ctx.nlp_bounds = res["nlp_fg"], res["bounds"]
     sol = res["sol"]
     ctx.solve_stats = res["solver"].stats()
     elapsed["solve"] = time.time() - t0 - elapsed["init"]
+    elapsed["nlp_build"] = float(res.get("t_build", np.nan))    # base solve; validation/run_py.py timers
     winfo = res["warm_info"]
     if warm is not None:                # what the transcription actually used
         ws_mode = ("full+duals" if winfo["duals"] else
@@ -545,6 +552,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                       f"transcription ({res['structure']}): dual re-injection is unreliable")
 
     # ---- postprocess: collect + reconstruct ------------------------------
+    elapsed["f_opt"] = float(sol.get("f", np.nan))      # IPOPT objective of the returned solution
     w_opt = np.array(sol["x"]).reshape(-1)
     x_opt, u_opt, _, xc_opt = unpack_solution(
         w_opt, m.nx, m.nu, m.ny, N, ctx.OPT_d, m.x_s, m.u_s, None)

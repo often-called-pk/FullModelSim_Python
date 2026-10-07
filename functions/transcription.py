@@ -247,6 +247,8 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
               later solve must match to re-inject them); warm_info = which
               warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
               linear_solver = the one actually used (after any HSL fallback).
+              With env MLTP_KEEP_NLP=1 also nlp_fg (Function w -> (J, g)) and
+              bounds (1-D numpy lbw, ubw, lbg, ubg and w0, the x0 given to IPOPT).
     """
     t_enter = time.perf_counter()
     if sym_type is None:
@@ -465,9 +467,14 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     print(f"[transcription] NLP build ({sym_type}, N={N}): {t_build:.2f} s "
           f"(assembly {t_asm:.2f} s, nlpsol {t_build - t_asm:.2f} s)")
 
+    keep = {}                   # MLTP_KEEP_NLP=1 (validation gate 2): opt-in, the SX graph is large at N=465
+    if os.environ.get("MLTP_KEEP_NLP", "").strip().lower() in ("1", "true", "yes", "on"):
+        keep = dict(nlp_fg=ca.Function("nlp_fg", [w], [J, g]),
+                    bounds={k: v.reshape(-1) for k, v in dict(lbw=lbw, ubw=ubw, lbg=lbg, ubg=ubg, w0=w0).items()})
+
     sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg, **solve_kw)
 
-    return dict(sol=sol, solver=solver, N=N, nx=nx, nu=nu, ny=ny,
+    return dict(sol=sol, solver=solver, N=N, nx=nx, nu=nu, ny=ny, **keep,
                 Xk=Xk, Uk=Uk, Yk=Yk, Xkj=Xkj, dt_opt=dt_opt,
                 sym_type=sym_type, t_build=t_build,
                 w_opt=np.array(sol["x"]).reshape(-1),
