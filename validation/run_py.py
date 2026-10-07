@@ -1,12 +1,14 @@
 """Python side of the validation run matrix (docs/validation_matlab_vs_python.md sections 7, 9, 10): one MLTP solve in a
 child process, timed from outside. The counterpart of ``matlab_batch.py solve``.
 
-    python validation/run_py.py --track BCN --tier par|prod --rep 1 --out Results/validation [--opt-ds 20] [--max-iter N] [--timeout 2700]
+    python validation/run_py.py --track BCN --tier par|prod --rep 1 --out Results/validation [--opt-ds 20] [--max-iter N] [--timeout 2700] [--results-dir DIR]
 
 tier ``par``  = the parity call of doc section 3 (py_export.PARITY: uniform mesh, OPT_ds 10, tol 1e-8, MUMPS, monotone
                 mu, acceptable_tol 1e-6) inside py_export.matlab_seed() (MATLAB's 23-state start point);
 tier ``prod`` = Python defaults, MLTP(track) with nothing set (OPT_ds 30, mesh auto, tol 1e-4, ma57, adaptive mu).
 Both add the runner cap IPOPT max_wall_time 1800 s and run with save=False, plot=False (the results go to --out).
+``--results-dir DIR`` sets save=True, results_dir=DIR: MLTP also writes its normal result file there (standard stem, e.g.
+BCN_Static_ATDOn_EM4Off.mat, full data incl. data.vehicle and data.nlp; the save counts in mltp_wall_s).
 ``--opt-ds`` is for the failure-policy retry (doc section 10, 20 m), ``--max-iter`` for the smoke test only
 (0 = everything is built, nothing is solved).
 
@@ -119,10 +121,12 @@ def child(a):
             seed = contextlib.nullcontext()
         if a.max_iter is not None:
             kw["max_iter"] = a.max_iter
+        if a.results_dir is not None:             # MLTP also saves its normal result file there; recorded in settings
+            kw["results_dir"] = a.results_dir
 
         t1 = time.perf_counter()
         with seed:
-            ctx = MLTP(a.track, save=False, plot=False, **kw)
+            ctx = MLTP(a.track, save=a.results_dir is not None, plot=False, **kw)
         mltp_wall_s = time.perf_counter() - t1
 
         d, el, st, lad = ctx.data, ctx.elapsed, ctx.solve_stats, ctx.data.ladder
@@ -196,6 +200,8 @@ def parent(a):
         cmd += ["--opt-ds", repr(a.opt_ds)]
     if a.max_iter is not None:
         cmd += ["--max-iter", str(a.max_iter)]
+    if a.results_dir is not None:                 # absolute, like --out: the child changes to ROOT
+        cmd += ["--results-dir", str(Path(a.results_dir).resolve())]
     env = {k: v for k, v in os.environ.items() if not k.startswith("MLTP_")}     # measure the defaults
     env.update(PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     started, t0 = datetime.now(timezone.utc), time.perf_counter()
@@ -239,6 +245,7 @@ def main(argv=None):
     ap.add_argument("--opt-ds", type=float, help="OPT_ds override (par default 10, prod default 30; the failure-policy retry uses 20)")
     ap.add_argument("--max-iter", type=int, help="smoke test only: IPOPT max_iter override (0 = build, no solve)")
     ap.add_argument("--timeout", type=int, default=2700, help="seconds, kills the child's whole process tree")
+    ap.add_argument("--results-dir", help="also save MLTP's normal result file (full data) here: save=True, results_dir=DIR")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     return child(a) if a.child else parent(a)

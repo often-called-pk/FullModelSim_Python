@@ -228,4 +228,55 @@ Gate 2, NLP-function equivalence (strict, IPOPT max_iter 0 both):
 BCN/NBR w* column follows in Phase 2-3. MATLAB export (startup + build): BCN 96 s, NBR 97 s.
 Peak commit 7.7-8.3 GB for a build alone: full N=465-514 solves likely 8-12 GB, one at a time.
 
-Phase 2-3 tables pending (lap, gaps, cross-feasibility, RMS, timers).
+### Phase 2: BCN (2026-10-07, one solve at a time)
+
+Runs in order. Its = 7-state + 23-state IPOPT iterations. Build = 23-state model + NLP build.
+End-to-end = external wall of the whole run (MATLAB incl. startup).
+
+| Run | Status | Lap [s] | Its | 23-state IPOPT [s] | s/it | Build [s] | 7-state wall [s] | End-to-end [s] | Peak |
+|---|---|---|---|---|---|---|---|---|---|
+| mat_ship r1 | Solve_Succeeded | 116.21127 | 2185 + 284 | 654.3 | 2.30 | 66.0 | 384.2 | 1120 | WS 5.2 GB |
+| py_par r1 | Solve_Succeeded | 116.22177 | 1788 + 302 | 819.8 | 2.71 | 60.0 | 301.8 | 1186 | WS 3.5 GB, commit 8.0 GB |
+| py_prod r1 | Solve_Succeeded | 116.44407 | 1072 + 165 | 110.2 | 0.67 | 20.1 | 99.9 | 233 | WS 1.3 GB, commit 6.4 GB |
+| mat_ship r2 | Solve_Succeeded | 116.21127 | 2185 + 284 | 764.0 | 2.69 | 67.1 | 372.3 | 1219 | WS 5.3 GB |
+| py_par r2 | Solve_Succeeded | 116.22177 | 1788 + 302 | 856.5 | 2.84 | 61.3 | 306.0 | 1229 | WS 3.5 GB, commit 8.0 GB |
+| py_prod r2 | Solve_Succeeded | 116.44407 | 1072 + 165 | 113.6 | 0.69 | 20.9 | 109.0 | 247 | WS 1.3 GB, commit 6.4 GB |
+| mat_ship r3 | Solve_Succeeded | 116.21127 | 2185 + 284 | 826.2 | 2.91 | 67.3 | 375.4 | 1286 | WS 5.3 GB |
+| py_par r3 | Solve_Succeeded | 116.22177 | 1788 + 302 | 769.7 | 2.55 | 61.2 | 301.3 | 1137 | WS 3.5 GB, commit 8.0 GB |
+| py_prod r3 | Solve_Succeeded | 116.44407 | 1072 + 165 | 113.5 | 0.69 | 21.1 | 103.7 | 241 | WS 1.3 GB, commit 6.4 GB |
+
+Reps deterministic per code (same iterations, same lap to all printed digits); only wall times vary.
+MATLAB IPOPT wall drifted 654 -> 764 -> 826 s over the session (thermal), so medians are used.
+
+**BCN verdict: PASS.**
+
+- Parity, all 3 rep pairs: 116.21127 (MATLAB) vs 116.22177 s (Python), gap 10.5 ms = 0.0090%, rule 0.01%.
+- Cross-check ship r1 / par r1, PASS both ways: Python NLP at MATLAB w*: bound viol 8.8e-9, constraint
+  viol 9.9e-9, f 116.329963605 equal (rel 0); MATLAB NLP at Python w*: 8.8e-9 / 9.9e-9, f 116.338613427
+  equal (rel 1.2e-16). Same numbers as each code's self-check, so gate 2 holds at w* too.
+- Nearby distinct optima: MATLAB objective lower by 0.0087. The 7-state inits take different paths
+  (2185 vs 1788 iterations), so the 23-state starts differ. Profile RMS vs reference: vx 0.085 m/s,
+  n 0.129 m (flagged, > 0.05 m), delta_n 0.0048, T_motor 26 Nm, T_brake 109 Nm. Gap < 0.01%: no xseed.
+- Reference bundle `Results/validation/reference/BCN/`: BCN_mat_ship_r1, lap 116.211267 s,
+  f 116.329964, N 465.
+- Production (N=155 curvature, tol 1e-4, ma57): 116.44407 s, +0.2328 s = +0.200% vs reference (band
+  0.5% ok); RMS vx 0.54 m/s, n 0.69 m (coarse mesh). Its result in standard form for Phase 5:
+  `Results/validation/baseline_BCN/BCN_Static_ATDOn_EM4Off.mat`.
+
+Speed, median (min, max) of 3 reps:
+
+| Metric | MATLAB as shipped | Python parity | Python production |
+|---|---|---|---|
+| End-to-end [s] | 1219 (1120, 1286) | 1186 (1137, 1229) | 241.5 (233.5, 246.7) |
+| Startup / import [s] | 7.8 | 0.9 | 0.9 |
+| 7-state init: its, wall [s] | 2185, 375 | 1788, 302 | 1072, 104 |
+| Model + NLP build [s] | 67.1 | 61.2 | 20.9 |
+| 23-state: its, IPOPT wall [s] | 284, 764 (654, 826) | 302, 820 (770, 857) | 165, 113.5 (110, 114) |
+| IPOPT s per iteration | 2.69 | 2.71 | 0.69 |
+| Function-eval share | 7.3% | 7.3% | 9.5% |
+| Peak working set [GiB] | 4.89 | 3.30 (commit 7.45) | 1.18 (commit 5.98) |
+
+Speed verdict: same settings, same speed (s per iteration equal, same MUMPS; Python builds the NLP 9%
+faster and its 7-state init took fewer iterations). Python production is 5.0x faster end to end than
+MATLAB as shipped, for +0.20% lap.
+Phase 3 (NBR) pending.
