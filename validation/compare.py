@@ -16,7 +16,7 @@ Gate 2 (NLP functions, docs/validation_matlab_vs_python.md section 5):
 The bounds match exactly (--bound-tol 0, the default: vehModel.py:88 multiplies by 1/x_s as vehModel.m:130-138 does)
 and the start point w0 is exact under py_export.matlab_seed(); see tests/test_matlab_parity.py.
 
-Run matrix (docs section 7-9; files <track>_mat_ship_r<k>, <track>_py_par_r<k>, <track>_py_prod_r<k> .mat + .json from
+Run matrix (docs section 7-9; files <track>_mat_ship_r<k>, <track>_py_{par,prod,prod8}_r<k> .mat + .json from
 matlab_batch.py solve and run_py.py in one directory D):
 
     python validation/compare.py runs --track BCN --dir D
@@ -179,7 +179,7 @@ def nlp_main(argv):
 # ============================================================================
 # Run matrix (docs sections 7-9): runs, xcheck, reference
 # ============================================================================
-TAGS = ("mat_ship", "py_par", "py_prod")
+TAGS = ("mat_ship", "py_par", "py_prod", "py_prod8")
 GOOD_STATUS = ("Solve_Succeeded", "Solved_To_Acceptable_Level")        # IPOPT's successful returns
 PARITY_REL = 1e-4                   # doc section 8: lap |dT| <= 0.01 % of the lap
 PROD_BAND = 5e-3                    # production lap error, sanity band 0.5 %
@@ -300,7 +300,7 @@ def _gb(v):
     return None if v is None else v / 2 ** 30
 
 
-# label, MATLAB getter (mat_ship JSON), Python getter (py_par, py_prod JSON); None = the code has no such timer
+# label, MATLAB getter (mat_ship JSON), Python getter (py_par, py_prod, py_prod8 JSON); None = the code has no such timer
 SPEED = (
     ("external wall [s]", lambda J: J.get("wall_external_s"), lambda J: J.get("wall_external_s")),
     ("startup / import [s]", lambda J: J.get("startup_s"), lambda J: _g(J, "timers", "import_s")),
@@ -335,7 +335,7 @@ def _cell(s):
 def runs_main(argv):
     ap = argparse.ArgumentParser(prog="compare.py runs", description="markdown report of the run matrix of one track")
     ap.add_argument("--track", required=True)
-    ap.add_argument("--dir", required=True, help="folder with the <track>_{mat_ship,py_par,py_prod}_r<k> .mat + .json files")
+    ap.add_argument("--dir", required=True, help="folder with the <track>_{mat_ship,py_par,py_prod,py_prod8}_r<k> .mat + .json files")
     a = ap.parse_args(argv)
     d, T = Path(a.dir), a.track
     runs = load_runs(T, d)
@@ -386,14 +386,14 @@ def runs_main(argv):
 
     print(f"\n### Production lap error against {ref['name'] if ref else 'no reference'} (signed, band 0.5 %)\n")
     out["production"], rows = [], []
-    for r in sorted(runs.get("py_prod", {}).values(), key=lambda r: r["rep"]):
+    for r in (x for x in every if x["tag"] in ("py_prod", "py_prod8")):       # `every` is ordered by tag, then rep
         if ref is None or r["lap"] is None:
             continue
         err = r["lap"] - ref["lap"]
         flag = abs(err) / ref["lap"] > PROD_BAND
         out["production"].append(dict(run=r["stem"], lap=r["lap"], err_s=err, err_pct=100 * err / ref["lap"], flag=flag))
         rows.append((r["stem"], _fmt(r["lap"]), f"{err:+.4f}", f"{100 * err / ref['lap']:+.3f} %", "FLAG" if flag else "ok"))
-    print(_table(("run", "lap [s]", "error [s]", "error", "band 0.5 %"), rows) if rows else "no py_prod run with a lap")
+    print(_table(("run", "lap [s]", "error [s]", "error", "band 0.5 %"), rows) if rows else "no py_prod / py_prod8 run with a lap")
 
     print("\n### Speed: median (min, max) over the reps\n")
     out["speed"] = {}

@@ -117,6 +117,7 @@ Every result, Python production included, scored against item 3.
 | mat_ship | MATLAB | as shipped | 3 |
 | py_par | Python | parity call (section 3) | 3 |
 | py_prod | Python | defaults: OPT_ds 30, mesh auto, tol 1e-4, ma57, adaptive, pi/8 | 3 |
+| py_prod8 | Python | py_prod with MATLAB's stopping rule: tol 1e-8, acceptable_tol 1e-6 | 3 |
 | xcheck | both | each w* evaluated in other code's NLP (no solve) | 1 |
 | xseed | both | only if lap gap > 0.01%: seed each code from other's w* | 1 each |
 
@@ -149,6 +150,10 @@ Basis: Sturn 2026-10-04 gap 0.3 ms; BCN cold-start scatter ~10 ms; distinct opti
   end-to-end wall (MATLAB: runner times `matlab -batch`, startup reported apart).
 - Idle laptop on AC, other tool closed, codes alternated, 3 reps: median (min, max).
 - MATLAB plots and SDI cut from runner copy, not timed.
+- Headline speed = py_prod8 vs mat_ship: same stopping rule (tol 1e-8, acceptable_tol 1e-6), only
+  mesh and linear solver differ; reported with its lap cost vs reference.
+- py_prod (tol 1e-4) = loose stopping rule, exploration setting: second row only, never a headline.
+- Parity tier (py_par vs mat_ship) = only solver-vs-solver speed comparison.
 
 ## 10. Budget and failure policy
 
@@ -276,7 +281,51 @@ Speed, median (min, max) of 3 reps:
 | Function-eval share | 7.3% | 7.3% | 9.5% |
 | Peak working set [GiB] | 4.89 | 3.30 (commit 7.45) | 1.18 (commit 5.98) |
 
-Speed verdict: same settings, same speed (s per iteration equal, same MUMPS; Python builds the NLP 9%
-faster and its 7-state init took fewer iterations). Python production is 5.0x faster end to end than
-MATLAB as shipped, for +0.20% lap.
-Phase 3 (NBR) pending.
+Speed verdict: pending the py_prod8 tier (equal stopping rule), see the final speed section below.
+### Phase 3: NBR (2026-10-07, one solve at a time)
+
+Ledger (resume point): order mat_ship r1, py_par r1, py_prod r1, then r2, r3; then xcheck (ship r1 /
+par r1), reference, runs; then py_prod8 r1-r3 for NBR and BCN (`run_py.py --tier prod8`), commit per
+track. Commands: section 7 tags via `validation/matlab_batch.py solve` and
+`validation/run_py.py` (see BCN). mat_ship r1 attempt 1 killed by a forced agent handback, rerun.
+Status: NBR matrix, xcheck, reference done; next py_prod8 NBR r1.
+
+| Run | Status | Lap [s] | Its | 23-state IPOPT [s] | s/it | Build [s] | 7-state wall [s] | End-to-end [s] | Peak |
+|---|---|---|---|---|---|---|---|---|---|
+| mat_ship r1 | Solve_Succeeded | 125.15790 | 923 + 274 | 701.3 | 2.56 | 67.1 | 175.7 | 965 | WS 5.4 GiB |
+| py_par r1 | Solve_Succeeded | 125.15202 | 1555 + 329 | 858.0 | 2.61 | 62.8 | 295.7 | 1222 | WS 3.7 GiB, commit 7.8 GiB |
+| py_prod r1 | Solve_Succeeded | 125.10282 | 773 + 369 | 274.1 | 0.74 | 20.4 | 80.7 | 379 | WS 1.3 GiB, commit 6.1 GiB |
+| mat_ship r2 | Solve_Succeeded | 125.15790 | 923 + 274 | 721.9 | 2.63 | 66.4 | 172.3 | 977 | WS 5.3 GiB |
+| py_par r2 | Solve_Succeeded | 125.15202 | 1555 + 329 | 896.4 | 2.72 | 61.7 | 292.4 | 1256 | WS 3.7 GiB, commit 7.8 GiB |
+| py_prod r2 | Solve_Succeeded | 125.10282 | 773 + 369 | 322.4 | 0.87 | 24.1 | 88.0 | 438 | WS 1.3 GiB, commit 6.1 GiB |
+| mat_ship r3 | Solve_Succeeded | 125.15790 | 923 + 274 | 847.6 | 3.09 | 81.6 | 214.8 | 1166 | WS 5.3 GiB |
+| py_par r3 | Solve_Succeeded | 125.15202 | 1555 + 329 | 1015.8 | 3.09 | 68.7 | 360.6 | 1452 | WS 3.7 GiB, commit 7.8 GiB |
+| py_prod r3 | Solve_Succeeded | 125.10282 | 773 + 369 | 311.2 | 0.84 | 24.3 | 89.3 | 428 | WS 1.3 GiB, commit 6.1 GiB |
+
+Reps deterministic per code again; wall times drifted up over the session (thermal).
+
+**NBR verdict: PASS.**
+
+- Parity, all 3 rep pairs: 125.15790 (MATLAB) vs 125.15202 s (Python), gap 5.9 ms = 0.0047%, rule 0.01%.
+  This time Python holds the lower optimum.
+- Cross-check ship r1 / par r1, PASS both ways: Python NLP at MATLAB w*: bound viol 7.2e-9, constraint
+  viol 9.5e-9, f 125.249955688 equal (rel 2.3e-16); MATLAB NLP at Python w*: 7.2e-9 / 9.5e-9,
+  f 125.248054447 equal (rel 1.1e-16). The Python JSON's inf_pr 2.8e-3 is the last IPOPT trace entry,
+  not the final point: direct evaluation gives 9.5e-9.
+- Profile RMS of MATLAB vs reference: vx 0.085 m/s, n 0.124 m (flagged), delta_n 0.0035, T_motor 23 Nm,
+  T_brake 26 Nm. 7-state inits again take different paths (923 vs 1555 iterations).
+- Reference bundle `Results/validation/reference/NBR/`: NBR_py_par_r1, lap 125.152023 s, f 125.248054,
+  N 514.
+- Production (N=171 curvature, tol 1e-4, ma57): 125.10282 s, -0.0492 s = -0.039% vs reference (band ok;
+  faster lap on the coarser mesh); RMS vx 0.48 m/s, n 0.71 m.
+
+Speed, median (min, max) of 3 reps:
+
+| Metric | MATLAB as shipped | Python parity | Python production (tol 1e-4) |
+|---|---|---|---|
+| End-to-end [s] | 977 (965, 1166) | 1256 (1222, 1452) | 428.5 (378.6, 438.2) |
+| 7-state init: its, wall [s] | 923, 176 | 1555, 296 | 773, 88 |
+| Model + NLP build [s] | 67.1 | 62.8 | 24.1 |
+| 23-state: its, IPOPT wall [s] | 274, 722 (701, 848) | 329, 896 (858, 1016) | 369, 311 (274, 322) |
+| IPOPT s per iteration | 2.64 | 2.73 | 0.84 |
+| Peak working set [GiB] | 5.32 | 3.67 (commit 7.83) | 1.30 (commit 6.07) |

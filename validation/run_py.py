@@ -1,12 +1,13 @@
 """Python side of the validation run matrix (docs/validation_matlab_vs_python.md sections 7, 9, 10): one MLTP solve in a
 child process, timed from outside. The counterpart of ``matlab_batch.py solve``.
 
-    python validation/run_py.py --track BCN --tier par|prod --rep 1 --out Results/validation [--opt-ds 20] [--max-iter N] [--timeout 2700] [--results-dir DIR]
+    python validation/run_py.py --track BCN --tier par|prod|prod8 --rep 1 --out Results/validation [--opt-ds 20] [--max-iter N] [--timeout 2700] [--results-dir DIR]
 
 tier ``par``  = the parity call of doc section 3 (py_export.PARITY: uniform mesh, OPT_ds 10, tol 1e-8, MUMPS, monotone
                 mu, acceptable_tol 1e-6) inside py_export.matlab_seed() (MATLAB's 23-state start point);
 tier ``prod`` = Python defaults, MLTP(track) with nothing set (OPT_ds 30, mesh auto, tol 1e-4, ma57, adaptive mu).
-Both add the runner cap IPOPT max_wall_time 1800 s and run with save=False, plot=False (the results go to --out).
+tier ``prod8`` = ``prod`` plus MATLAB's stopping rule: tol 1e-8 (userOpts kwarg), acceptable_tol 1e-6 (ipopt_overrides).
+All add the runner cap IPOPT max_wall_time 1800 s and run with save=False, plot=False (the results go to --out).
 ``--results-dir DIR`` sets save=True, results_dir=DIR: MLTP also writes its normal result file there (standard stem, e.g.
 BCN_Static_ATDOn_EM4Off.mat, full data incl. data.vehicle and data.nlp; the save counts in mltp_wall_s).
 ``--opt-ds`` is for the failure-policy retry (doc section 10, 20 m), ``--max-iter`` for the smoke test only
@@ -116,6 +117,9 @@ def child(a):
             seed = matlab_seed()
         else:                                     # Python defaults
             kw = dict(ipopt_overrides={"max_wall_time": WALL_CAP})
+            if a.tier == "prod8":                 # MATLAB's stopping rule
+                kw["tol"] = 1e-8
+                kw["ipopt_overrides"]["acceptable_tol"] = 1e-6
             if a.opt_ds:
                 kw["OPT_ds"] = a.opt_ds
             seed = contextlib.nullcontext()
@@ -239,7 +243,8 @@ def parent(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--track", required=True, help="BCN, NBR, Sturn, ...")
-    ap.add_argument("--tier", required=True, choices=("par", "prod"), help="par = parity call, prod = Python defaults")
+    ap.add_argument("--tier", required=True, choices=("par", "prod", "prod8"),
+                    help="par = parity call, prod = Python defaults, prod8 = prod with tol 1e-8 and acceptable_tol 1e-6")
     ap.add_argument("--rep", type=int, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--opt-ds", type=float, help="OPT_ds override (par default 10, prod default 30; the failure-policy retry uses 20)")
