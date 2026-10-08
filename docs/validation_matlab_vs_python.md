@@ -388,9 +388,12 @@ Default calls, one solve at a time, `Results/` stems unchanged, plots regenerate
 | BCN_Static_ATDOn_EM4Off | 116.44076, 247 | 116.44407, 165 (= py_prod) |
 | BCN_AALB_ATDOn_EM4Off | 116.06541, 241 | 116.05468, 169 |
 | Sturn_paramOptim (full+duals from Sturn) | 18.00805, 5 | 18.01610, 5 |
-| Sturn_TyreOptim | 15.76771, 121 (cold, Fz0_shift 0.5 at bound) | 16.12911, 133 (full-solution warm start, Fz0_shift 0.543) |
+| Sturn_TyreOptim | 15.76771, 121 (cold, Fz0_shift 0.5 at bound) | 15.75002, 172 (reseeded from the previous optimum, Fz0_shift 0.5 at bound) |
 | init_Sturn, init_BCN, Sturn/BCN _qss | unchanged | content identical, files kept |
 
-TyreOptim: the cold default call now ends at 17.116 s (782 its, Fz0_shift 0.656) and the warm start at
-16.129 s; neither reaches the old bound optimum (two tries, stopped; open item). Skipped seeding from the
-old design result, add when the TyreOptim baseline matters.
+TyreOptim: the cold default call ends at 17.116 s (782 its, Fz0_shift 0.656) and the full-solution warm
+start at 16.129 s, both worse interior local optima. Baseline reseeded from the previous design result:
+`MLTP_TyreOptim(circuit="Sturn", warm_start=<previous Results/Sturn_TyreOptim.mat>,
+vp_overrides={"Fz0_shift": 0.5})` (full-interp, P0 = 0.5): 15.75002 s, 172 its, Fz0_shift 0.5, faster
+than the pre-pi/8 15.768 s as the looser steering bound allows. Rerunning with warm_start = this file and
+the same override reproduces it.

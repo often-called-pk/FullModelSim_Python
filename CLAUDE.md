@@ -451,9 +451,11 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `*_CopyB.mat` files are legacy pre-fix results (no `data.nlp`). Regenerated again on 2026-10-08 for the
   pi/8 steering scale (ma57, MF205, default calls): Sturn 174 iterations, 18.01633 s; BCN 1072 + 165,
   116.44407 s; BCN AALB 169, 116.05468 s; `Sturn_paramOptim` 5 from the Sturn result (full+duals),
-  18.01610 s; `Sturn_TyreOptim` 133 from the full-solution warm start, 16.12911 s (Fz0_shift 0.543; the
-  cold default call ends at 17.116 s in 782; the pre-pi/8 cold baseline reached the Fz0_shift bound 0.5
-  at 15.768 s and was not reproduced). The inits and QSS files are unaffected (content identical, kept).
+  18.01610 s; `Sturn_TyreOptim` 172, 15.75002 s, Fz0_shift 0.5 (bound), reseeded from the previous
+  optimum: `MLTP_TyreOptim(circuit="Sturn", warm_start=<previous Results/Sturn_TyreOptim.mat>,
+  vp_overrides={"Fz0_shift": 0.5})` (full-interp; the same call on this file reproduces it). The cold
+  default call lands on a worse interior optimum (17.116 s, Fz0_shift 0.656, 782 iterations), the
+  full-solution warm start on 16.129 s. The inits and QSS files are unaffected (content identical, kept).
 - **`Powertrain.py` is not a map.** Despite the name it only stores 5 scalar ratings
   (`Pmax, Tmax, OMmax, Vmax, eff`); `eff=0.9` is used only in the post-solve energy integral. The
   actual power/rpm limits are enforced in `MLTP.py`/`vehModel.py`. `pt.EM4`/`pt.ATD` are set later
