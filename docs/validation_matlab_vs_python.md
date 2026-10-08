@@ -185,7 +185,8 @@ Basis: Sturn 2026-10-04 gap 0.3 ms; BCN cold-start scatter ~10 ms; distinct opti
 ## 13. Risks
 
 1. MATLAB BCN as shipped (245 s at N=465, unknown machine) matches Python default (233 s IPOPT
-   at N=155): speed verdict may not favour port. Re-measured here, same laptop.
+   at N=155): speed verdict may not favour port. Re-measured here, same laptop (resolved: section 14,
+   equal speed at equal settings; 2.1-4.8x at equal tolerance from mesh and linear solver).
 2. Python never solved N 465/514 with MUMPS: memory unknown (3-5 GB at N=155 ma57). Watch run 1.
 3. NBR never solved by either code; uniform 7-state init may fail (Python uniform BCN init once
    ended `Error_In_Step_Computation`).
@@ -249,6 +250,9 @@ End-to-end = external wall of the whole run (MATLAB incl. startup).
 | mat_ship r3 | Solve_Succeeded | 116.21127 | 2185 + 284 | 826.2 | 2.91 | 67.3 | 375.4 | 1286 | WS 5.3 GB |
 | py_par r3 | Solve_Succeeded | 116.22177 | 1788 + 302 | 769.7 | 2.55 | 61.2 | 301.3 | 1137 | WS 3.5 GB, commit 8.0 GB |
 | py_prod r3 | Solve_Succeeded | 116.44407 | 1072 + 165 | 113.5 | 0.69 | 21.1 | 103.7 | 241 | WS 1.3 GB, commit 6.4 GB |
+| py_prod8 r1 | Solve_Succeeded | 116.44626 | 967 + 172 | 138.4 | 0.80 | 22.7 | 91.3 | 256 | WS 1.2 GiB, commit 6.0 GiB |
+| py_prod8 r2 | Solve_Succeeded | 116.44626 | 967 + 172 | 134.0 | 0.78 | 22.2 | 89.0 | 249 | WS 1.2 GiB, commit 6.0 GiB |
+| py_prod8 r3 | Solve_Succeeded | 116.44626 | 967 + 172 | 138.4 | 0.80 | 23.9 | 91.2 | 257 | WS 1.2 GiB, commit 6.0 GiB |
 
 Reps deterministic per code (same iterations, same lap to all printed digits); only wall times vary.
 MATLAB IPOPT wall drifted 654 -> 764 -> 826 s over the session (thermal), so medians are used.
@@ -270,25 +274,33 @@ MATLAB IPOPT wall drifted 654 -> 764 -> 826 s over the session (thermal), so med
 
 Speed, median (min, max) of 3 reps:
 
-| Metric | MATLAB as shipped | Python parity | Python production |
-|---|---|---|---|
-| End-to-end [s] | 1219 (1120, 1286) | 1186 (1137, 1229) | 241.5 (233.5, 246.7) |
-| Startup / import [s] | 7.8 | 0.9 | 0.9 |
-| 7-state init: its, wall [s] | 2185, 375 | 1788, 302 | 1072, 104 |
-| Model + NLP build [s] | 67.1 | 61.2 | 20.9 |
-| 23-state: its, IPOPT wall [s] | 284, 764 (654, 826) | 302, 820 (770, 857) | 165, 113.5 (110, 114) |
-| IPOPT s per iteration | 2.69 | 2.71 | 0.69 |
-| Function-eval share | 7.3% | 7.3% | 9.5% |
-| Peak working set [GiB] | 4.89 | 3.30 (commit 7.45) | 1.18 (commit 5.98) |
+| Metric | MATLAB as shipped | Python parity | Python prod8 (tol 1e-8) | Python prod (tol 1e-4) |
+|---|---|---|---|---|
+| End-to-end [s] | 1219 (1120, 1286) | 1186 (1137, 1229) | 256 (249, 257) | 241.5 (233.5, 246.7) |
+| Lap vs reference | reference | +0.0090% | +0.202% | +0.200% |
+| Startup / import [s] | 7.8 | 0.9 | 0.9 | 0.9 |
+| 7-state init: its, wall [s] | 2185, 375 | 1788, 302 | 967, 91 | 1072, 104 |
+| Model + NLP build [s] | 67.1 | 61.2 | 22.7 | 20.9 |
+| 23-state: its, IPOPT wall [s] | 284, 764 (654, 826) | 302, 820 (770, 857) | 172, 138 (134, 138) | 165, 113.5 (110, 114) |
+| IPOPT s per iteration | 2.69 | 2.71 | 0.80 | 0.69 |
+| Function-eval share | 7.3% | 7.3% | 8.6% | 9.5% |
+| Peak working set [GiB] | 4.89 | 3.30 (commit 7.45) | 1.18 (commit 6.01) | 1.18 (commit 5.98) |
 
-Speed verdict: pending the py_prod8 tier (equal stopping rule), see the final speed section below.
+BCN speed verdict:
+
+- Headline, equal stopping rule (tol 1e-8, acceptable_tol 1e-6; only mesh and linear solver differ):
+  Python prod8 256 s vs MATLAB as shipped 1219 s end to end = 4.8x faster, lap cost +0.202% (0.235 s)
+  vs reference, mostly mesh (N=155 curvature vs N=465 uniform).
+- Loose stopping rule, exploration setting (tol 1e-4): 241.5 s, +0.200%. Not a speed claim.
+- Solver vs solver (parity tier, identical settings, the only like-for-like comparison): equal speed
+  (2.71 vs 2.69 s per iteration, 1186 vs 1219 s end to end, within path noise).
 ### Phase 3: NBR (2026-10-07, one solve at a time)
 
 Ledger (resume point): order mat_ship r1, py_par r1, py_prod r1, then r2, r3; then xcheck (ship r1 /
 par r1), reference, runs; then py_prod8 r1-r3 for NBR and BCN (`run_py.py --tier prod8`), commit per
 track. Commands: section 7 tags via `validation/matlab_batch.py solve` and
 `validation/run_py.py` (see BCN). mat_ship r1 attempt 1 killed by a forced agent handback, rerun.
-Status: NBR complete incl. py_prod8 r1-r3; next py_prod8 BCN r1-r3, then BCN speed verdict.
+Status: Phases 2-3 complete incl. py_prod8 on both tracks. Next: Phase 4 (verdict), Phase 5 (baselines).
 
 | Run | Status | Lap [s] | Its | 23-state IPOPT [s] | s/it | Build [s] | 7-state wall [s] | End-to-end [s] | Peak |
 |---|---|---|---|---|---|---|---|---|---|
