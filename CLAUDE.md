@@ -164,7 +164,9 @@ Iteration counts are path dependent. A `MLTP_paramOptim` result has `n_param` > 
 `optimise_design(warm_start=...)` (`MLTP_paramOptim`, `MLTP_TyreOptim`) takes the same full MLTP result: if it is the design NLP minus
 the appended P block (`warmstart.plan_design_warm_start`) it starts from `[w_opt; P0]` (P0 = current vp values), `lam_g`, `[lam_x; 0]`
 (`extend_full_start`), else `full-interp` / `cold` as above; mode in `ctx.elapsed` and `data.nlp` (`test_paramoptim_warmstart.py`). Sturn,
-default params, ma57: 5 iterations to 18.0080 s from the 179-iteration 18.0086 s result (primal-only 26, same point) vs 220 to 18.2439 s from the 7-state init.
+default params, ma57, pi/8 steering (2026-10-08 baseline): 5 iterations to 18.016 s from the 174-iteration 18.016 s result. Pre-pi/8: 5 to
+18.0080 s from the 179-iteration 18.0086 s result (primal-only 26, same point) vs 220 to 18.2439 s from the 7-state init. All other numbers
+in this subsection are pre-pi/8 (and pre-fix where stated).
 
 ### Multi-fidelity ladder (`functions/ladder.py`)
 `MLTP(ladder=...)` builds every cold start (no or a refused `warm_start`, refine's cold retry) from a chain of
@@ -177,7 +179,8 @@ laterally neutral (vy = r = n = `OPT_e`, eps = delta = 0, chassis quasi-static).
 `ma57_pre_alloc` to 3.0 (else `Insufficient_Memory`); `data['ladder']` records each rung's cost.
 `homotopy=True` (= `(1.2, 1.1, 1.0)`; default None) solves once per tyre-friction scale (`pDx1, pDx2, pDy1,
 pDy2`), step 1 like a plain call, later steps warm with duals; refine, save and plot act on the last step
-(`data['homotopy']`). Measured (vi = 60, idle, ma57, MF205; 7-state + 23-state iterations, total wall, lap):
+(`data['homotopy']`). Measured pre-pi/8 (vi = 60, idle, ma57, MF205; 7-state + 23-state iterations, total wall, lap;
+with the pi/8 steering scale the legacy default now gives Sturn 174 iterations, 18.016 s and BCN 1072 + 165, 116.444 s):
 
 | | `legacy` | `qss7` | `qss23` |
 |---|---|---|---|
@@ -201,8 +204,8 @@ a quick screening-grade cold start, `homotopy=True` when a cold solve fails: EM4
 
 ### Fast QSS screening tier (`MLTP_screen.py` + `functions/ggv.py`)
 A numpy-only quasi-steady g-g-v lap-time ESTIMATE (7 ms Sturn, 30 ms BCN per setup once `ctx`
-exists; Sturn 18.744 s and BCN 129.467 s, i.e. +4.1% / +11.2% vs the default NLP laps of 18.0086 s
-and 116.441 s) for ranking setups.
+exists; Sturn 18.744 s and BCN 129.467 s, i.e. +4.0% / +11.2% vs the default NLP laps of 18.016 s
+and 116.444 s) for ranking setups.
 **Not an optimum**: fixed centreline (n = 0, track width unused), point mass, no transients.
 `python MLTP_screen.py` or `MLTP_screen(circuit='BCN', vp_overrides={...})` -> `Results/<circuit>_<cfg>_qss.mat`
 (`data.fidelity='qss'`, profile on the NLP `s_full` grid + `data.envelope`);
@@ -248,7 +251,8 @@ the whole lap) drops its term, so such tracks get the uniform mesh. `mesh_opts` 
 redistributes the knots and does not change N (still round(L/`OPT_ds`)), so BCN at the default
 `OPT_ds=30` gets a curvature mesh with N=155, the same interval count as before. Measured with
 the default call (ma57, `tyre_set='MF205'`, pre-fix NLP; with the constraint-set fix in Conventions it
-takes 247 iterations, 116.441 s, 253 s of solve), `'auto'` on BCN took 614 iterations, a 116.523 s lap
+takes 247 iterations, 116.441 s, 253 s of solve pre-pi/8, and 165 iterations, 116.444 s, 148 s with the
+pi/8 steering scale), `'auto'` on BCN took 614 iterations, a 116.523 s lap
 and 566 s solve against 852 iterations, 117.42 s and 968 s for the documented uniform N=155 run
 (five-coefficient proxy tyre), i.e. 1.7x wall at equal N, and its 7-state init now converges
 (1072 iterations, Optimal; the uniform-mesh init had ended `Error_In_Step_Computation`). ZigZag
@@ -288,7 +292,7 @@ accepted pass is kept (stop `solve-failed` / `lap-rise`; the others are `tol`, `
 `accepted` = kept; `pass_no`, `N`, `lap_time`, `eta_max`, ...); once a refined pass is accepted,
 `data.mesh = data.mesh_requested = 'adaptive'` (saved as `<stem>_meshAdaptive`,
 `data.nlp.warm_start = 'refine'`, or `'init7'` after a cold retry; no entry rebuilds those knots, so
-such a result seeds a later solve by interpolation only). Measured (ma57, MF205; every pass of these
+such a result seeds a later solve by interpolation only). Measured pre-pi/8 (ma57, MF205; every pass of these
 runs lowered the lap, so the lap check keeps them; Sturn lap error vs the uniform `OPT_ds=15` N=36
 optimum 17.856 s, which a cold solve does not reach in 6000 iterations and which is not itself
 mesh-converged): uniform N=18 +0.85% (179 iterations, 20 s); `refine=True` on it stops on `tol`
@@ -388,7 +392,8 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   and so the slip-driven lateral tyre force, identically zero in `vehModel` (the NLP corners by drifting);
   the rest of the set matches `MF_205_60R15_V91`. Sturn, N=18, before the NLP constraint-set fix below: Copy-B
   gave a 25.57 s lap in 3209 IPOPT iterations (~250 s), MF205 18.01 s in 489 iterations (~35 s of solve on an
-  idle machine); with the fix MF205 takes 179 iterations (18.0086 s, ~16 s of solve); MATLAB gets
+  idle machine); with the fix MF205 takes 179 iterations (18.0086 s, ~16 s of solve; with the pi/8
+  steering scale 174 iterations, 18.016 s); MATLAB gets
   18.008-18.022 s. The benchmark runs in `docs/phase1_findings_2026-10-04.md` used a five-coefficient subset of
   MF205 (`pEy1, pKy1, pKy4, pKy5, pVy1`) as a proxy; it took 257 iterations for 18.016 s (pre-fix NLP), so
   quote 257 only for that proxy. The owner flipped the default from CopyB to MF205 on 2026-10-04 (every
@@ -430,9 +435,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   steering input exactly as `vehModel.m` runs it (its `delta_s` leaks from `vehModel_initial.m`), while both
   keep `delta = 35 deg * delta_n`. So the rate bound is 0.1/(pi/8) per second on `delta_n`, 0.1556 rad/s
   physical, and the steering initial guess, the `u_opt` steering row and the plotSDI trace carry MATLAB's
-  pi/8 scale (9/14 of the physical angle; `data.vehicle` has no steering channel). Every lap, iteration
-  count and baseline quoted in this file was measured with the earlier 0.1 rad/s bound (`delta_max` scale)
-  and is re-measured after the MATLAB validation (`docs/validation_matlab_vs_python.md`, Phase 5).
+  pi/8 scale (9/14 of the physical angle; `data.vehicle` has no steering channel). The default baselines
+  were re-measured with it on 2026-10-08 (end of this bullet); every other lap, iteration count and wall
+  time in this file was measured with the earlier 0.1 rad/s bound (`delta_max` scale): pre-pi/8.
   (2) The four friction-circle rows
   exist only with `TyreModel='PureSlip'`, as in `MLTP.m`. The default Sturn NLP now has MATLAB's size
   (n_w = 1812, n_g = 1904). Default solves after the fix (ma57, MF205): Sturn 179 iterations, 18.00859 s lap
@@ -443,7 +448,12 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   re-measure before quoting them. The default `Results/` baselines were regenerated after the fix
   (Sturn, BCN, BCN AALB, the inits, QSS, TyreOptim; `Sturn_paramOptim` again from the full-solution warm
   start); the full results among them seed a default solve with duals (same NLP structure). The
-  `*_CopyB.mat` files are legacy pre-fix results (no `data.nlp`).
+  `*_CopyB.mat` files are legacy pre-fix results (no `data.nlp`). Regenerated again on 2026-10-08 for the
+  pi/8 steering scale (ma57, MF205, default calls): Sturn 174 iterations, 18.01633 s; BCN 1072 + 165,
+  116.44407 s; BCN AALB 169, 116.05468 s; `Sturn_paramOptim` 5 from the Sturn result (full+duals),
+  18.01610 s; `Sturn_TyreOptim` 133 from the full-solution warm start, 16.12911 s (Fz0_shift 0.543; the
+  cold default call ends at 17.116 s in 782; the pre-pi/8 cold baseline reached the Fz0_shift bound 0.5
+  at 15.768 s and was not reproduced). The inits and QSS files are unaffected (content identical, kept).
 - **`Powertrain.py` is not a map.** Despite the name it only stores 5 scalar ratings
   (`Pmax, Tmax, OMmax, Vmax, eff`); `eff=0.9` is used only in the post-solve energy integral. The
   actual power/rpm limits are enforced in `MLTP.py`/`vehModel.py`. `pt.EM4`/`pt.ATD` are set later

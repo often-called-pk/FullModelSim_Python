@@ -1,5 +1,8 @@
 # Phase 1 findings (2026-10-04)
 
+Note 2026-10-08: every number here is pre-pi/8 (steering u_s = delta_max, 0.1 rad/s). Current baselines:
+CLAUDE.md (constraint-set bullet) and [validation_matlab_vs_python.md](validation_matlab_vs_python.md).
+
 Branch `worktree-speed-phase1`. All numbers were measured today on one machine: IPOPT 3.14.11, CasADi 3.7.2, HSL ma57 with MC64 scaling unless stated. Benchmark case: Sturn (`OPT_ds` 30, N=18, `OPT_d` 3, uniform mesh), Static aero, ATD On, EM4 Off, `vi` 60. Roadmap: [speed_capability_roadmap.md](speed_capability_roadmap.md) (section "Phase 1 status"). Wall times move ~30% with machine load (the identical 3209-iteration solve took 243 to 360 s of solve time across six logs), so iteration counts are the primary metric. Raw data and logs: `C:\Users\ASUS\.claude\jobs\9b76333d\tmp\study\` (scratch; `results/<tag>.json`).
 
 "Corrected tyre" means the lateral values MATLAB actually runs (MF_205_60R15_V91). The options-study, mesh and warm-start runs used the five-coefficient override `{pEy1, pKy1, pKy4, pKy5, pVy1}`; `vehParams(tyre_set='MF205')` applies all nine lateral coefficients. Iteration counts and laps quoted below for the "corrected" tyre (257 iterations, 18.016 s) are therefore for that five-coefficient proxy; the full `tyre_set='MF205'` Sturn solve with default options takes 489 iterations for 18.009 s (pre-fix NLP, see the status note below). "Shipped tyre" and "Python shipped default" below mean Copy-B, the Python default until the 2026-10-04 flip (see Decisions).

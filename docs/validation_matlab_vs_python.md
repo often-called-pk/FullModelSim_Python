@@ -1,6 +1,28 @@
 # MATLAB vs Python MLTP validation (BCN + NBR)
 
-Status: plan, 2026-10-07. Results appended per phase in section 14.
+Status: done 2026-10-08. Plan below, results in section 14.
+
+## 0. Overall verdict
+
+- PASS on both tracks: the Python port solves the same NLP as the MATLAB original, same answer.
+- Parameters equal (vp, pt, mf, aero, Xi/Xf, scales, bounds, options); only hit: dormant CG_p table.
+- 23-state NLP: bounds and start point bit-exact, f and g within 3e-13 scaled (Sturn, BCN, NBR).
+- Parity laps (Python at MATLAB as-shipped settings), rule 0.01%:
+  BCN 116.21127 (MATLAB) vs 116.22177 s (0.009%); NBR 125.15790 vs 125.15202 s (0.005%).
+- Cross-checks: each solution feasible in the other code's NLP (violation <= 1e-8), objectives equal
+  to 1e-16, both tracks.
+- Speed at the same stopping rule (tol 1e-8, acceptable_tol 1e-6; Python production mesh + ma57):
+  BCN 256 vs 1219 s = 4.8x, lap +0.20%; NBR 465 vs 977 s = 2.1x, lap -0.024%. At identical settings
+  both codes run at the same speed per iteration.
+- Flag: neighbouring optima differ by racing-line n RMS 0.12-0.13 m (lap gap inside the rule).
+- References: `Results/validation/reference/BCN/` (MATLAB, 116.211267 s), `.../NBR/` (Python parity,
+  125.152023 s). Gates pinned by `tests/test_matlab_parity.py`.
+- Rerun (one solve at a time):
+  `python validation/matlab_batch.py solve --circuit BCN --tier ship --rep 1 --out Results/validation`;
+  `python validation/run_py.py --track BCN --tier par --rep 1 --out Results/validation` (or prod8, prod);
+  `python validation/compare.py xcheck|reference|runs --track BCN ...`.
+- Code changes: steering u_s = pi/8 default (owner call), state bounds via 1/x_s (1 ulp), 'NBR' circuit.
+- Loss: first NBR MATLAB attempt killed by a forced agent handback; rerun cleanly.
 
 ## 1. Purpose
 
@@ -300,7 +322,7 @@ Ledger (resume point): order mat_ship r1, py_par r1, py_prod r1, then r2, r3; th
 par r1), reference, runs; then py_prod8 r1-r3 for NBR and BCN (`run_py.py --tier prod8`), commit per
 track. Commands: section 7 tags via `validation/matlab_batch.py solve` and
 `validation/run_py.py` (see BCN). mat_ship r1 attempt 1 killed by a forced agent handback, rerun.
-Status: Phases 2-3 complete incl. py_prod8 on both tracks. Next: Phase 4 (verdict), Phase 5 (baselines).
+Status: all phases complete (verdict in section 0, baselines in Phase 5 below).
 
 | Run | Status | Lap [s] | Its | 23-state IPOPT [s] | s/it | Build [s] | 7-state wall [s] | End-to-end [s] | Peak |
 |---|---|---|---|---|---|---|---|---|---|
@@ -355,3 +377,20 @@ NBR speed verdict:
 - Solver vs solver (parity tier, identical settings, the only like-for-like comparison): equal speed
   per iteration (2.73 vs 2.64 s); Python's end-to-end 1256 s is longer only through path noise
   (7-state init 1555 vs 923 iterations, 23-state 329 vs 274).
+
+### Phase 5: baselines for the pi/8 steering scale (2026-10-08)
+
+Default calls, one solve at a time, `Results/` stems unchanged, plots regenerated with them.
+
+| Baseline | Old (pre-pi/8): lap [s], its | New: lap [s], its |
+|---|---|---|
+| Sturn_Static_ATDOn_EM4Off | 18.00859, 179 | 18.01633, 174 |
+| BCN_Static_ATDOn_EM4Off | 116.44076, 247 | 116.44407, 165 (= py_prod) |
+| BCN_AALB_ATDOn_EM4Off | 116.06541, 241 | 116.05468, 169 |
+| Sturn_paramOptim (full+duals from Sturn) | 18.00805, 5 | 18.01610, 5 |
+| Sturn_TyreOptim | 15.76771, 121 (cold, Fz0_shift 0.5 at bound) | 16.12911, 133 (full-solution warm start, Fz0_shift 0.543) |
+| init_Sturn, init_BCN, Sturn/BCN _qss | unchanged | content identical, files kept |
+
+TyreOptim: the cold default call now ends at 17.116 s (782 its, Fz0_shift 0.656) and the warm start at
+16.129 s; neither reaches the old bound optimum (two tries, stopped; open item). Skipped seeding from the
+old design result, add when the TyreOptim baseline matters.
