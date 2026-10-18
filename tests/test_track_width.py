@@ -392,6 +392,18 @@ ok("saved data.n_tag == hw3p5", str(d13.n_tag) == "hw3p5")
 ok("saved data.track.n_hi == 3.5 everywhere", np.all(d13.track.n_hi == 3.5))
 
 # ---- 14. narrow band around a sampled line: continuity stays feasible (casadi) ----
+print("13c. a band wider than the tightest corner radius raises ValueError (sf would change sign)")
+from functions.context import Ctx as _Ctx13c
+from userOpts import userOpts as _uo13c
+_c13c = _Ctx13c(); _hit13c = None
+try:
+    quiet(_uo13c, _c13c, circuit="NBR", n_bounds=20.0)          # NBR tightest radius is about 13.8 m
+except ValueError as e:
+    _hit13c = str(e)
+ok(f"NBR n_bounds=20 raises: {_hit13c}", _hit13c is not None and "corner radius" in _hit13c)
+_c13d = _Ctx13c(); quiet(_uo13c, _c13d, circuit="NBR", n_bounds=5.0)
+ok("NBR n_bounds=5 is accepted", float(_c13d.track.n_hi.max()) == 5.0)
+
 print("14. narrow band (+-0.05 m) around a sampled line: continuity holds after projection")
 S = opts().track.s
 nr = 3.0 * np.sin(2 * np.pi * S / 100.0)

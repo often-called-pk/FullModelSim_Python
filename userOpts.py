@@ -374,6 +374,12 @@ def userOpts(ctx,
     n_lo, n_hi, ctx.n_tag = _parse_n_bounds(n_bounds, tr.s)
     ctx.n_bounds = n_bounds
     if n_lo is not None:
+        # the space-domain factor sf = (1 - n*kappa)/(...) changes sign where |n*kappa| reaches 1
+        nk = np.maximum(np.abs(n_lo), np.abs(n_hi)) * np.abs(np.asarray(tr.k, dtype=float).reshape(-1))
+        if np.max(nk) >= 1.0:
+            i = int(np.argmax(nk))
+            raise ValueError(f"n_bounds reach {max(abs(n_lo[i]), abs(n_hi[i])):.2f} m at s = {float(tr.s[i]):.1f} m, "
+                             f"beyond the corner radius 1/|k| = {1.0 / abs(float(tr.k[i])):.2f} m there")
         tr.n_lo, tr.n_hi = n_lo, n_hi
 
     # ---- boundary conditions ----------------------------------------------
