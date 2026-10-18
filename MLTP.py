@@ -9,8 +9,9 @@ Solves the full Minimum Lap Time Problem with the 23-state model:
     -> IPOPT (ma57 by default, MUMPS fallback) -> postprocess -> save .mat
 
 The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
-tyre set / physics / start state / mesh request appends _<tyre_set> /
-_physCorrected / _start<State> / _mesh<Mesh>, see functions.importfile.result_stem;
+tyre set / physics / start state / lateral band / mesh request appends _<tyre_set> /
+_physCorrected / _start<State> / _hw<W> or _nbCustom / _mesh<Mesh>, see
+functions.importfile.result_stem;
 an adaptively refined solve, refine=..., saves as _meshAdaptive). The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
@@ -313,7 +314,12 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     start box. 'rolling' puts a narrow chassis box around the straight-line coast equilibrium
     of the model at vi (vehModel.rolling_start). 'periodic' frees the start state and makes the
     end state and input equal the start, for closed circuits. These two save as
-    <stem>_startRolling and <stem>_startPeriodic. data['start_state'] and data['Xi'] record it."""
+    <stem>_startRolling and <stem>_startPeriodic. data['start_state'] and data['Xi'] record it.
+
+    ``n_bounds`` (a userOpts kwarg, default None) replaces the model's +-4 m bound on the lateral
+    offset n of the CG path by a band: a number W (-W..W) or a (lo, hi) pair, see
+    userOpts._parse_n_bounds. The result saves as <stem>_hw<W> or <stem>_nbCustom, with data['n_tag']
+    and the per-point bounds in data.track.n_lo / n_hi (the drawn track edges)."""
     t0 = time.time()
     elapsed = {}
     hom_steps = useropts_kwargs.pop("_homotopy_steps", None)    # set by a homotopy's last step
@@ -658,6 +664,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
+    if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
+        data["n_tag"] = ctx.n_tag
     data["ladder"] = dict(ladder_rec)   # cold-start ladder + what its lower rungs cost (metadata)
     if hom_steps is not None:           # last step of MLTP(homotopy=...): the record of every step
         data["homotopy"] = homotopy_record(list(hom_steps) + [dict(
@@ -678,7 +686,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
         stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
                            getattr(ctx, "mesh_requested", "auto"),
-                           getattr(ctx, "physics", "matlab"), ctx.start_state)
+                           getattr(ctx, "physics", "matlab"), ctx.start_state, n_tag=ctx.n_tag)
         out_path = os.path.join(results_dir, f"{stem}.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved optimal solution -> {out_path}")

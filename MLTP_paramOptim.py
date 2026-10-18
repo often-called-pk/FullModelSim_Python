@@ -74,7 +74,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
 
     ``start_state`` (a userOpts kwarg) works as in MLTP, except that 'rolling' raises
     ValueError: its start equilibrium depends on the design parameters. data.start_state and
-    data.Xi record the start box."""
+    data.Xi record the start box. ``n_bounds`` (a userOpts kwarg) works as in MLTP: the result
+    saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag."""
     t0 = time.time()
     elapsed = {}
     ctx = Ctx()
@@ -226,6 +227,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         # interpolation) and the warm-start mode this solve used
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
+    if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
+        data["n_tag"] = ctx.n_tag
     ctx.data = SimpleNamespace(**data)
 
     if save:
@@ -233,7 +236,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         out_path = os.path.join(results_dir, result_stem(
             circuit, tag, getattr(ctx, "tyre_set", "MF205"),
             getattr(ctx, "mesh_requested", "auto"),
-            getattr(ctx, "physics", "matlab"), ctx.start_state) + ".mat")
+            getattr(ctx, "physics", "matlab"), ctx.start_state,
+            n_tag=ctx.n_tag) + ".mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved -> {out_path}")
 

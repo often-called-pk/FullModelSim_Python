@@ -41,7 +41,8 @@ from .trackLimits import trackLimits
 def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None):
     """Build the collocation grid and curvature samples. Returns a namespace-like
     dict with N, mesh, s_knot, dsk, s_col, s_full, k_knot, k_col, k_full, pv_*,
-    tau, C, D, B.
+    tau, C, D, B, n_bounds. n_bounds is None, or (lo, hi) = track.n_lo / track.n_hi
+    (userOpts n_bounds) interpolated onto s_full.
 
     mesh      : 'uniform' (default) -> N = round(L/OPT_ds) equal intervals;
                 'curvature' -> functions.mesh.curvature_mesh: same N by default,
@@ -92,10 +93,13 @@ def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None
     k_col = np.interp(s_col, s, k)
     k_full = np.interp(s_full, s, k)
 
+    n_lo = getattr(track, "n_lo", None)                     # per-point lateral band, else None
+    n_bounds = None if n_lo is None else (np.interp(s_full, s, n_lo), np.interp(s_full, s, track.n_hi))
+
     return dict(N=N, mesh=mesh, s_knot=s_knot, dsk=dsk, s_col=s_col, s_full=s_full,
                 k_knot=k_knot, k_col=k_col, k_full=k_full,
                 pv_knot=k_knot.reshape(1, -1), pv_col=k_col.reshape(1, -1),
-                pv_full=k_full.reshape(1, -1), tau=tau, C=C, D=D, B=B)
+                pv_full=k_full.reshape(1, -1), tau=tau, C=C, D=D, B=B, n_bounds=n_bounds)
 
 
 # ============================================================================
@@ -170,10 +174,15 @@ def interp_inputs(u_opt, s_knot, s_full, OPT_uinter):
 def reconstruct_track(track0, s_full, k_full, n_full, n_halfwidth_bound):
     """Rebuild cartesian track + racing line from the curvilinear solution.
 
-    track0 : original track namespace (may carry x,y centreline)
+    track0 : original track namespace (may carry x,y centreline, and n_lo / n_hi
+             from userOpts(n_bounds=...))
     n_full : lateral offset (x_full[3, :])
-    n_halfwidth_bound : value used for trackLimits width = x_s(4)*x_max(4)*2 + 2
-    Returns a dict with s, k, x, y, xopt, yopt, Xl, Xr.
+    n_halfwidth_bound : the full width given to trackLimits, 2 * the CG bound
+             (x_s[3] * x_max[3] * 2), so the edges are drawn at the CG bound.
+             Not used when track0 has n_lo / n_hi.
+    Returns a dict with s, k, x, y, xopt, yopt, Xl, Xr. With n_lo / n_hi on track0,
+    Xl / Xr are drawn at those per-point bounds (n_hi left, n_lo right) and the dict
+    also holds n_lo, n_hi on s_full.
     """
     if not hasattr(track0, "x") or not hasattr(track0, "y") \
             or getattr(track0, "x", None) is None or getattr(track0, "y", None) is None:
@@ -184,8 +193,15 @@ def reconstruct_track(track0, s_full, k_full, n_full, n_halfwidth_bound):
         y = np.interp(s_full, np.asarray(track0.s, float).reshape(-1),
                       np.asarray(track0.y, float).reshape(-1))
     xopt, yopt = cartPath(x, y, n_full)
-    Xl, Xr = trackLimits(x, y, n_halfwidth_bound)
-    return dict(s=s_full, k=k_full, x=x, y=y, xopt=xopt, yopt=yopt, Xl=Xl, Xr=Xr)
+    if getattr(track0, "n_lo", None) is not None:          # userOpts(n_bounds): per-point edges
+        s0 = np.asarray(track0.s, float).reshape(-1)
+        lo_f, hi_f = np.interp(s_full, s0, track0.n_lo), np.interp(s_full, s0, track0.n_hi)
+        Xl, Xr = np.column_stack(cartPath(x, y, hi_f)), np.column_stack(cartPath(x, y, lo_f))
+        edges = dict(n_lo=lo_f, n_hi=hi_f)
+    else:
+        Xl, Xr = trackLimits(x, y, n_halfwidth_bound)
+        edges = {}
+    return dict(s=s_full, k=k_full, x=x, y=y, xopt=xopt, yopt=yopt, Xl=Xl, Xr=Xr, **edges)
 
 
 # ============================================================================
@@ -215,7 +231,11 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     f_dyn   : casadi Function (x,u[,y],pv[,P]) -> (dx, L)
     f_sf    : casadi Function (x,kappa) -> sf
     h_eq    : casadi Function (x,u[,y],pv[,P]) -> h
-    disc    : output of discretise()
+    disc    : output of discretise(). disc["n_bounds"] = (lo, hi) on s_full [m], not None
+              when the track carries a userOpts(n_bounds) band: it replaces the model's
+              n bound at the knots, at the collocation points and in the start / end box
+              of n (knot values for the box). A start or end box with lower > upper (a vi
+              or ni outside the state bounds or the band) raises ValueError, always.
     guesses : dict with x0,u0,xc0[,y0]  (already scaled, shapes match)
     reg     : dict with ru,rdu,rdu2[,rdy,rdy2]  (column vectors)
     param   : optional static design parameters dict(sym, lb, ub, x0); appended
@@ -425,6 +445,23 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
                     + [np.tile(np.asarray(h_ub).reshape(-1, 1), (N + 1, 1))]
                     + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))]
                     + zper)
+
+    # per-point lateral band (userOpts n_bounds; n is state row 3 in both models): it replaces the
+    # model's +-4 m at the knots, at the collocation points and in the start / end box of n.
+    nb = disc.get("n_bounds")
+    if nb is not None:
+        lo, hi = (np.asarray(v, float) for v in nb)
+        knot = np.arange(N + 1) * (OPT_d + 1); col = np.delete(np.arange(knot[-1] + 1), knot)
+        sc = 1.0 / x_s[3]
+        iX = 3 + nx * np.arange(N + 1); iC = (nx + nu + ny) * (N + 1) + 3 + nx * np.arange(N * OPT_d)
+        lbw[iX, 0], lbw[iC, 0] = lo[knot] * sc, lo[col] * sc
+        ubw[iX, 0], ubw[iC, 0] = hi[knot] * sc, hi[col] * sc
+        e3 = np.broadcast_to(e0, (nx,))[3]
+        lbg[3, 0] = np.fmax(lo[0] * sc, Xi[3] / x_s[3] - e3); ubg[3, 0] = np.fmin(hi[0] * sc, Xi[3] / x_s[3] + e3)
+        lbg[nx + 3, 0] = np.fmax(lo[-1] * sc, Xf[3] / x_s[3] - OPT_e); ubg[nx + 3, 0] = np.fmin(hi[-1] * sc, Xf[3] / x_s[3] + OPT_e)
+    bad = np.flatnonzero(lbg[:2 * nx, 0] > ubg[:2 * nx, 0])
+    if bad.size:
+        raise ValueError(f"empty start/end box at g rows {bad.tolist()} (lower > upper): check vi, ni and n_bounds")
 
     nlp = {"f": J, "x": w, "g": g}
 

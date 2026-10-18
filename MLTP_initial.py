@@ -9,7 +9,8 @@ for the full model. Pipeline:
 The optimal solution is written to Results/init_<circuit>.mat as a struct
 ``data.init`` that MLTP.py reloads (via importfile) to seed the 23-state solve.
 A start_state other than 'matlab' (userOpts) adds _startRolling or _startPeriodic to the
-name. data.init.start_state and data.init.Xi record the start box.
+name, and an n_bounds band adds _hw<W> or _nbCustom after it. data.init.start_state and
+data.init.Xi record the start box.
 
 ``seed`` picks the rung below this one (functions/ladder.py): 'const' (default, the
 constant guesses of MLTP_initial.m: vx = vi, T_drive 0.85 Tmax, zero steer) or 'qss'
@@ -193,7 +194,8 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         os.makedirs(results_dir, exist_ok=True)
         suffix = result_stem(circuit, "x", getattr(ctx, "tyre_set", "MF205"),
                              getattr(ctx, "mesh_requested", "auto"),
-                             getattr(ctx, "physics", "matlab"), ctx.start_state)[len(circuit) + 2:]
+                             getattr(ctx, "physics", "matlab"), ctx.start_state,
+                             n_tag=ctx.n_tag)[len(circuit) + 2:]
         save_path = os.path.join(results_dir, f"init_{circuit}{suffix}.mat")
         sio.savemat(save_path, {"data": {"init": init}}, do_compression=True)
         print(f"Saved warm start -> {save_path}")

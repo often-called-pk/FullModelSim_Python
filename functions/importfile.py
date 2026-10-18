@@ -71,19 +71,22 @@ def load_solution(path):
 
 
 def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="matlab",
-                start_state="matlab"):
+                start_state="matlab", n_tag=""):
     """File stem (no extension) of a saved MLTP result; casadi-free, so MLTP and
     the GUI build the same name.
 
     Rule: ``<circuit>_<cfg>``, plus ``_<tyre_set>`` when tyre_set != "MF205"
     (e.g. ``_CopyB``), plus ``_physCorrected`` when physics == "corrected", plus
     ``_start<State>`` when start_state != "matlab" (``_startRolling``,
-    ``_startPeriodic``), plus ``_mesh<Mesh>`` when mesh_requested is neither None
+    ``_startPeriodic``), plus ``_<n_tag>`` when n_tag is not empty (userOpts
+    ``ctx.n_tag``: ``_hw3p5`` for n_bounds=3.5, ``_nbCustom`` for a (lo, hi) pair),
+    plus ``_mesh<Mesh>`` when mesh_requested is neither None
     nor "auto" (e.g. ``_meshCurvature``; the mesh asked for, not the one "auto"
     resolved to).
-    Default runs (MF205, mesh "auto", physics "matlab", start_state "matlab") keep
-    the old stem ``<circuit>_<cfg>``; any other tyre set / mesh / physics / start
-    state gets its own file instead of overwriting the default one."""
+    Default runs (MF205, mesh "auto", physics "matlab", start_state "matlab", no
+    n_bounds) keep the old stem ``<circuit>_<cfg>``; any other tyre set / mesh /
+    physics / start state / lateral band gets its own file instead of overwriting
+    the default one."""
     stem = f"{circuit}_{cfg}"
     if tyre_set != "MF205":
         stem += f"_{tyre_set}"
@@ -91,6 +94,8 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
         stem += "_physCorrected"
     if start_state != "matlab":
         stem += f"_start{start_state.capitalize()}"
+    if n_tag:
+        stem += f"_{n_tag}"
     if mesh_requested is not None and mesh_requested != "auto":
         stem += f"_mesh{mesh_requested.capitalize()}"
     return stem

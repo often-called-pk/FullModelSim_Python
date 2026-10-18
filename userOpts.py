@@ -16,6 +16,7 @@ out of the box on any platform.
 
 import os
 import inspect
+import numbers
 import warnings
 import numpy as np
 import scipy.io as sio
@@ -167,6 +168,45 @@ ROLL_TOL = 1e-3  # ponytail: fixed chassis start-box half-width, promote to a kw
 CLOSED_CIRCUITS = ("BCN", "Jarama", "Spa", "NBR", "Circle")
 
 
+def _parse_n_bounds(n_bounds, s):
+    """userOpts(n_bounds=...) -> (lo, hi, tag): float arrays on the track stations ``s`` [m]
+    (n > 0 = left of the centreline) and the result-stem tag. None -> (None, None, "").
+
+      None      the model's own +-4 m bound, nothing per point.
+      W         a real number > 0 (not a bool): the band (-W, W), tag "hw<W>" (3.5 -> "hw3p5").
+      (lo, hi)  a tuple or list of two entries, each a number or an array of len(ctx.track.s)
+                values, tag "nbCustom". The arrays live on ctx.track.s as it is after the
+                periodic closing sample (periodic Spa 1402 values, the file 1401).
+
+    The band bounds the CG path n at the knots and the collocation points only (not between
+    them), and replaces the model's +-4 m there (it may be wider). lo < hi must hold at every point, so a fixed line
+    is a narrow band (n_ref - b, n_ref + b) around it, the correlation mode. That band is
+    continuity-feasible when b >= max |continuity mismatch of n_ref| / 4.67 (Legendre d = 3);
+    a 3 m, 100 m wavelength line at OPT_ds 30 has a mismatch of 0.078 m, so b >= 0.017 m.
+    """
+    if n_bounds is None:
+        return None, None, ""
+    if isinstance(n_bounds, numbers.Real) and not isinstance(n_bounds, (bool, np.bool_)):
+        W = float(n_bounds)
+        if not (np.isfinite(W) and W > 0):
+            raise ValueError(f"n_bounds half-width W must be finite and > 0 m, got {n_bounds!r}")
+        return np.full(s.size, -W), np.full(s.size, W), f"hw{W:g}".replace(".", "p")
+    if not (isinstance(n_bounds, (tuple, list)) and len(n_bounds) == 2):
+        raise ValueError("n_bounds must be None, a number W > 0 (the band -W..W in m) or a (lo, hi) "
+                         f"tuple or list of two entries, got {n_bounds!r:.80}")
+    try:
+        lo, hi = (np.broadcast_to(np.asarray(v, float), s.shape).copy() for v in n_bounds)
+    except (TypeError, ValueError):
+        raise ValueError("n_bounds lo and hi must each be a number or an array of "
+                         f"len(ctx.track.s) = {s.size} values") from None
+    if not (np.isfinite(lo).all() and np.isfinite(hi).all()):
+        raise ValueError("n_bounds lo and hi must be finite")
+    if not (lo < hi).all():
+        raise ValueError("n_bounds needs lo < hi at every track point; a fixed line is a narrow "
+                         "band (n_ref - b, n_ref + b)")
+    return lo, hi, "nbCustom"
+
+
 # ----------------------------------------------------------------------------- 
 # Rate-limit / regularisation table (the MATLAB 'c' struct)
 # -----------------------------------------------------------------------------
@@ -271,7 +311,8 @@ def userOpts(ctx,
              physics="matlab",             # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
              Steering="NA",                # 'NA' | 'Ackermann': front steering geometry (vehModel)
              CamberGain="Off",             # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
-             start_state="matlab"):        # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
+             start_state="matlab",         # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
+             n_bounds=None):               # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
@@ -328,6 +369,12 @@ def userOpts(ctx,
         if gap > 1e-3:
             tr.s, tr.k = np.append(tr.s, tr.s[-1] + gap), np.append(tr.k, tr.k[0])
             tr.x, tr.y = np.append(tr.x, tr.x[0]), np.append(tr.y, tr.y[0])
+
+    # ---- lateral bounds: parsed on the final track (after the closing sample above) ----
+    n_lo, n_hi, ctx.n_tag = _parse_n_bounds(n_bounds, tr.s)
+    ctx.n_bounds = n_bounds
+    if n_lo is not None:
+        tr.n_lo, tr.n_hi = n_lo, n_hi
 
     # ---- boundary conditions ----------------------------------------------
     # state order x = [vx vy r n eps Om_fl Om_fr Om_rl Om_rr

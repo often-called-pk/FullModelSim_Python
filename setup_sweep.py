@@ -1063,7 +1063,7 @@ class _Sweep:
         self.eATD, self.eEM4 = bc.ATD, bc.Electric_4Motors
         self.config = f"{self.AeroConfig}_ATD{self.eATD}_EM4{self.eEM4}"
         self.stem = result_stem(self.circuit, self.config, bc.tyre_set, bc.mesh_requested, bc.physics,
-                                bc.start_state)
+                                bc.start_state, n_tag=getattr(bc, "n_tag", ""))
         self.cfg = dict(circuit=self.circuit, vi=self.vi, ni=self.ni, AeroConfig=self.AeroConfig,
                         ATD=self.eATD, Electric_4Motors=self.eEM4)
         self.disc = discretise(bc.track, bc.OPT_ds, bc.OPT_d, mesh=getattr(bc, "mesh", "uniform"),
