@@ -106,7 +106,8 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
         out_path = os.path.join(results_dir, result_stem(
             circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
             getattr(ctx, "mesh_requested", "auto"),
-            getattr(ctx, "physics", "matlab")) + "_qss.mat")
+            getattr(ctx, "physics", "matlab"),
+            getattr(ctx, "start_state", "matlab")) + "_qss.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         ctx.out_path = out_path
         if verbose:

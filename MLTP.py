@@ -9,9 +9,9 @@ Solves the full Minimum Lap Time Problem with the 23-state model:
     -> IPOPT (ma57 by default, MUMPS fallback) -> postprocess -> save .mat
 
 The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
-tyre set / physics / mesh request appends _<tyre_set> / _physCorrected /
-_mesh<Mesh>, see functions.importfile.result_stem; an adaptively refined solve,
-refine=..., saves as _meshAdaptive). The saved
+tyre set / physics / start state / mesh request appends _<tyre_set> /
+_physCorrected / _start<State> / _mesh<Mesh>, see functions.importfile.result_stem;
+an adaptively refined solve, refine=..., saves as _meshAdaptive). The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
 re-solving. Plotly figures are produced by plotSDI.py.
@@ -43,7 +43,7 @@ from functions.transcription import (discretise, build_and_solve_nlp,
                                       interp_inputs, compute_time,
                                       reconstruct_track)
 from userOpts import userOpts
-from vehModel import vehModel
+from vehModel import vehModel, rolling_start
 from MLTP_initial import MLTP_initial
 
 
@@ -203,9 +203,11 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True):
     otherwise warm=None and the s-interpolated guesses are the (primal-only)
     start. A source solved with another tyre set is no start at all:
     (None, None, "cold"), the caller falls back to the 7-state init."""
-    expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh),
+    n_per = (m.nx + m.nu) if ctx.periodic else 0
+    expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh, n_periodic=n_per),
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
-                    x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"))
+                    x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
+                    start_state=ctx.start_state)
     warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
                                             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
     if mode == "cold":
@@ -305,7 +307,13 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     (ladder.friction_overrides on top of the caller's vp_overrides); step 1 starts
     cold through the ladder (or from warm_start), every later step from the previous
     step's result (full + duals); refine, save and plot apply to the last step only,
-    which is exactly the caller's problem. data['homotopy'] records each step."""
+    which is exactly the caller's problem. data['homotopy'] records each step.
+
+    ``start_state`` (a userOpts kwarg) sets the lap start. 'matlab' (default) keeps the MATLAB
+    start box. 'rolling' puts a narrow chassis box around the straight-line coast equilibrium
+    of the model at vi (vehModel.rolling_start). 'periodic' frees the start state and makes the
+    end state and input equal the start, for closed circuits. These two save as
+    <stem>_startRolling and <stem>_startPeriodic. data['start_state'] and data['Xi'] record it."""
     t0 = time.time()
     elapsed = {}
     hom_steps = useropts_kwargs.pop("_homotopy_steps", None)    # set by a homotopy's last step
@@ -380,6 +388,15 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv], [m.dx, L], ["x", "u", "pv"], ["dx", "L"],
                         fn_opts(ctx))
     f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
+
+    # ---- start_state='rolling': centre the start box on the model's coast equilibrium ----
+    if ctx.start_state == "rolling":
+        k0 = float(ctx.track.k[0])
+        if abs(k0) > 1e-3:
+            warnings.warn(f"start_state='rolling' assumes a straight start; track k(0) = {k0:.2e} 1/m")
+        X0, _ = rolling_start(ctx, m, ctx.vi)
+        idx = [1] + list(range(5, 23))
+        ctx.Xi[idx] = X0[idx]
 
     # ---- OCP: path constraints (powertrain; + friction circles if PureSlip) ----
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
@@ -456,7 +473,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         return build_and_solve_nlp(
             ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc_, guesses_, reg,
             m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,
-            ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, opts_, warm=warm_)
+            ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, opts_, warm=warm_,
+            Xi_tol=ctx.Xi_tol, periodic=ctx.periodic)
 
     res = _solve(disc, guesses, warm, ctx.opts)
     if "nlp_fg" in res:                 # MLTP_KEEP_NLP=1 (validation gate 2): kept on ctx, never saved
@@ -549,7 +567,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         elapsed["refine_stop"] = refine_stop
         ctx.refine_log = refine_log
 
-    if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, len(hnames)):
+    if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, len(hnames),
+                                         n_periodic=(m.nx + m.nu) if ctx.periodic else 0):
         warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
                       f"transcription ({res['structure']}): dual re-injection is unreliable")
 
@@ -633,6 +652,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
         "physics": getattr(ctx, "physics", "matlab"),
+        # start box of this solve: 'matlab' | 'rolling' | 'periodic' and the physical Xi (NaN = free)
+        "start_state": ctx.start_state, "Xi": np.array(ctx.Xi, float),
         # primal + dual NLP solution, so a later solve can be warm-started
         # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
@@ -657,7 +678,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
         stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
                            getattr(ctx, "mesh_requested", "auto"),
-                           getattr(ctx, "physics", "matlab"))
+                           getattr(ctx, "physics", "matlab"), ctx.start_state)
         out_path = os.path.join(results_dir, f"{stem}.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved optimal solution -> {out_path}")

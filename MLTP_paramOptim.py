@@ -70,12 +70,19 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
                       co-optimisation result with its own P block) is
                       interpolated by arc length, primal only ('full-interp').
                       A result solved with another tyre set is ignored and the
-                      7-state init is solved instead ('cold')."""
+                      7-state init is solved instead ('cold').
+
+    ``start_state`` (a userOpts kwarg) works as in MLTP, except that 'rolling' raises
+    ValueError: its start equilibrium depends on the design parameters. data.start_state and
+    data.Xi record the start box."""
     t0 = time.time()
     elapsed = {}
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
+    if ctx.start_state == "rolling":
+        raise ValueError("optimise_design: start_state='rolling' is not supported, the start "
+                         "equilibrium depends on the design parameters; use 'matlab' or 'periodic'")
     vp, pt = ctx.vp, ctx.pt
 
     # ---- promote design parameters: replace vp floats with SX symbols -----
@@ -121,6 +128,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     # ---- full model (symbolic in the promoted parameters) -----------------
     vehModel(ctx)
     m = ctx.m23
+    n_per = (m.nx + m.nu) if ctx.periodic else 0
 
     L = m.sf
     f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv, P], [m.dx, L], ["x", "u", "pv", "P"], ["dx", "L"],
@@ -141,9 +149,11 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     if src_full is not None:
         # the source must be this NLP minus the P block; the saved vectors are
         # then extended by P0 = the current vp values (bound multipliers 0)
-        expected = dict(nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, nh, n_param=nP),
+        expected = dict(nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, nh, n_param=nP,
+                                      n_periodic=n_per),
                         input_keys=list(ctx.input_keys), s_full=disc["s_full"],
-                        x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"))
+                        x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
+                        start_state=ctx.start_state)
         warm, ws_mode, note = plan_design_warm_start(
             src_full, expected, p_x0, use_duals=warm_start_duals,
             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
@@ -169,7 +179,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     res = build_and_solve_nlp(
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
         m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,     # rate bounds / u_s (normalised)
-        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, param=param, warm=warm)
+        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, param=param, warm=warm,
+        Xi_tol=ctx.Xi_tol, periodic=ctx.periodic)
     sol = res["sol"]
     ctx.solve_stats = res["solver"].stats()
     elapsed["solve"] = time.time() - t0 - elapsed["init"]
@@ -180,7 +191,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
     elapsed["warm_start"] = ws_mode
     elapsed["duals"] = bool(winfo["duals"])
-    if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, nh, n_param=nP):
+    if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, nh, n_param=nP,
+                                         n_periodic=n_per):
         warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
                       f"transcription ({res['structure']}): dual re-injection is unreliable")
 
@@ -208,6 +220,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
         "physics": getattr(ctx, "physics", "matlab"),
+        "start_state": ctx.start_state, "Xi": np.array(ctx.Xi, float),   # start box (NaN = free)
         # primal + dual NLP solution (w ends with the nP design parameters, so
         # structure.n_param = nP: a later solve re-injects it only by
         # interpolation) and the warm-start mode this solve used
@@ -220,7 +233,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         out_path = os.path.join(results_dir, result_stem(
             circuit, tag, getattr(ctx, "tyre_set", "MF205"),
             getattr(ctx, "mesh_requested", "auto"),
-            getattr(ctx, "physics", "matlab")) + ".mat")
+            getattr(ctx, "physics", "matlab"), ctx.start_state) + ".mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved -> {out_path}")
 

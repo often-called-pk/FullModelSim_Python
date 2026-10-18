@@ -44,6 +44,13 @@ def _poly(coeffs, x, powers):
 BUMP_GAP, REBOUND_GAP, K_STOP, W_STOP = 0.075, 0.05, 1e6, 0.002
 
 
+# rolling_start (userOpts start_state='rolling'). Unknowns: the state rows zs, theta, phi,
+# zt_fl..zt_rr and vy, plus the last input (delta). Residual: the time derivatives of the rows
+# zsdot, thetadot, phidot, wu_fl..wu_rr, vy and r.
+ROLL_UNKNOWN = (9, 11, 13, 19, 20, 21, 22, 1)
+ROLL_RESIDUAL = (10, 12, 14, 15, 16, 17, 18, 1, 2)
+
+
 def _softplus(z):
     """log(1 + exp(z)); z itself above 30, so exp cannot overflow."""
     return ca.if_else(z > 30, z, ca.log1p(ca.exp(z)))
@@ -685,6 +692,59 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
         m.ATD_FL, m.ATD_FR, m.ATD_RL, m.ATD_RR = ATD_FL, ATD_FR, ATD_RL, ATD_RR
     ctx.m23 = m
     return ctx
+
+
+def rolling_start(ctx, m, vx, tol=1e-9, max_iter=50):
+    """Straight-line coast equilibrium of the model at speed ``vx`` [m/s], aero included.
+    Returns (X, U).
+
+    X (nx,) is the physical state. Fixed: vx, the wheel speeds (vx / Rw), r = 0, the rates
+    zsdot = thetadot = phidot = wu = 0, kappa = 0. A least-squares Newton iteration solves
+    zs, theta, phi, zt_fl..zt_rr, vy and the steering input for zero time derivative of
+    ROLL_RESIDUAL. X[3] and X[4] (n, eps) are NaN: not set.
+    U (nu,) is the coast input in the physical u_s convention (U / m.u_s is the model input):
+    no torque, ATD 1/4 each, wings at the vp angles. Its last entry is the trimmed steering.
+
+    Raises RuntimeError when the iteration does not converge, or when the equilibrium lies
+    outside the state bounds. The matlab physics has hard caps on the strut travel (_cap in
+    vehModel) that can leave no equilibrium. Then this function raises, by design."""
+    vp = ctx.vp
+    x_s, u_s = np.asarray(m.x_s, float), np.asarray(m.u_s, float)
+    X = np.zeros(m.nx)
+    X[0] = vx
+    X[5:7], X[7:9] = vx / vp.Rw_f, vx / vp.Rw_r
+    X[19:23] = np.array([vp.Wfl0, vp.Wfr0, vp.Wrl0, vp.Wrr0]) / vp.kt
+    fw = iter((vp.alpha_FL, vp.alpha_FR))
+    wing = {"RW": vp.alpha_RW, "TW": vp.alpha_TW}
+    U = np.array([0.25 if k == "ATD" else next(fw) if k == "FW" else wing.get(k, 0.0)
+                  for k in (str(k).strip() for k in ctx.input_keys)])
+    U[-1] = 1e-6    # not 0: with Steering='Ackermann' d/d delta is NaN at delta = 0 (it divides by tan(delta))
+
+    F = ca.Function("F_roll", [m.x, m.u, m.pv], [m.dx, m.sf])      # one-off evaluation: no fn_opts
+    Xs, Us = ca.SX.sym("X", m.nx), ca.SX.sym("U", m.nu)
+    dx, sf = F(Xs / ca.DM(x_s), Us / ca.DM(u_s), 0)
+    res = (dx * ca.DM(x_s) / sf)[list(ROLL_RESIDUAL)]              # physical d/dt
+    unk = list(ROLL_UNKNOWN)
+    G = ca.Function("G_roll", [Xs, Us], [res, ca.jacobian(res, ca.vertcat(Xs[unk], Us[-1]))])
+    for it in range(max_iter + 1):
+        r, J = G(X, U)
+        r = np.array(r).reshape(-1)
+        err = float(np.abs(r).max())
+        if err < tol:
+            break
+        if it == max_iter or not np.isfinite(err):
+            raise RuntimeError(f"rolling_start: no equilibrium at vx = {vx} m/s (max residual {err:.2e})")
+        dz = np.linalg.lstsq(np.array(J), r, rcond=None)[0]        # CopyB (pKy4 = 0): singular lateral block
+        X[unk] -= dz[:-1]
+        U[-1] -= dz[-1]
+
+    X[3] = X[4] = np.nan
+    lo, hi = m.x_min * x_s, m.x_max * x_s
+    rows = np.flatnonzero((X < lo) | (X > hi))                     # NaN compares False: rows 3, 4 pass
+    if rows.size:
+        raise RuntimeError(f"rolling_start: equilibrium at vx = {vx} m/s outside the state bounds "
+                           f"at rows {rows.tolist()}")
+    return X, U
 
 
 def _linear_interp(ca, x, x_data, y_data):

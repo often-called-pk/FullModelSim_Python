@@ -910,7 +910,9 @@ def _precheck_base(src, base_ctx, disc, nh, circuit, label):
     if nlp is None:
         reasons.append("no saved NLP vectors (data.nlp)")
     if not reasons:
-        expected = dict(nlp_structure(23, len(base_ctx.input_keys), 0, disc["N"], base_ctx.OPT_d, nh),
+        n_per = (23 + len(base_ctx.input_keys)) if getattr(base_ctx, "periodic", False) else 0
+        expected = dict(nlp_structure(23, len(base_ctx.input_keys), 0, disc["N"], base_ctx.OPT_d, nh,
+                                      n_periodic=n_per),
                         input_keys=list(base_ctx.input_keys), s_full=disc["s_full"])
         saved = dict(as_dict(get_field(nlp, "structure")), input_keys=get_field(src, "input_keys"),
                      s_full=get_field(src, "s_full"))
@@ -918,6 +920,10 @@ def _precheck_base(src, base_ctx, disc, nh, circuit, label):
     have = str(get_field(src, "tyre_set", None) or "CopyB").strip()
     if have != str(base_ctx.tyre_set):
         reasons.append(f"tyre_set {have!r} != {base_ctx.tyre_set!r}")
+    have = str(get_field(src, "start_state", None) or "matlab").strip()
+    want = str(getattr(base_ctx, "start_state", "matlab"))
+    if have != want:
+        reasons.append(f"start_state {have!r} != {want!r}")
     c = get_field(src, "circuit", None)
     if c is not None and str(c).strip() != circuit:
         reasons.append(f"circuit {str(c).strip()!r} != {circuit!r}")
@@ -1056,7 +1062,8 @@ class _Sweep:
         self.base_ctx = bc
         self.eATD, self.eEM4 = bc.ATD, bc.Electric_4Motors
         self.config = f"{self.AeroConfig}_ATD{self.eATD}_EM4{self.eEM4}"
-        self.stem = result_stem(self.circuit, self.config, bc.tyre_set, bc.mesh_requested, bc.physics)
+        self.stem = result_stem(self.circuit, self.config, bc.tyre_set, bc.mesh_requested, bc.physics,
+                                bc.start_state)
         self.cfg = dict(circuit=self.circuit, vi=self.vi, ni=self.ni, AeroConfig=self.AeroConfig,
                         ATD=self.eATD, Electric_4Motors=self.eEM4)
         self.disc = discretise(bc.track, bc.OPT_ds, bc.OPT_d, mesh=getattr(bc, "mesh", "uniform"),
