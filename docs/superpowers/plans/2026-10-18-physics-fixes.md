@@ -93,7 +93,8 @@ def static_state(c, vx):
 - ggv: `_load_basis(vp, aero_c, load_model, physics="matlab")`; 'vehModel' + corrected -> `M = vp.m`, `Fz_f0 = g*(muf + ms*l_r/l)`, `Fz_r0 = g*(mur + ms*l_f/l)`, rolling basis on m*g; `build_envelope` passes ctx physics. Same in `ladder.qss_profile`.
 - ladder: `quasi_static_states(vp, vx, physics="matlab")` corrected -> corrected equilibrium (zt, zs etc. with per-corner unsprung masses); callers pass ctx physics.
 - [ ] tests:
-  1. corrected, static_state vx=0.5, coast: |dxdt[10]|, |dxdt[12]|, |dxdt[14]|, |dxdt[15:19]| < 1e-3; sum fz_i == m*g (rel 1e-3); (fz_fl+fz_fr)/sum == l_r/l (abs 1e-3).
+  Tests 1, 2, 7 use `vp_overrides={"pHy1": 0, "pHy2": 0, "pVy1": 0, "pVy2": 0}` (MF205 makes about 390 N side force per corner at zero slip, so a static state is not in equilibrium otherwise).
+  1. corrected, static_state vx=0.5, coast: |dxdt[10]|, |dxdt[12]|, |dxdt[14]|, |dxdt[15:19]| < 1e-3; sum fz_i == m*g (rel 1e-3); (fz_fl+fz_fr)/sum == (muf + ms*l_r/l)/m (abs 1e-3).
   2. matlab same state: dxdt[15] == (kt*xti_fl - mus*g - k_fl*xsi_fl)/mus (abs 1e-3) and that value < -5 (quirk pinned).
   3. vx=30 coast: `(sum fx_i - f_drag - f_roll)/dxdt[0]` == m (corrected) / ms (matlab), rel 1e-9. vy=0.5, r=0: `(sum fy_i + f_side)/dxdt[1]` same.
   4. state vx=30, vy=0.3, r=0.1, theta=0.01, phi=0.02, zt=xti, Om=vx/Rw: corrected d dxdt[0]/d theta == 0 and d dxdt[1]/d phi == 0 (abs 1e-12); matlab d dxdt[0]/d theta > 9, d dxdt[1]/d phi < -9.
