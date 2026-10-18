@@ -136,6 +136,11 @@ MESH_AUTO_MIN_LENGTH = 2000.0
 _MESH_OPTS_KEYS = tuple(n for n in inspect.signature(curvature_mesh).parameters
                         if n not in ("s", "k", "OPT_ds"))
 
+# userOpts(physics=...): 'matlab' (default) keeps the inherited MATLAB vehicle
+# physics bit for bit. 'corrected' is the opt-in set of fixes A1-A6
+# (docs/laptime_sim_improvements.md, section A). The check is case-sensitive.
+PHYSICS = ("matlab", "corrected")
+
 
 # ----------------------------------------------------------------------------- 
 # Rate-limit / regularisation table (the MATLAB 'c' struct)
@@ -237,7 +242,13 @@ def userOpts(ctx,
              jit=False,                    # JIT-compile the casadi Functions (needs gcc/clang/cl)
              cse=False,                    # casadi common-subexpression elimination (opt-in)
              screening=False,              # loose IPOPT tolerances (SCREENING_IPOPT) for sweeps / ranking
-             ipopt_overrides=None):        # dict of IPOPT options merged in last (any option, per call)
+             ipopt_overrides=None,         # dict of IPOPT options merged in last (any option, per call)
+             physics="matlab"):            # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
+
+    # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
+    if physics not in PHYSICS:
+        raise ValueError(f"physics must be one of {list(PHYSICS)}, got {physics!r}")
+    ctx.physics = physics
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)

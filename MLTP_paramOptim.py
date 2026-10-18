@@ -207,6 +207,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         "mesh_opts": mesh_opts_record(getattr(ctx, "mesh_opts", None)),
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
+        "physics": getattr(ctx, "physics", "matlab"),
         # primal + dual NLP solution (w ends with the nP design parameters, so
         # structure.n_param = nP: a later solve re-injects it only by
         # interpolation) and the warm-start mode this solve used
@@ -218,7 +219,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         os.makedirs(results_dir, exist_ok=True)
         out_path = os.path.join(results_dir, result_stem(
             circuit, tag, getattr(ctx, "tyre_set", "MF205"),
-            getattr(ctx, "mesh_requested", "auto")) + ".mat")
+            getattr(ctx, "mesh_requested", "auto"),
+            getattr(ctx, "physics", "matlab")) + ".mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved -> {out_path}")
 

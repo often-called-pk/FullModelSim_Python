@@ -257,7 +257,7 @@ def plotSDI(source, save_dir="Plots", show=False):
     circuit = str(_get(data, "circuit", "track"))
     cfg = f"{_get(data, 'AeroConfig', 'cfg')}_ATD{_get(data, 'ATD', '')}_EM4{_get(data, 'EM4', '')}"
     stem = result_stem(circuit, cfg, _get(data, "tyre_set", "MF205"),
-                       _get(data, "mesh_requested", "auto"))
+                       _get(data, "mesh_requested", "auto"), _get(data, "physics", "matlab"))
     out_dir = os.path.join(save_dir, circuit, stem[len(circuit) + 1:])
     os.makedirs(out_dir, exist_ok=True)
 

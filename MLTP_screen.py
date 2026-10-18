@@ -15,7 +15,7 @@ setup once ctx exists), never an optimum: the line is fixed to the centreline
 (suspension, wheel spin, yaw dynamics) are absent. Use MLTP() for the optimum.
 
 Output schema follows MLTP where it can (s_full/k_full from discretise(),
-lap_time, track, N, circuit/AeroConfig/ATD/EM4, mesh/mesh_opts/tyre_set), plus the
+lap_time, track, N, circuit/AeroConfig/ATD/EM4, mesh/mesh_opts/tyre_set/physics), plus the
 QSS profile and envelope; data.fidelity = 'qss'. Note t_opt is sampled at s_full (the NLP's
 t_opt is at the N+1 knots). Saved to Results/<circuit>_<cfg>_qss.mat.
 """
@@ -91,6 +91,7 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
         "mesh_opts": mesh_opts_record(getattr(ctx, "mesh_opts", None)),
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
+        "physics": getattr(ctx, "physics", "matlab"),
         "note": "ESTIMATE (QSS screen): centreline n=0, quasi-steady point mass, "
                 "no transients - not an optimum; see MLTP() for the NLP solution",
     }
@@ -104,7 +105,8 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
         cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
         out_path = os.path.join(results_dir, result_stem(
             circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
-            getattr(ctx, "mesh_requested", "auto")) + "_qss.mat")
+            getattr(ctx, "mesh_requested", "auto"),
+            getattr(ctx, "physics", "matlab")) + "_qss.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         ctx.out_path = out_path
         if verbose:

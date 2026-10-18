@@ -70,19 +70,22 @@ def load_solution(path):
     return data
 
 
-def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto"):
+def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="matlab"):
     """File stem (no extension) of a saved MLTP result; casadi-free, so MLTP and
     the GUI build the same name.
 
     Rule: ``<circuit>_<cfg>``, plus ``_<tyre_set>`` when tyre_set != "MF205"
-    (e.g. ``_CopyB``), plus ``_mesh<Mesh>`` when mesh_requested is neither None
-    nor "auto" (e.g. ``_meshCurvature``; the mesh asked for, not the one "auto"
-    resolved to). Default runs (MF205, mesh "auto") keep the old stem
-    ``<circuit>_<cfg>``; any other tyre set / mesh gets its own file instead of
-    overwriting the default one."""
+    (e.g. ``_CopyB``), plus ``_physCorrected`` when physics == "corrected", plus
+    ``_mesh<Mesh>`` when mesh_requested is neither None nor "auto" (e.g.
+    ``_meshCurvature``; the mesh asked for, not the one "auto" resolved to).
+    Default runs (MF205, mesh "auto", physics "matlab") keep the old stem
+    ``<circuit>_<cfg>``; any other tyre set / mesh / physics gets its own file
+    instead of overwriting the default one."""
     stem = f"{circuit}_{cfg}"
     if tyre_set != "MF205":
         stem += f"_{tyre_set}"
+    if physics == "corrected":
+        stem += "_physCorrected"
     if mesh_requested is not None and mesh_requested != "auto":
         stem += f"_mesh{mesh_requested.capitalize()}"
     return stem

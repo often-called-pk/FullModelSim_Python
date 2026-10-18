@@ -9,9 +9,9 @@ Solves the full Minimum Lap Time Problem with the 23-state model:
     -> IPOPT (ma57 by default, MUMPS fallback) -> postprocess -> save .mat
 
 The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
-tyre set / mesh request appends _<tyre_set> / _mesh<Mesh>, see
-functions.importfile.result_stem; an adaptively refined solve, refine=..., saves
-as _meshAdaptive). The saved
+tyre set / physics / mesh request appends _<tyre_set> / _physCorrected /
+_mesh<Mesh>, see functions.importfile.result_stem; an adaptively refined solve,
+refine=..., saves as _meshAdaptive). The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
 re-solving. Plotly figures are produced by plotSDI.py.
@@ -621,13 +621,14 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         "constraints": constraints, "input_keys": list(ctx.input_keys),
         "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d, "circuit": circuit,
         "AeroConfig": AeroConfig, "ATD": ctx.ATD, "EM4": ctx.Electric_4Motors,
-        # collocation mesh and tyre set this solution was computed with
+        # collocation mesh, tyre set and physics this solution was computed with
         # (mesh_opts: savemat-safe copy, {} when none were given)
         "mesh": getattr(ctx, "mesh", "uniform"),
         "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
         "mesh_opts": mesh_opts_record(getattr(ctx, "mesh_opts", None)),
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
+        "physics": getattr(ctx, "physics", "matlab"),
         # primal + dual NLP solution, so a later solve can be warm-started
         # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
@@ -651,7 +652,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         os.makedirs(results_dir, exist_ok=True)
         cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
         stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
-                           getattr(ctx, "mesh_requested", "auto"))
+                           getattr(ctx, "mesh_requested", "auto"),
+                           getattr(ctx, "physics", "matlab"))
         out_path = os.path.join(results_dir, f"{stem}.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved optimal solution -> {out_path}")
