@@ -24,7 +24,7 @@ from app.paths import user_presets_dir
 
 CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
             "VirtualTrack", "BCN", "BCN_S1", "BCN_S2", "BCN_S3", "Jarama", "Spa",
-            "BCNAssetto"]
+            "NBR"]
 AEROS = ["Static", "Active_RW", "Active", "AALB"]
 TYRES = ["CombinedSlip", "PureSlip"]
 SOLVERS = ["ma57", "ma97", "ma27", "mumps"]

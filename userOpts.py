@@ -26,6 +26,7 @@ from vehParams import vehParams
 from functions.simpleMA import simpleMA
 from functions.importfile import mat_to_namespace
 from functions.mesh import curvature_mesh
+from functions.track_qa import check_track
 
 
 # ----------------------------------------------------------------------------- 
@@ -39,7 +40,6 @@ _REAL_CIRCUITS = {
     "Jarama":     "Jarama_circuit.mat",
     "Spa":        "Spa_circuit.mat",
     "NBR":        "Nurburgring_circuit.mat",
-    "BCNAssetto": "Barcelona_circuit_fromassetto.mat",
 }
 
 
@@ -90,12 +90,21 @@ def _load_track(circuit, circuits_dir):
             track = SimpleNamespace(**{k: mat_to_namespace(v)
                                        for k, v in raw.items()
                                        if not k.startswith("__")})
+        if not (hasattr(track, "s") and hasattr(track, "k")):
+            raise ValueError(f"Track file '{path}' has no s/k field (found: {sorted(vars(track))})")
         track.s = np.asarray(track.s, dtype=float).reshape(-1)
         track.k = np.asarray(track.k, dtype=float).reshape(-1)
         if hasattr(track, "x"):
             track.x = np.asarray(track.x, dtype=float).reshape(-1)
         if hasattr(track, "y"):
             track.y = np.asarray(track.y, dtype=float).reshape(-1)
+        _, issues = check_track(track)
+        errors = [text for level, text in issues if level == "error"]
+        if errors:
+            raise ValueError(f"Track '{circuit}' ({path}) fails the track QA: {'; '.join(errors)}. "
+                             "Rebuild k from x, y with functions.track_qa.k_from_xy.")
+        if issues:
+            warnings.warn(f"Track '{circuit}' QA: {'; '.join(text for _, text in issues)}")
         return track
 
     k = _synthetic_curvature(circuit)

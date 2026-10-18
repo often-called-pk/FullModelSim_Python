@@ -150,4 +150,23 @@ win.set_em4(False)
 ok("4 Motors off with ATD off: nothing inert", win.inert_vp_keys() == set() and row_enabled("brkB") and row_enabled("Tdist"))
 win.atd.setChecked(True)
 ok("restored: ATD on, rows greyed", win.inert_vp_keys() == INERT and not row_enabled("brkB") and not row_enabled("Tdist"))
+
+# --- Track QA gate: GUI circuit list (Task 2, F1) ---------------------------------
+from app.mainwindow import CIRCUITS
+from userOpts import _load_track, _REAL_CIRCUITS, _synthetic_curvature
+
+ok("GUI list: BCNAssetto out, NBR in", "BCNAssetto" not in CIRCUITS and "NBR" in CIRCUITS)
+ok("GUI list: each circuit is a real track or a synthetic one",
+   all(c in _REAL_CIRCUITS or _synthetic_curvature(c) is not None for c in CIRCUITS))
+gui_bad = []
+for c in CIRCUITS:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")      # QA warnings are allowed here
+            _load_track(c, "Circuits")
+    except Exception as e:                       # any other error fails the check
+        gui_bad.append((c, repr(e)))
+if gui_bad:
+    print("  load errors:", gui_bad)
+ok("GUI list: every circuit loads (QA warnings allowed)", not gui_bad)
 print("\nALL GUI logic TESTS PASSED")
