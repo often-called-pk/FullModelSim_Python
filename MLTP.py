@@ -581,6 +581,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ("zs", m.zs), ("theta", m.theta), ("phi", m.phi),
         ("T_fl", m.T_fl), ("T_fr", m.T_fr), ("T_rl", m.T_rl), ("T_rr", m.T_rr),
         ("Lon_acc", m.Lon_acc), ("Lat_acc", m.Lat_acc),
+        ("ax", m.ax), ("ay", m.ay), ("delta", m.delta),     # CG acceleration [m/s^2], road-wheel angle [rad]
+        ("Om_fl", m.Om_fl), ("Om_fr", m.Om_fr), ("Om_rl", m.Om_rl), ("Om_rr", m.Om_rr),   # wheel speeds [rad/s]
         # --- added: per-tyre friction coefficients (needed for the friction circle) ---
         ("mu_fl_x", m.mu_fl_x), ("mu_fl_y", m.mu_fl_y),
         ("mu_fr_x", m.mu_fr_x), ("mu_fr_y", m.mu_fr_y),
@@ -599,7 +601,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     vv = f_veh(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None], disc["pv_knot"])
     vehicle = {labels[i]: np.array(vv[i]).reshape(-1) for i in range(len(labels))}
 
-    # energy [kWh]
+    # energy [Wh] (P_motor in W; MLTP.m:592 stores P_motor in kW, so MATLAB's E_motor is kWh)
     if pt.EM4 == 0:
         P = vehicle["P_motor"]
     else:

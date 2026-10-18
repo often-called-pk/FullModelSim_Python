@@ -34,7 +34,7 @@ def parse_summary(mat_path):
     energy = None
     veh = getattr(data, "vehicle", None)
     if veh is not None and hasattr(veh, "E_motor"):
-        energy = float(np.asarray(veh.E_motor).reshape(-1)[-1])
+        energy = float(np.asarray(veh.E_motor).reshape(-1)[-1]) * 1e-3     # stored in Wh
     return {"lap_time_s": lap_time, "energy_kWh": energy}
 
 

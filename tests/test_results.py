@@ -21,13 +21,13 @@ ok("mat path scheme", mp == os.path.join("/out", "Results", "Sturn_Static_ATDOn_
 pd = results.plot_dir("/out", "Sturn", "Static", "On", "Off")
 ok("plot dir scheme", pd == os.path.join("/out", "Plots", "Sturn", "Static_ATDOn_EM4Off"))
 
-# summary from a crafted .mat
-data = {"lap_time": 12.5, "vehicle": {"E_motor": np.array([0.0, 1.0, 2.3])}}
+# summary from a crafted .mat (E_motor is stored in Wh)
+data = {"lap_time": 12.5, "vehicle": {"E_motor": np.array([0.0, 1000.0, 2300.0])}}
 mat = os.path.join(TMP, "_res.mat")
 sio.savemat(mat, {"data": data}, do_compression=True)
 summ = results.parse_summary(mat)
 ok("lap_time parsed", abs(summ["lap_time_s"] - 12.5) < 1e-9)
-ok("energy parsed (last E_motor)", abs(summ["energy_kWh"] - 2.3) < 1e-9)
+ok("energy parsed (last E_motor, Wh shown as kWh)", abs(summ["energy_kWh"] - 2.3) < 1e-9)
 
 # plot listing
 pdir = os.path.join(TMP, "_plots")

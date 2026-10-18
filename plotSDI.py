@@ -122,21 +122,32 @@ def plot_racing_line(data):
     return fig
 
 
+def accel_channels(data):
+    """(ax, ay) at the knots [m/s^2]: the road-plane CG acceleration.
+    Reads data.vehicle ax and ay when both exist. A result saved before E1 has only Lon_acc and
+    Lat_acc (d vx/dt, d vy/dt), so ax = Lon_acc - vy*r and ay = Lat_acc + vx*r from x_opt.
+    Returns (None, None) when neither source exists."""
+    veh = _as_dict(_get(data, "vehicle"))
+    if "ax" in veh and "ay" in veh:
+        return _arr(veh["ax"]), _arr(veh["ay"])
+    x = _get(data, "x_opt")
+    if "Lon_acc" in veh and "Lat_acc" in veh and x is not None:
+        x = np.asarray(x, dtype=float)
+        return _arr(veh["Lon_acc"]) - x[1]*x[2], _arr(veh["Lat_acc"]) + x[0]*x[2]
+    return None, None
+
+
 def plot_speed(data):
     s_knot, s_full = _knot_grid(data)
-    veh = _as_dict(_get(data, "vehicle"))
     x_full = _get(data, "x_full")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         subplot_titles=("Speed", "Acceleration"))
     if x_full is not None:
         fig.add_trace(go.Scatter(x=s_full, y=np.asarray(x_full, float)[0, :],
                                  name="vx", line=dict(color="#378ADD")), row=1, col=1)
-    if "Lon_acc" in veh:
-        fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh["Lon_acc"]), name="long. acc"),
-                      row=2, col=1)
-    if "Lat_acc" in veh:
-        fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh["Lat_acc"]), name="lat. acc"),
-                      row=2, col=1)
+    for name, a in zip(("ax", "ay"), accel_channels(data)):
+        if a is not None:
+            fig.add_trace(go.Scatter(x=s_knot, y=a, name=name), row=2, col=1)
     fig.update_xaxes(title_text="s [m]", row=2, col=1)
     fig.update_yaxes(title_text="v [m/s]", row=1, col=1)
     fig.update_yaxes(title_text="a [m/s²]", row=2, col=1)
@@ -221,9 +232,9 @@ def plot_powertrain(data):
     # speed
     for key in [k for k in veh if k.startswith("Om_motor")]:
         fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh[key]), name=key), row=2, col=1)
-    # energy
+    # energy (stored in Wh)
     if "E_motor" in veh:
-        fig.add_trace(go.Scatter(x=t_opt, y=_arr(veh["E_motor"]), name="E_motor"),
+        fig.add_trace(go.Scatter(x=t_opt, y=_arr(veh["E_motor"]) * 1e-3, name="E_motor"),
                       row=2, col=2)
         fig.update_xaxes(title_text="t [s]", row=2, col=2)
     fig.update_layout(template="plotly_white", title="Powertrain")

@@ -623,6 +623,11 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
 
     Lon_acc = dvx / sf
     Lat_acc = dvy / sf
+    # ax, ay: road-plane CG acceleration. It equals the accelerometer reading on a flat road,
+    # with no g*sin(theta/phi) pickup. Lon_acc, Lat_acc are d vx/dt and d vy/dt (body-velocity
+    # derivatives, vehModel.m:1044-1045). They stay for MATLAB parity. ax, ay are not in dx.
+    ax = Lon_acc - vy*r
+    ay = Lat_acc + vx*r
 
     dx = ca.vertcat(dvx, dvy, dr, dn, deps, dOm_fl, dOm_fr, dOm_rl, dOm_rr,
                     dzs, dzsdot, dtheta, dthetadot, dphi, dphidot,
@@ -664,6 +669,7 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     # torques / powertrain
     m.T_fl, m.T_fr, m.T_rl, m.T_rr = T_fl, T_fr, T_rl, T_rr
     m.Lon_acc, m.Lat_acc = Lon_acc, Lat_acc
+    m.ax, m.ay = ax, ay
     if pt.EM4 == 0:
         m.T_motor, m.T_motor_n = T_motor, T_motor_n
         m.Om_motor, m.P_motor = Om_motor, P_motor
