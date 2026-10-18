@@ -116,4 +116,23 @@ except ValueError:
     raised = True
 ok("Steering='x' raises ValueError", raised)
 
+# =============================================================================
+print("6. Opus additions: QSS four-motor limits follow physics; table extrapolation as MATLAB")
+from functions.ggv import build_envelope
+from vehModel import _linear_interp
+for phys in ("matlab", "corrected"):
+    c6 = model(phys, Electric_4Motors="On", ATD="Off")
+    env = build_envelope(c6)
+    pt6, vp6 = c6.pt, c6.vp
+    if phys == "corrected":     # Om_motor_i = Om_i*gear: power 4 Pmax, wheel-speed cap OMmax/gear
+        want = (4.0 * pt6.Pmax, pt6.OMmax * vp6.Rw / vp6.gear)
+    else:                       # MATLAB quirk Om_motor_i = Om_i/gear
+        want = (4.0 * pt6.Pmax * vp6.gear ** 2, pt6.OMmax * vp6.gear * vp6.Rw)
+    ok(f"{phys} EM4 QSS: P_mot = {env.P_mot:.6g} == {want[0]:.6g}, v_rpm = {env.v_rpm:.6g} == {want[1]:.6g}",
+       abs(env.P_mot - want[0]) <= 1e-9 * want[0] and abs(env.v_rpm - want[1]) <= 1e-9 * want[1])
+xq = ca.SX.sym("xq")
+fq = ca.Function("fq", [xq], [_linear_interp(ca, xq, [0.0, 1.0, 2.0], [0.0, 1.0, 3.0])])
+ok(f"extrapolation above the last point: f(3) = {float(fq(3.0)):.6g} == 5 (linear_interp.m)",
+   abs(float(fq(3.0)) - 5.0) < 1e-12 and abs(float(fq(2.0)) - 3.0) < 1e-12)
+
 print("ALL physics EM4 / kinematics (Task 5) TESTS PASSED")

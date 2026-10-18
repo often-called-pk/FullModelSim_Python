@@ -393,7 +393,12 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
 
     # ---- powertrain / brakes (vehModel + build_path_constraints) -------------
     Rw, gear = vp.Rw, vp.gear
-    if EM4 == 1:     # four motors; vehModel: Om_motor_i = Om_i/gear, P_i = T_motor_i*Om_motor_i
+    if EM4 == 1 and getattr(ctx, "physics", "matlab") == "corrected":
+        # four motors, corrected vehModel (fix A5): Om_motor_i = Om_i*gear, P_i = T_motor_i*Om_motor_i
+        F_mot_trq = 4.0 * pt.Tmax * gear / Rw
+        P_mot = 4.0 * pt.Pmax
+        v_rpm = pt.OMmax * Rw / gear
+    elif EM4 == 1:   # four motors; vehModel: Om_motor_i = Om_i/gear, P_i = T_motor_i*Om_motor_i
         F_mot_trq = 4.0 * pt.Tmax * gear / Rw
         P_mot = 4.0 * pt.Pmax * gear ** 2
         v_rpm = pt.OMmax * gear * Rw

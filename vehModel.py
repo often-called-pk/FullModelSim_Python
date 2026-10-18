@@ -692,5 +692,5 @@ def _linear_interp(ca, x, x_data, y_data):
         y = ca.if_else(x < x_data[i], y,
                        ca.if_else(x <= x_data[i+1], y_data[i] + slope*(x - x_data[i]), y))
     slope = (y_data[-1] - y_data[-2]) / (x_data[-1] - x_data[-2])
-    y = ca.if_else(x > x_data[-1], y_data[-2] + slope*(x - x_data[-1]), y)
+    y = ca.if_else(x > x_data[-1], y_data[-2] + slope*(x - x_data[-2]), y)   # as linear_interp.m
     return y
