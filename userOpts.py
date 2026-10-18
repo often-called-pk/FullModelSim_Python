@@ -141,6 +141,11 @@ _MESH_OPTS_KEYS = tuple(n for n in inspect.signature(curvature_mesh).parameters
 # (docs/laptime_sim_improvements.md, section A). The check is case-sensitive.
 PHYSICS = ("matlab", "corrected")
 
+# userOpts(Steering=..., CamberGain=...): the two vehModel switches that MATLAB hard-codes
+# ('NA' and 'Off'). vehModel reads ctx.Steering / ctx.CamberGain when its own argument is None.
+STEERING = ("NA", "Ackermann")
+CAMBER_GAIN = ("Off", "Linear", "Table")
+
 
 # ----------------------------------------------------------------------------- 
 # Rate-limit / regularisation table (the MATLAB 'c' struct)
@@ -243,12 +248,21 @@ def userOpts(ctx,
              cse=False,                    # casadi common-subexpression elimination (opt-in)
              screening=False,              # loose IPOPT tolerances (SCREENING_IPOPT) for sweeps / ranking
              ipopt_overrides=None,         # dict of IPOPT options merged in last (any option, per call)
-             physics="matlab"):            # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
+             physics="matlab",             # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
+             Steering="NA",                # 'NA' | 'Ackermann': front steering geometry (vehModel)
+             CamberGain="Off"):            # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
         raise ValueError(f"physics must be one of {list(PHYSICS)}, got {physics!r}")
     ctx.physics = physics
+
+    # ---- vehModel switches (checked here, read by vehModel through ctx)
+    if Steering not in STEERING:
+        raise ValueError(f"Steering must be one of {list(STEERING)}, got {Steering!r}")
+    if CamberGain not in CAMBER_GAIN:
+        raise ValueError(f"CamberGain must be one of {list(CAMBER_GAIN)}, got {CamberGain!r}")
+    ctx.Steering, ctx.CamberGain = Steering, CamberGain
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)

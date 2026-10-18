@@ -53,8 +53,8 @@ def ok(name, cond):
 
 # =============================================================================
 print("1. gate 1: parameter parity, Python vs the stored MATLAB dump")
-# dormant: CamberGain is 'Off' in both codes and the Python table is None (MATLAB: 14 values, vehParams.m L445-460)
-EXPECTED = {"vp.CG_p_deg_per_deg_table"}
+# no expected hit: the camber-gain pitch table is ported (14 values, vehParams.m L445-460), so the dumps agree
+EXPECTED = set()
 CASES = (("Sturn", 30, 18, None), ("BCN", 10, 465, "a9150a44"), ("NBR", 10, 514, "bb6589ab"))
 
 for circuit, ds, N, track_sha in CASES:

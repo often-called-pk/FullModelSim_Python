@@ -259,6 +259,8 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
     vp.CG_r_deg_per_deg_table = np.array([
         -0.105, -0.8, -0.070, -0.75, -0.035, -0.7, 0.000, -0.65,
         0.035, -0.6, 0.070, -0.55, 0.105, -0.5])
-    vp.CG_p_deg_per_deg_table = None
+    vp.CG_p_deg_per_deg_table = np.array([
+        -0.052, 0.4, -0.035, 0.35, -0.017, 0.3, 0.000, 0.25,
+        0.017, 0.2, 0.035, 0.15, 0.052, 0.1])
 
     return ctx

@@ -9,11 +9,13 @@ The tyre set ``ctx.mf`` comes from vehParams' ``tyre_set`` (default "MF205"; leg
 "CopyB" has pKy4=0); the model is tyre-set agnostic. The DATA_AA aero polynomials
 come from ``ctx.aero`` and the linear camber-gain coefficients from ``ctx.cg``.
 Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``,
-``TyreModel='CombinedSlip'``) are exposed as arguments with the same defaults;
+``TyreModel='CombinedSlip'``) are exposed as arguments. Steering and CamberGain default to None,
+which reads ``ctx.Steering`` / ``ctx.CamberGain`` (userOpts; "NA" / "Off" when unset);
 ``m.TyreModel`` also selects MLTP.build_path_constraints' row set, as in MLTP.m.
 ``ctx.physics`` (userOpts; "matlab" default) selects the equations: "matlab" keeps the inherited
 vehModel.m terms bit for bit, "corrected" applies the opt-in fixes of docs/laptime_sim_improvements.md
-section A (A1 mass bookkeeping, A2 suspension, A3 frame-consistent body equations, A4 aero load path so far).
+section A (A1 mass bookkeeping, A2 suspension, A3 frame-consistent body equations, A4 aero load path,
+A5 EM4 motor speed, A6 toe indices).
 
 There are NO aux variables (ny = 0): the load transfers are produced by the
 suspension/tyre states, not by algebraic decision variables.
@@ -52,9 +54,11 @@ def _stop_force(xs):
     return K_STOP * W_STOP * (_softplus((xs - BUMP_GAP) / W_STOP) - _softplus((-xs - REBOUND_GAP) / W_STOP))
 
 
-def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
+def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
     phys = getattr(ctx, "physics", "matlab")    # "corrected": opt-in physics fixes (userOpts)
+    Steering = getattr(ctx, "Steering", "NA") if Steering is None else Steering
+    CamberGain = getattr(ctx, "CamberGain", "Off") if CamberGain is None else CamberGain
     aero = ctx.aero
     cg = ctx.cg
     OPT_e = ctx.OPT_e
@@ -301,18 +305,22 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     fz_fl, fz_fr, fz_rl, fz_rr = fzt_fl, fzt_fr, fzt_rl, fzt_rr
 
     # ===================== tyre slip & loads ==============================
+    # A6: MATLAB takes the Ackermann front wheels' toe from the rear axle and the toe of sa_rr from the
+    # front axle. "corrected" uses the toe of the axle each wheel sits on.
+    toe_ack, toe_rr = ((vp.toe_front_rad, vp.toe_rear_rad) if phys == "corrected"
+                       else (vp.toe_rear_rad, vp.toe_front_rad))
     if Steering == "NA":
         sa_fl = delta - ca.atan((vp.l_f*r + vy) / (vx - r*vp.t/2)) + vp.toe_front_rad
         sa_fr = delta - ca.atan((vp.l_f*r + vy) / (vx + r*vp.t/2)) - vp.toe_front_rad
     elif Steering == "Ackermann":
         delta_fl = ca.atan(vp.l_f / (vp.l_f / ca.tan(delta) - vp.t/2))
         delta_fr = ca.atan(vp.l_f / (vp.l_f / ca.tan(delta) + vp.t/2))
-        sa_fl = delta_fl - ca.atan((vp.l_f*r + vy) / (vx - r*vp.t/2)) + vp.toe_rear_rad
-        sa_fr = delta_fr - ca.atan((vp.l_f*r + vy) / (vx + r*vp.t/2)) - vp.toe_rear_rad
+        sa_fl = delta_fl - ca.atan((vp.l_f*r + vy) / (vx - r*vp.t/2)) + toe_ack
+        sa_fr = delta_fr - ca.atan((vp.l_f*r + vy) / (vx + r*vp.t/2)) - toe_ack
     else:
         raise ValueError("Steering must be 'NA' or 'Ackermann'")
     sa_rl = ca.atan((vp.l_r*r - vy) / (vx - r*vp.t/2)) + vp.toe_rear_rad
-    sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*vp.t/2)) - vp.toe_front_rad
+    sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*vp.t/2)) - toe_rr
 
     v_fl = ca.sqrt((vy + vp.l_f*r)**2 + (vx - r*vp.t/2)**2)
     v_fr = ca.sqrt((vy + vp.l_f*r)**2 + (vx + r*vp.t/2)**2)
@@ -541,8 +549,12 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
         P_motor = T_motor * Om_motor
         Om_motor_each = P_motor_each = None
     else:
-        Om_motor_fl = Om_fl/vp.gear; Om_motor_fr = Om_fr/vp.gear
-        Om_motor_rl = Om_rl/vp.gear; Om_motor_rr = Om_rr/vp.gear
+        if phys == "corrected":      # A5: the motor turns gear times faster than the wheel, as in the single-motor branch
+            Om_motor_fl = Om_fl*vp.gear; Om_motor_fr = Om_fr*vp.gear
+            Om_motor_rl = Om_rl*vp.gear; Om_motor_rr = Om_rr*vp.gear
+        else:                        # MATLAB divides by the gear: the per-motor power and rpm rows are gear^2 too loose
+            Om_motor_fl = Om_fl/vp.gear; Om_motor_fr = Om_fr/vp.gear
+            Om_motor_rl = Om_rl/vp.gear; Om_motor_rr = Om_rr/vp.gear
         T_fl = T_motor_fl*vp.gear + T_brake*vp.brkB
         T_fr = T_motor_fr*vp.gear + T_brake*vp.brkB
         T_rl = T_motor_rl*vp.gear + T_brake*(1 - vp.brkB)
