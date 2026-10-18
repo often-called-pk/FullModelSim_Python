@@ -8,8 +8,8 @@ and start_state to the NLP build; MLTP fills ctx.Xi for a rolling start, warns o
 passes Xi_tol to the refine passes; the sweep precheck checks the periodic rows and start_state;
 the result files get the start suffix.
 
-Run order: sections 7 and 10 first (casadi-free), then sections 1-6, 8 and 9 in number order.
-Sections 1-6, 8 and 9 build the real NLP through a stand-in (no IPOPT) and need casadi and
+Run order: sections 7 and 10 first (casadi-free), then sections 1-6, 8, 9 and 11 in number order.
+Sections 1-6, 8, 9 and 11 build the real NLP through a stand-in (no IPOPT) and need casadi and
 Data/DATA_AA.mat (SKIP, exit 0 otherwise). Run from anywhere:
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_start_wiring.py
@@ -112,7 +112,7 @@ else:
 
 # ---- casadi sections: need the aero data file -------------------------------------
 if not os.path.exists(DATA_AA):
-    print("SKIP test_start_wiring sections 1-6, 8, 9: Data/DATA_AA.mat missing")
+    print("SKIP test_start_wiring sections 1-6, 8, 9, 11: Data/DATA_AA.mat missing")
     sys.exit(0)
 
 import casadi as ca
@@ -404,5 +404,91 @@ capture(mltp_mod, "MLTP", circuit="Circle", start_state="rolling", warm_start=IN
 ok("Circle rolling: warns 'straight start'", any("straight start" in w for w in WARNS))
 ok("Sturn rolling (section 4): no 'straight start' warning",
    not any("straight start" in w for w in w4))
+
+# ---- 11. real build with the fake solver ----------------------------------------
+print("11. real build with the fake solver: saved records, warm-start modes, MLTP_initial and optimise_design")
+import shutil
+from plotSDI import plotSDI
+
+RES_TMP = tempfile.mkdtemp(prefix="start_wiring_res_")
+PLOTS_TMP = tempfile.mkdtemp(prefix="start_wiring_plots_")
+try:
+    with fake_ipopt({}):
+        # MLTP: one saved record per start_state (refine adds _meshAdaptive only after an accepted pass)
+        for name, kw in (("matlab Sturn", dict(circuit="Sturn")),
+                         ("rolling Sturn", dict(circuit="Sturn", start_state="rolling")),
+                         ("periodic Circle", dict(circuit="Circle", OPT_ds=100, start_state="periodic")),
+                         ("periodic Circle + refine", dict(circuit="Circle", OPT_ds=100, start_state="periodic",
+                                                           refine=dict(passes=1, tol=1e-12)))):
+            c = quiet(mltp_mod.MLTP, warm_start=INIT, save=True, plot=False, mesh="auto",
+                      results_dir=RES_TMP, **kw)
+            ok(f"{name}: no out-of-sync warning", not any("out of sync" in w for w in WARNS))
+            st = kw.get("start_state", "matlab")
+            stem = f"{kw['circuit']}_Static_ATDOn_EM4Off" + ("" if st == "matlab" else "_start" + st.capitalize())
+            if "refine" in kw:
+                stem += "_meshAdaptive" if c.mesh_requested == "adaptive" else ""
+            p = os.path.join(RES_TMP, stem + ".mat")
+            ok(f"{name}: saved {stem}.mat", os.path.isfile(p))
+            d = load_solution(p)
+            ok(f"{name}: data.start_state", d.start_state == st)
+            ok(f"{name}: data.Xi (23,)", np.shape(d.Xi) == (23,))
+            ok(f"{name}: structure.n_periodic", int(d.nlp.structure.n_periodic) == (30 if st == "periodic" else 0))
+            if st == "rolling":
+                ok("rolling Xi: r = 0, zs near equilibrium, n free",
+                   d.Xi[2] == 0 and abs(d.Xi[9]) < 2e-4 and np.isnan(d.Xi[3]))
+            if st == "periodic":
+                ok(f"{name}: periodic Xi all NaN", np.isnan(d.Xi).all())
+
+        # warm starts: another start_state interpolates the primal only, the same one keeps the duals
+        base = os.path.join(RES_TMP, "Sturn_Static_ATDOn_EM4Off.mat")
+        c1 = quiet(mltp_mod.MLTP, warm_start=base, circuit="Sturn", save=False, plot=False, mesh="uniform")
+        ok("warm matlab <- matlab: full+duals", c1.elapsed["warm_start"] == "full+duals")
+        c2 = quiet(mltp_mod.MLTP, warm_start=base, circuit="Sturn", start_state="rolling", save=False,
+                   plot=False, mesh="uniform")
+        ok("warm rolling <- matlab: full-interp", c2.elapsed["warm_start"] == "full-interp")
+        rolling_src = os.path.join(RES_TMP, "Sturn_Static_ATDOn_EM4Off_startRolling.mat")
+        c3 = quiet(mltp_mod.MLTP, warm_start=rolling_src, circuit="Sturn", start_state="rolling", save=False,
+                   plot=False, mesh="uniform")
+        ok("warm rolling <- rolling: full+duals", c3.elapsed["warm_start"] == "full+duals")
+
+        # MLTP_initial: start_state in the file name and in the record; Xi is the 7-state start box
+        for name, kw in (("matlab", {}), ("rolling", dict(start_state="rolling")),
+                         ("periodic", dict(circuit="Circle", OPT_ds=100, start_state="periodic"))):
+            kw = dict(dict(circuit="Sturn"), **kw)
+            quiet(mi_mod.MLTP_initial, save=True, results_dir=RES_TMP, **kw)
+            st = kw.get("start_state", "matlab")
+            fn = f"init_{kw['circuit']}" + ("" if st == "matlab" else "_start" + st.capitalize()) + ".mat"
+            ok(f"MLTP_initial {name}: saved {fn}", os.path.isfile(os.path.join(RES_TMP, fn)))
+            d = load_solution(os.path.join(RES_TMP, fn))
+            ok(f"MLTP_initial {name}: init.start_state {st}, Xi (7,)",
+               d.start_state == st and np.shape(d.Xi) == (7,))
+            ok(f"MLTP_initial {name}: no out-of-sync warning", not any("out of sync" in w for w in WARNS))
+
+        # optimise_design, called through MLTP_paramOptim: start_state, Xi and n_periodic in the record
+        for name, kw in (("matlab Sturn", dict(circuit="Sturn")),
+                         ("periodic Circle", dict(circuit="Circle", OPT_ds=100, start_state="periodic"))):
+            quiet(po_mod.MLTP_paramOptim, warm_start=INIT, save=True, results_dir=RES_TMP, **kw)
+            ok(f"{name}: no out-of-sync warning", not any("out of sync" in w for w in WARNS))
+            st = kw.get("start_state", "matlab")
+            fn = f"{kw['circuit']}_paramOptim" + ("" if st == "matlab" else "_start" + st.capitalize()) + ".mat"
+            ok(f"{name}: saved {fn}", os.path.isfile(os.path.join(RES_TMP, fn)))
+            d = load_solution(os.path.join(RES_TMP, fn))
+            ok(f"{name}: start_state + Xi (23,)", d.start_state == st and np.shape(d.Xi) == (23,))
+            ok(f"{name}: structure n_periodic", int(d.nlp.structure.n_periodic) == (30 if st == "periodic" else 0))
+        pp = os.path.join(RES_TMP, "Circle_Static_ATDOn_EM4Off_startPeriodic.mat")
+        c4 = quiet(po_mod.MLTP_paramOptim, circuit="Circle", OPT_ds=100, start_state="periodic",
+                   warm_start=pp, save=False)
+        ok("periodic MLTP -> periodic paramOptim: full+duals", c4.elapsed["warm_start"] == "full+duals")
+        c5 = quiet(po_mod.MLTP_paramOptim, circuit="Circle", OPT_ds=100, warm_start=pp, save=False)
+        ok("periodic MLTP -> plain paramOptim: full-interp", c5.elapsed["warm_start"] == "full-interp")
+
+    # plotSDI names the folder from the start state: <plots>/Sturn/Static_ATDOn_EM4Off_startRolling
+    quiet(plotSDI, os.path.join(RES_TMP, "Sturn_Static_ATDOn_EM4Off_startRolling.mat"), save_dir=PLOTS_TMP)
+    ok("plotSDI rolling start: Sturn/Static_ATDOn_EM4Off_startRolling/racing_line.html written",
+       os.path.isfile(os.path.join(PLOTS_TMP, "Sturn", "Static_ATDOn_EM4Off_startRolling",
+                                   "racing_line.html")))
+finally:
+    shutil.rmtree(RES_TMP, ignore_errors=True)
+    shutil.rmtree(PLOTS_TMP, ignore_errors=True)
 
 print("test_start_wiring: done")
