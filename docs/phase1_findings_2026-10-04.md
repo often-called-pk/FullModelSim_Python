@@ -258,6 +258,8 @@ Sturn, default parameters (`brkB, Tdist, alpha_FL/FR/RW/TW`), after the fix:
 
 The fixed-parameter solution (18.0086 s) is a feasible point of the joint problem, so the 18.244 s run from the 7-state init is a worse local optimum, 0.235 s above it. Started from the converged full solution the joint solve takes 5 iterations (26 primal-only, same point) to 18.00805 s, 0.5 ms below the fixed-parameter lap, and that result is the committed `Results/Sturn_paramOptim.mat` baseline (commit 281c9c3). On this case the warm start is therefore the more robust way to run the co-optimisation as well as the faster one. `MLTP_TyreOptim` (`Fz0_shift`, 121 iterations from the 7-state init) gives 15.768 s with `Fz0_shift` at its lower bound 0.5, so that result is bound-limited, not an interior optimum.
 
+**C6 note (19 October 2026).** This TyreOptim result ran without the Fz0 coupling of `MLTP_TyreOptim.m:128`, so `Fz0_shift` acted as a plain grip multiplier. With the coupling (commit 30c2aa9), the Sturn optimum is interior: 17.49913 s at Fz0_shift 0.787 (commit 7f79c5e).
+
 ### Tests
 
 There are now 27 `test_*.py` files (21 at the Phase 1 docs commit, 24 at the NLP fix; `test_paramoptim_warmstart.py`, `test_setup_sweep.py` and `test_refine.py` were added since). All 27 pass with casadi (2026-10-05, about 2 minutes in total, 72 s of it `test_setup_sweep.py`), and 23 of the 27 exit 0 with casadi blocked (four of those only print SKIP; `test_casadi_opts.py`, `test_hsl.py`, `test_mltp_params.py` and `test_setup_sweep.py` need it). Only `test_setup_sweep.py` (section 5) and `test_paramoptim_warmstart.py` (section 4) run the real 23-state NLP through IPOPT.

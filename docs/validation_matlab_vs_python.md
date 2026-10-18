@@ -397,3 +397,10 @@ start at 16.129 s, both worse interior local optima. Baseline reseeded from the 
 vp_overrides={"Fz0_shift": 0.5})` (full-interp, P0 = 0.5): 15.75002 s, 172 its, Fz0_shift 0.5, faster
 than the pre-pi/8 15.768 s as the looser steering bound allows. Rerunning with warm_start = this file and
 the same override reproduces it.
+
+**C6 note (19 October 2026).** The TyreOptim rows above ran without the Fz0 coupling of
+`MLTP_TyreOptim.m:128`. In those runs `Fz0_shift` acted as a plain grip multiplier, so the optimiser
+went to the 0.5 bound. The port now scales the nominal load as MATLAB does (commit 30c2aa9). The
+regenerated `Results/Sturn_TyreOptim.mat` (commit 7f79c5e, Linux, MUMPS) gives 17.49913 s at
+Fz0_shift 0.787 after 51 iterations. Its seed was the stored Sturn result with duals. A second solve
+from Fz0_shift 0.53 ended on a worse optimum: 21.83168 s at Fz0_shift 0.622 after 2798 iterations.

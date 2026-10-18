@@ -69,7 +69,7 @@ default because the SX graph is large (peak commit ~8 GB at BCN N=465).
 Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (33 today) are plain scripts whose assertions run at module top level (no
+files (40 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -104,6 +104,13 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_physics_mass_frame.py`: corrected A1/A3 vs matlab: static equilibrium (shift-free tyre), planar mass `m` vs `ms`, no attitude gravity or Euler terms, QSS Sturn lap +7..13%, corrected seed equilibrium
 - `test_physics_suspension_aero.py`: corrected A2/A4: damper formula, `xsdot` = d(xs)/dt, vertical modes (max|eig| < 2000 1/s, a 1-4 Hz body mode), smooth stops, no downforce in `fzs`, pitch sign, QSS Cl split
 - `test_physics_em4_kinematics.py`: corrected A5/A6: EM4 `Om_motor = gear*Om` (model and QSS), toe indices, `Steering` / `CamberGain` options, CG_p table, table extrapolation as `linear_interp.m`
+- `test_track_qa.py`: `functions/track_qa.py` verdicts (`check_track` turning, closure, sign, spacing; `k_from_xy` on circles, an open arc, a stadium), load gate (error -> ValueError, else one warning), rebuilt Jarama + BCN sectors, BCN k untouched (one warning), BCNAssetto out of the registry, QSS lap pins on the rebuilt tracks
+- `test_output_channels.py`: E1: `m.ax = Lon_acc - vy*r`, `m.ay = Lat_acc + vx*r` (both physics, EM4 on/off), `data.vehicle` += `ax, ay, delta, Om_fl..Om_rr`, energy stored in Wh and shown in kWh, `plotSDI.accel_channels` (stored, derived for a pre-E1 result, or (None, None)), stored BCN RMS(vx*r)
+- `test_start_state.py`: `userOpts(start_state=...)` boxes (matlab unchanged, rolling `Xi_tol`, periodic closed circuits only + closing sample), start stems, `n_periodic` in the structure record and the warm-start planning, periodic rows + start box in a fake-solver build
+- `test_start_wiring.py`: `vehModel.rolling_start` (60 m/s coast equilibrium, variants, bounds, failures); start_state through `MLTP`, `MLTP_initial`, `optimise_design`, the refine passes, `setup_sweep._precheck_base`, the `MLTP_screen` stem; real builds with a fake solver (saved records, warm-start modes, plotSDI folder)
+- `test_track_width.py`: `userOpts(n_bounds=...)` forms + errors, `n_tag` stems, bounds at knots + collocation points (23- and 7-state), `n_bounds=4.0` == default, empty-start-box and corner-radius ValueErrors, `reconstruct_track` edges, full+duals warm start with a band, narrow-band continuity, periodic Spa arrays, `MLTP_screen` stem
+- `test_sensitivity.py`: `functions/sensitivity.py`: `nlp_index` rows of w and g, `limit_prices` (W start-row rule, torque, brake, power, start speed), `lateral_prices`, `costates`, prices of the stored results, KKT check on the rebuilt Sturn NLP, oracle (rebuilt Lagrangian differences == prices)
+- `test_tyreoptim_fz0.py`: C6: TyreOptim model at `Fz0_shift = S` == plain model with `Fz0 = 4905*S` (both physics), the coupling at S = 0.5, S = 1 exact, no coupling in `MLTP_paramOptim`
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -205,6 +212,11 @@ a quick screening-grade cold start, `homotopy=True` when a cold solve fails: EM4
   is the shared core (`param_specs` = list of `(vp_field, lower, upper)`). Default params:
   `brkB, Tdist, alpha_FL/FR/RW/TW`.
 - **`MLTP_TyreOptim.py`** is a thin wrapper over `optimise_design()` promoting only `Fz0_shift`.
+  As `MLTP_TyreOptim.m:128` it also scales the nominal load: `optimise_design(Fz0_follows_shift=True)` sets
+  `vp.Fz0 = vp.Fz0*Fz0_shift` before `vehModel` (only this wrapper; `MLTP_paramOptim` and `setup_sweep` keep
+  Fz0 fixed, as `MLTP.m` / `MLTP_paramOptim.m`). So S enters the lateral stiffness Kya twice (`fz/S` over
+  `pKy2*Fz0`, ported as is). QSS mirror of a TyreOptim setup: `MLTP_screen(vp_overrides={"Fz0_shift": S,
+  "Fz0": 4905*S})`.
 
 ### Fast QSS screening tier (`MLTP_screen.py` + `functions/ggv.py`)
 A numpy-only quasi-steady g-g-v lap-time ESTIMATE (7 ms Sturn, 30 ms BCN per setup once `ctx`
@@ -323,20 +335,30 @@ Builds `ctx`: calls `Powertrain`+`vehParams`, loads or **synthesizes** the track
 collocation options, the IPOPT options dict, and the config switches the models branch on
 (`vp.ActAero`, `pt.ATD`, `pt.EM4`). Circuit selection: `_REAL_CIRCUITS` maps names to `.mat`
 files in `Circuits/` (`BCN` -> `Barcelona_circuit.mat`, the sector splits `BCN_S1`/`BCN_S2`/`BCN_S3`,
-plus `Jarama`, `Spa`, `NBR` (Nurburgring GP, 5139 m; not in the GUI list), `BCNAssetto`); any other
+plus `Jarama`, `Spa`, `NBR` (Nurburgring GP, 5139 m)); any other
 name is treated as **synthetic** and its curvature
 is generated analytically by `_synthetic_curvature` (`Straight`, `Hairpin`, `Sturn`, `Circle`,
 `ZigZag`, `ZigZagMirror`, `VirtualTrack`), no `.mat` needed. Guard: if `ATD` **and**
 `Electric_4Motors` are both `On`, it forces `ATD=Off` with a warning.
+Track QA (2026-10-18, `functions/track_qa.py`): every real track goes through `check_track` at load
+(turning, closure, sign agreement with x,y, spacing, monotonic s). An error raises ValueError (no bypass
+kwarg), other issues give one warning. BCN warns (turning -1.023 laps): kept as is, the parity gates pin its
+k. Jarama (was +78.7 laps of turning) and `BCN_S1/S2/S3` were rebuilt from their own x,y with
+`k_from_xy(x, y, closed, ds=1.0, window=5, passes=2, max_chord=30.0)`; the source files stay in git at
+ce0752a. BCNAssetto left the registry (no s, x, y; file kept on disk). The GUI circuit list shows NBR.
 Other kwargs: `vp_overrides` (vehParams primaries + Pacejka coefficients), `tyre_set` (default
 `'MF205'`; `'CopyB'` is the legacy set, see the tyre bullet), `OPT_ds` / `OPT_d` / `OPT_e`, `mesh`
 (default `'auto'`, see Collocation mesh) / `mesh_opts`, `max_iter` / `tol`, `linear_solver` /
 `hsl_dir`, `cse` / `jit` (opt-in), `screening`, `physics` (`'matlab'` default | `'corrected'`, see the physics
-bullet), `Steering` (`'NA'` | `'Ackermann'`) / `CamberGain` (`'Off'` | `'Linear'` | `'Table'`), and `ipopt_overrides` (dict of any IPOPT options,
+bullet), `Steering` (`'NA'` | `'Ackermann'`) / `CamberGain` (`'Off'` | `'Linear'` | `'Table'`), `start_state` (`'matlab'`
+default | `'rolling'` | `'periodic'`, see the start-state bullet), `n_bounds` (None default | half-width W |
+`(lo, hi)`, see the track-width bullet), and `ipopt_overrides` (dict of any IPOPT options,
 merged last so it beats every default, the screening preset and the warm-start recipe; a non-exact
 `hessian_approximation` warns). Kept on `ctx.mesh` (resolved), `ctx.mesh_requested`,
 `ctx.mesh_opts`, `ctx.tyre_set`, `ctx.screening`, `ctx.ipopt_overrides`, `ctx.cse`, `ctx.jit`, `ctx.physics`,
-`ctx.Steering`, `ctx.CamberGain` (`vehModel(ctx)` reads the last two when its arguments are None).
+`ctx.Steering`, `ctx.CamberGain` (`vehModel(ctx)` reads the last two when its arguments are None),
+`ctx.start_state`, `ctx.periodic`, `ctx.Xi_tol`, `ctx.n_bounds`, `ctx.n_tag`, plus `ctx.track.n_lo` / `n_hi`
+when a band is set.
 
 ### Helpers (`functions/`)
 - **Solver-side:** `collocation.py` (Legendre points/coeffs; CasADi-native with a numpy fallback),
@@ -347,7 +369,11 @@ merged last so it beats every default, the screening preset and the warm-start r
   `solution_knots`, `mesh_opts_record`), `ggv.py` (QSS envelope + march), `ladder.py` (multi-fidelity
   ladder: tier registry, `resolve_ladder`, QSS seeds `seed_m7` / `seed_m23`, `quasi_static_states`,
   the friction homotopy hook; numpy only, see Multi-fidelity ladder), `refine.py` (adaptive
-  mesh refinement: defect indicator, knot bisection, the refinement loop; see Collocation mesh).
+  mesh refinement: defect indicator, knot bisection, the refinement loop; see Collocation mesh), `track_qa.py` (load-time track QA, `k_from_xy`
+  rebuild recipe).
+- **Post-solve analysis:** `sensitivity.py` (numpy only, no solve): `limit_prices`, `lateral_prices`,
+  `costates` from the stored multipliers of one full result; first order, and J includes the regularisation
+  (0.27% of the Sturn lap, 0.12% of BCN).
 - **Post-processing only** (reached via `reconstruct_track` *after* the solve): `curv2cart.py`
   (s,k -> cartesian centreline), `cartPath.py` (lateral offset `n` -> racing line), `trackLimits.py`
   (boundary polylines), `rotatePoint2D.py` (used only inside `curv2cart`).
@@ -445,10 +471,55 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `_physCorrected` stem and `data.physics`. Corrected vertical modes: heave 1.9 Hz zeta 0.53, roll 3.0 Hz zeta 0.57,
   pitch 5.2 Hz zeta 0.35, max|eig| 191 1/s (matlab 2.7e4). Measured (Linux, MUMPS, cold): Sturn 18.019 -> 20.024 s
   (+11.1%, 152 -> 218 iterations), BCN 116.444 -> 130.035 s (+11.7%, 207 -> 179 iterations); QSS forecast +10.0% /
-  +11.1%. Watch: the body sits 9.4 mm low at 60 m/s under corrected, the start box holds zs to +-OPT_e = 10 mm, so
-  vi above ~62 m/s makes the start infeasible (fix = item B1, rolling start). Not in the GUI / cfg.json yet. Skipped:
+  +11.1%. Watch: the body sits 9.4 mm low at 60 m/s under corrected (12.8 mm at 70 m/s), and the matlab start box
+  holds zs to +-OPT_e = 10 mm. The old claim "vi above ~62 m/s makes the start infeasible" is wrong: corrected Sturn
+  at vi = 70 m/s converges (404 iterations, 20.18902 s) with zs(0) on the -10 mm box edge, so the car starts off its
+  equilibrium. The rolling start does not converge there yet (see the start-state bullet). Not in the GUI / cfg.json yet. Skipped:
   per-motor ratings, gear as a setup field, regen, drag pitch moment. `Steering` / `CamberGain` are now `userOpts`
   kwargs (both physics); the CG_p table is ported, and `_linear_interp` extrapolates as `linear_interp.m`.
+- **Start state (2026-10-18, pinned by `tests/test_start_state.py`, `tests/test_start_wiring.py`).**
+  `userOpts(start_state='matlab' | 'rolling' | 'periodic')`, one kwarg, modes exclusive. `'matlab'` (default) = MATLAB
+  boxes, NLP byte-identical (sha256 snapshot of 7 builds). `'rolling'`: start box centred on the model's straight-line
+  coast equilibrium at vi (`vehModel.rolling_start(ctx, m, vx)` -> (X, U): Newton with lateral trim, delta seeded at
+  1e-6 for Ackermann; not `ladder.quasi_static_states`). r(0) = 0 +- OPT_e, vy and rows 5-22 from the equilibrium, rows 9-22
+  within +-`ROLL_TOL` = 1e-3 (`ctx.Xi_tol`), vx box vi +- OPT_e*100 kept. Warns on a curved start. `optimise_design`
+  refuses it (ValueError: the equilibrium depends on the design). `'periodic'`: rows X(N) = X(0), U(N) = U(0) on all
+  states and inputs, last in g (`n_periodic` in the structure record), start fully free. Closed circuits only
+  (`userOpts.CLOSED_CIRCUITS`: BCN, Jarama, Spa, NBR, Circle); Spa and NBR get a 5 m closing sample. Stems
+  `_startRolling` / `_startPeriodic` (after `_physCorrected`, before `_mesh`; init and `_qss` files too),
+  `data['start_state']`, `data['Xi']`. A seed from another start state gives full-interp (no duals). Caveats: the
+  synthetic Circle k turns 0.988 laps (periodic Circle = wiring check only); periodic BCN runs on the parity k, which
+  does not close (-1.023 laps). Measured 2026-10-18 (Linux, MUMPS; lap changes vs the stored 18.01633 / 116.44407 s):
+  default cold Sturn 152 iterations, 18.01857 s (Phase 1 to every digit); rolling Sturn seeded from the stored default
+  (full-interp) 95, 18.08490 s (+0.069 s, first order +0.045); rolling BCN seeded 118, 116.72927 s (+0.285, first
+  order +0.197); periodic Circle cold 65, 21.71527 s, periodic residual 0; periodic BCN seeded 74, 116.91133 s (+0.467,
+  forecast ~+0.3). Rolling start rows end on their box edges (rows 9-22 at +-1e-3, Om at +-2.8 rad/s).
+  **Open defect (B1):** rolling is fragile. Cold rolling Sturn (matlab physics) takes 530 iterations to a worse
+  optimum (18.61105 s). Corrected physics at vi = 70 m/s with rolling does not converge: cold stops at max_iter 6000
+  (inf_pr 0.3-170, inf_du up to 7e15, restoration), and seeded from the converged matlab-start solve (full-interp) it
+  starts at inf_pr 8.9 and stops at the 2000 cap, never feasible. Cause unknown. Not built: seed ends clipped with the
+  scalar OPT_e box (`ladder._clip_ends`), wider than the rolling box. Until fixed: rolling with matlab physics, seeded
+  from a default-start result.
+- **Track width (2026-10-18, pinned by `tests/test_track_width.py`).** `userOpts(n_bounds=W | (lo, hi))`: bounds on
+  n (CG path, m), scalars or arrays on `ctx.track.s` (after the periodic closing sample), applied at knots and
+  collocation points only. None = model default +-4 m (`n_bounds=4.0` builds the same NLP). `lo < hi` everywhere:
+  equal bounds fix an interval's n polynomial, so its continuity row turns constant. Fixed line for correlation =
+  narrow band `(n_ref - b, n_ref + b)`, continuity-feasible when b >= max mismatch / 4.67 (Legendre d = 3).
+  ValueError for a band wider than 1/|k| at any point (sf changes sign) and, inside `build_and_solve_nlp`, for an
+  empty start / end box (default calls too: |ni| > 4.05 m, or vi more than 1 m/s above Vmax). Stems `_hw<W>`
+  (`f'{W:g}'`, 6 significant digits) / `_nbCustom`, `data['n_tag']`; `reconstruct_track` draws the edges at the band.
+  No real width data in the repo yet. Stored prices (`limit_prices`): W -0.2025 s/m Sturn, -1.8611 s/m BCN. Price
+  check 2026-10-18 (Linux, MUMPS, full+duals from the stored default): Sturn W 4.2 m: 6 iterations, 17.97682 s, dJ
+  -0.04014 s vs first order -0.04050 (0.9%), second order -0.03993 (0.5%); BCN W 4.1 m: 17 iterations, 116.26122 s,
+  dJ -0.18407 s vs -0.18612 (1.1%), -0.18401 (0.03%).
+- **Output channels (E1, 2026-10-18, pinned by `tests/test_output_channels.py`).** `data.vehicle` `Lon_acc` /
+  `Lat_acc` = body-velocity derivatives (dvx/dt, dvy/dt), not accelerometer values. Accelerometer equivalents
+  `ax = Lon_acc - vy*r`, `ay = Lat_acc + vx*r` (`m.ax`, `m.ay`, both physics, not in `dx`); stored BCN: RMS(vx*r)
+  10.6 m/s^2, peak |ay| 1.45 g. Also `delta` (physical steer angle, rad, 35 deg * delta_n; the `u_opt` steering row
+  keeps MATLAB's pi/8 scale) and `Om_fl..Om_rr` (rad/s, as `MLTP.m:584-587`). `E_motor` stays Wh in data (`P_motor`
+  W); the GUI and plotSDI show kWh (MATLAB stores kW, `MLTP.m:592`, so its energy is kWh). g-g plots read
+  `plotSDI.accel_channels` (ax / ay derived from `x_opt` for results saved before E1). EM4 energy is valid only with
+  `physics='corrected'`: matlab EM4 `Om_motor = Om/gear`, so P and E come out gear^2 = 52.6x low.
 - **23-state NLP constraint set matches `MLTP.m` (fixed 2026-10-04, pinned by `test_mltp_constraints.py`).**
   Two port gaps were closed. (1) The input-rate bounds are divided by `u_s` (`m.duk_lb/ub`, as `vehModel.m`
   L377-379 and the 7-state model do). Before, the physical Nm/s, rad/s and deg/s values bounded the normalised
@@ -457,7 +528,7 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   steering input exactly as `vehModel.m` runs it (its `delta_s` leaks from `vehModel_initial.m`), while both
   keep `delta = 35 deg * delta_n`. So the rate bound is 0.1/(pi/8) per second on `delta_n`, 0.1556 rad/s
   physical, and the steering initial guess, the `u_opt` steering row and the plotSDI trace carry MATLAB's
-  pi/8 scale (9/14 of the physical angle; `data.vehicle` has no steering channel). The default baselines
+  pi/8 scale (9/14 of the physical angle; the physical angle is `data.vehicle['delta']` since E1). The default baselines
   were re-measured with it on 2026-10-08 (end of this bullet); every other lap, iteration count and wall
   time in this file was measured with the earlier 0.1 rad/s bound (`delta_max` scale): pre-pi/8.
   (2) The four friction-circle rows
@@ -473,11 +544,11 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `*_CopyB.mat` files are legacy pre-fix results (no `data.nlp`). Regenerated again on 2026-10-08 for the
   pi/8 steering scale (ma57, MF205, default calls): Sturn 174 iterations, 18.01633 s; BCN 1072 + 165,
   116.44407 s; BCN AALB 169, 116.05468 s; `Sturn_paramOptim` 5 from the Sturn result (full+duals),
-  18.01610 s; `Sturn_TyreOptim` 172, 15.75002 s, Fz0_shift 0.5 (bound), reseeded from the previous
-  optimum: `MLTP_TyreOptim(circuit="Sturn", warm_start=<previous Results/Sturn_TyreOptim.mat>,
-  vp_overrides={"Fz0_shift": 0.5})` (full-interp; the same call on this file reproduces it). The cold
-  default call lands on a worse interior optimum (17.116 s, Fz0_shift 0.656, 782 iterations), the
-  full-solution warm start on 16.129 s. The inits and QSS files are unaffected (content identical, kept).
+  18.01610 s; `Sturn_TyreOptim` then 172, 15.75002 s, Fz0_shift 0.5 (bound), without the Fz0 coupling (C6
+  port gap). Regenerated 2026-10-18 with the coupling (Linux, MUMPS): `MLTP_TyreOptim(circuit="Sturn",
+  warm_start="Results/Sturn_Static_ATDOn_EM4Off.mat", linear_solver="mumps")` (full+duals at P0 = 1):
+  51 iterations, 17.49913 s, Fz0_shift 0.787 (interior). A reseed at Fz0_shift 0.53 ends on a worse optimum
+  (21.832 s, Fz0_shift 0.622, 2798 iterations). The inits and QSS files are unaffected (content identical, kept).
 - **`Powertrain.py` is not a map.** Despite the name it only stores 5 scalar ratings
   (`Pmax, Tmax, OMmax, Vmax, eff`); `eff=0.9` is used only in the post-solve energy integral. The
   actual power/rpm limits are enforced in `MLTP.py`/`vehModel.py`. `pt.EM4`/`pt.ATD` are set later

@@ -10,6 +10,42 @@ Compiled 17 October 2026 from `docs/lap_time_simulation_literature.md` and a rev
 - **Evidence.** No NLP solve ran during the review. The numbers come from stored results, stored multipliers and the QSS screener. Treat them as estimates until an NLP run checks them.
 - **Outcome.** 21 items passed all three checks, 11 passed two, and 6 failed two. This list keeps 30 items, some of them merged or narrowed. The section "Skipped for now" holds the rest, each with a trigger.
 
+## Status on 19 October 2026
+
+Branch `sim-phase2` holds the second batch of items. The batch contains D1 (stage S), F1, E1 (stage S), B1, B2, C1, C2 (stage S) and the port gap of C6. Each item is opt-in or changes only outputs. The default NLP stays byte-identical in seven test builds, and the parity gates stay green. All 40 test files pass on Linux.
+
+The runs below used MUMPS on Linux. The column "Seed" names the warm start. A lap change compares with the stored baseline: Sturn 18.01633 s, BCN 116.44407 s.
+
+| Run | Case | Seed | Result |
+|---|---|---|---|
+| V0 | Sturn, defaults | Cold | 18.01857 s, 152 iterations, the same as the first batch |
+| V1 | Sturn, `start_state='rolling'` | Stored Sturn result | 18.08490 s, 95 iterations, +0.069 s (first-order estimate +0.045 s) |
+| V1c | Sturn, `start_state='rolling'` | Cold | 18.61105 s, 530 iterations, a worse local optimum |
+| V2 | BCN, `start_state='rolling'` | Stored BCN result | 116.72927 s, 118 iterations, +0.285 s (first-order estimate +0.197 s) |
+| V3a | Sturn, `physics='corrected'`, vi = 70 m/s | Cold | 20.18902 s, 404 iterations, body height at s = 0 on the -10 mm box edge |
+| V3b | V3a with `start_state='rolling'` | Cold | No convergence in 6000 iterations |
+| V3c | V3a with `start_state='rolling'` | The V3a result | No convergence in 2000 iterations |
+| V4 | Circle, `start_state='periodic'` | Cold | 21.71527 s, 65 iterations, end state equal to the start state |
+| V5 | BCN, `start_state='periodic'` | Stored BCN result | 116.91133 s, 74 iterations, +0.467 s (forecast about +0.3 s) |
+| V6 | Sturn, `n_bounds=4.2` | Stored Sturn result with duals | 17.97682 s, 6 iterations. The objective changes by -0.0401 s. The price estimate is -0.0405 s. |
+| V7 | BCN, `n_bounds=4.1` | Stored BCN result with duals | 116.26122 s, 17 iterations. The objective changes by -0.1841 s. The price estimate is -0.1861 s. |
+| V8 | Sturn TyreOptim with the Fz0 coupling | Stored Sturn result with duals | 17.49913 s, 51 iterations, Fz0_shift 0.787 |
+
+Findings:
+
+- **Rolling start (B1).** A seeded rolling start works with the default physics (V1, V2). A cold rolling start is not reliable (V1c). With `physics='corrected'` at 70 m/s, the rolling start does not converge, cold or seeded (V3b, V3c). The cause is not known. Until a fix, use the rolling start with the default physics, and seed it from a default-start result. B1 uses the equilibrium of the model itself, not `ladder.quasi_static_states`.
+- **Start limit.** With `physics='corrected'`, a start speed above 62 m/s does not make the start infeasible (V3a). The body height stays at the edge of the start box instead.
+- **Periodic lap (B2).** The periodic rows hold exactly (V4, V5). The BCN curvature does not close the lap (-1.023 laps), so treat the +0.467 s of V5 as provisional until a closed BCN track exists.
+- **Width prices (C1, C2).** The first-order prices predict the change of the objective within 1.1% (V6, V7). One metre of half-width is worth about 1.86 s on BCN.
+- **TyreOptim (C6).** The fix moves the Sturn optimum from the 0.5 bound (15.750 s) to an interior point (17.499 s at Fz0_shift 0.787). A second solve that started at Fz0_shift 0.53 ended on a worse optimum (21.832 s).
+
+Open items:
+
+- B1 has the convergence failure above. One candidate fix is not built: the cold seed uses the box OPT_e at its ends, and this box is wider than the rolling box.
+- C6 part 2, the Magic Formula scaling factors, waits for the owner's sign-off, together with E3.
+- Stage M of D1, E1 and C2 is not built.
+- BCN keeps its original file for the parity gates, so it loads with one QA warning.
+
 ## Status on 18 October 2026
 
 Items A1 to A6 are built on branch `physics-fixes`, behind the opt-in flag `physics='corrected'`. The default `physics='matlab'` keeps the MATLAB behaviour bit for bit, and the parity gates stay green. All 33 test files pass on Linux.
@@ -23,7 +59,7 @@ The runs used MUMPS on Linux, from a cold start. The default BCN lap matches the
 
 Two limits remain:
 
-- With `physics='corrected'` the body sits 9.4 mm low at 60 m/s. The start box allows 10 mm, so a start speed above about 62 m/s makes the start infeasible. Item B1 removes this limit.
+- With `physics='corrected'` the body sits 9.4 mm low at 60 m/s, and the start box allows 10 mm. This limit is softer than this list first said. At 70 m/s the solve converges, but the body height at s = 0 stays at the edge of the box. So the car starts away from its equilibrium (run V3a in the status of 19 October). The rolling start of item B1 does not converge in this case yet (runs V3b and V3c).
 - A5 changes only the motor speed. The per-motor ratings, the gear as a setup field and regenerative braking are still open. A4 has no drag pitch moment yet.
 
 ## Read this first: parity is not physics
@@ -177,7 +213,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 ### C6. TyreOptim port gap and tyre scaling factors (S)
 
 - **Problem.** MATLAB TyreOptim sets `vp.Fz0 = 4905*vp.Fz0_shift` before it builds the model (`MLTP_TyreOptim.m:128`, `134`). The Python `optimise_design` replaces only the named field (`MLTP_paramOptim.py:81-89`). So in Python, `Fz0_shift` acts as a plain grip multiplier.
-- **Effect.** This is why the Python TyreOptim runs to the 0.5 bound (Sturn 15.750 s against 18.016 s). The parity gates do not cover the co-optimisation scripts.
+- **Effect.** This is why the Python TyreOptim ran to the 0.5 bound (Sturn 15.750 s against 18.016 s). The parity gates do not cover the co-optimisation scripts. With the gap closed, the Sturn optimum is interior: 17.499 s at Fz0_shift 0.787 (run V8). On these two results, the gap explains about 77% of the old gain of 2.266 s.
 - **Change.** Substitute the nominal load in the Python TyreOptim path as MATLAB does, and add a test. Add Magic Formula scaling factors for load, grip and stiffness, default 1, shared with E3.
 - **Status.** The checks rejected the first version of this item, because the literature has no source on scaling factors. The code check found the port gap itself.
 
@@ -196,7 +232,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 ### E1. Logger-equivalent output channels (S, then M)
 
 - **Problem.** The stored lateral acceleration is the derivative of the lateral speed (`vehModel.py:558-559`), not the value that an accelerometer measures. On BCN the difference has an RMS of 10.6 m/s^2.
-- **Problem.** The motor energy is in Wh but has the label kWh (`MLTP.py:599-609` and the GUI). MATLAB has the same label.
+- **Problem.** The motor energy is in Wh but has the label kWh (`MLTP.py:599-609` and the GUI). MATLAB stores the motor power in kW (`MLTP.m:592`), so its energy value is in kWh, and the label matches the value.
 - **Change, S.** Add accelerometer-equivalent ax and ay, the steer angle and the wheel speeds. Fix the energy unit, and update `tests/test_results.py`.
 - **Change, M.** Store channels at the collocation points, and export at 1 m or 50 Hz in the ChassisSim "monster file" format.
 

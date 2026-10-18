@@ -76,11 +76,14 @@ The two-stage solve: `MLTP()` first builds a reduced 7-state warm start
 real problem. Results go to `Results/<circuit>_<config>.mat`; Plotly HTML figures
 to `Plots/<circuit>/<config>/`.
 
-**Circuits.** Real tracks live as `.mat` files in `Circuits/` (e.g. `BCN` →
-`Barcelona_circuit.mat`, plus the `BCN_S1/S2/S3` sector splits); any other name
-(`Straight`, `Hairpin`, `Sturn`, `Circle`, `ZigZag`, `ZigZagMirror`,
-`VirtualTrack`) is **synthetic**, its curvature is generated analytically, no
-`.mat` needed.
+**Circuits.** The real tracks are `.mat` files in `Circuits/`: `BCN`
+(`Barcelona_circuit.mat`), the sector splits `BCN_S1`, `BCN_S2` and `BCN_S3`,
+`Jarama`, `Spa` and `NBR` (Nurburgring GP). Each real track goes through a QA
+check when it loads. An error in the check stops the load with a `ValueError`,
+and a smaller issue gives one warning. BCN gives a warning but stays as it is,
+because the MATLAB parity tests use it. Any other name (`Straight`, `Hairpin`,
+`Sturn`, `Circle`, `ZigZag`, `ZigZagMirror`, `VirtualTrack`) is **synthetic**.
+A formula gives its curvature, so it needs no `.mat` file.
 
 ### B) Run the desktop GUI (development)
 
