@@ -160,7 +160,8 @@ def warmstart_guesses(ctx, m, init_x, init_u, s_knot, s_knot_init=None):
     r_0 = _at(init_x[2]); n_0 = _at(init_x[3])
     eps_0 = _at(init_x[4])
     # Om = vx / Rw, suspension 0, zt = W0 / kt
-    x0_phys = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, quasi_static_states(vp, vx_0)])
+    x0_phys = np.vstack([vx_0, vy_0, r_0, n_0, eps_0,
+                         quasi_static_states(vp, vx_0, getattr(ctx, "physics", "matlab"))])
     x0 = x0_phys / m.x_s[:, None]
 
     T_brake_0 = _at(init_u[1])
@@ -247,7 +248,8 @@ def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
     xc0 = eval_states(prev_disc, Z, disc_new["s_col"])
     x_s = np.asarray(m.x_s, dtype=float).reshape(-1)
     for X in (x0, xc0):
-        X[5:] = quasi_static_states(ctx.vp, X[0] * x_s[0]) / x_s[5:, None]
+        X[5:] = quasi_static_states(ctx.vp, X[0] * x_s[0],
+                                    getattr(ctx, "physics", "matlab")) / x_s[5:, None]
     u0 = nlp_inputs(prev_disc, Uk, disc_new["s_knot"], ctx.OPT_uinter)
     return {"x0": x0, "u0": u0, "xc0": xc0}
 

@@ -11,6 +11,9 @@ come from ``ctx.aero`` and the linear camber-gain coefficients from ``ctx.cg``.
 Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``,
 ``TyreModel='CombinedSlip'``) are exposed as arguments with the same defaults;
 ``m.TyreModel`` also selects MLTP.build_path_constraints' row set, as in MLTP.m.
+``ctx.physics`` (userOpts; "matlab" default) selects the equations: "matlab" keeps the inherited
+vehModel.m terms bit for bit, "corrected" applies the opt-in fixes of docs/laptime_sim_improvements.md
+section A (per-corner unsprung mass, planar mass m, frame-consistent body equations so far).
 
 There are NO aux variables (ny = 0): the load transfers are produced by the
 suspension/tyre states, not by algebraic decision variables.
@@ -35,6 +38,7 @@ def _poly(coeffs, x, powers):
 
 def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
+    phys = getattr(ctx, "physics", "matlab")    # "corrected": opt-in physics fixes (userOpts)
     aero = ctx.aero
     cg = ctx.cg
     OPT_e = ctx.OPT_e
@@ -528,10 +532,17 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     # ===================== change of variable & derivatives ===============
     sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
 
-    dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.ms*vy*r
-           - vp.ms*thetadot*zsdot + vp.ms*vp.g*ca.sin(theta)) * sf / vp.ms
-    dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.ms*vx*r
-           - vp.ms*vp.g*ca.sin(phi)*ca.cos(theta)) * sf / vp.ms
+    if phys == "corrected":
+        # A1 + A3: the planar equations carry the total mass m (the unsprung masses move with the
+        # car) and no body-attitude terms: the tyre forces lie in the road plane, so gravity and
+        # the sprung-mass rates (thetadot*zsdot) do not enter.
+        dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.m*vy*r) * sf / vp.m
+        dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.m*vx*r) * sf / vp.m
+    else:
+        dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.ms*vy*r
+               - vp.ms*thetadot*zsdot + vp.ms*vp.g*ca.sin(theta)) * sf / vp.ms
+        dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.ms*vx*r
+               - vp.ms*vp.g*ca.sin(phi)*ca.cos(theta)) * sf / vp.ms
     dr = ((fyg_fl + fyg_fr)*vp.l_f - (fyg_rl + fyg_rr)*vp.l_r
           + (-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2)
           - (f_side_rl + f_side_rr)*vp.l_r + (f_side_fl + f_side_fr)*vp.l_f) * sf / vp.I_z
@@ -542,17 +553,25 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     dOm_rl = sf * (T_rl - fx_rl*vp.Rw_r) / vp.Jw
     dOm_rr = sf * (T_rr - fx_rr*vp.Rw_r) / vp.Jw
     dzs = zsdot * sf
-    dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
-              - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
+    if phys == "corrected":      # A3: gravity straight down, no body-frame rate terms
+        dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
+                  - vp.ms*vp.g) * sf / vp.ms
+    else:
+        dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
+                  - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
     dtheta = thetadot * sf
     dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
                  - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y
     dphi = phidot * sf
     dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t) * sf / vp.I_x
-    dwu_fl = (zt_fl*vp.kt - vp.mus*vp.g - fj_fl - fzs_fl) * sf / vp.mus
-    dwu_fr = (zt_fr*vp.kt - vp.mus*vp.g - fj_fr - fzs_fr) * sf / vp.mus
-    dwu_rl = (zt_rl*vp.kt - vp.mus*vp.g - fj_rl - fzs_rl) * sf / vp.mus
-    dwu_rr = (zt_rr*vp.kt - vp.mus*vp.g - fj_rr - fzs_rr) * sf / vp.mus
+    if phys == "corrected":      # A1: each corner carries its own unsprung mass (muf/2, mur/2)
+        mu_fl, mu_fr, mu_rl, mu_rr = vp.m_u_fl, vp.m_u_fr, vp.m_u_rl, vp.m_u_rr
+    else:                        # MATLAB: every corner subtracts the TOTAL unsprung mass
+        mu_fl = mu_fr = mu_rl = mu_rr = vp.mus
+    dwu_fl = (zt_fl*vp.kt - mu_fl*vp.g - fj_fl - fzs_fl) * sf / mu_fl
+    dwu_fr = (zt_fr*vp.kt - mu_fr*vp.g - fj_fr - fzs_fr) * sf / mu_fr
+    dwu_rl = (zt_rl*vp.kt - mu_rl*vp.g - fj_rl - fzs_rl) * sf / mu_rl
+    dwu_rr = (zt_rr*vp.kt - mu_rr*vp.g - fj_rr - fzs_rr) * sf / mu_rr
     dzt_fl = -wu_fl * sf; dzt_fr = -wu_fr * sf; dzt_rl = -wu_rl * sf; dzt_rr = -wu_rr * sf
 
     Lon_acc = dvx / sf
@@ -586,6 +605,11 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     m.dynamic_camber_fl, m.dynamic_camber_fr = dynamic_camber_fl, dynamic_camber_fr
     m.dynamic_camber_rl, m.dynamic_camber_rr = dynamic_camber_rl, dynamic_camber_rr
     m.CG_h, m.CG_r, m.CG_p = CG_h, CG_r, CG_p
+    m.f_roll = f_roll
+    # suspension signals as the dynamics use them (xs > 0 = compression, xsdot = its time rate)
+    m.xs_fl, m.xs_fr, m.xs_rl, m.xs_rr = xs_fl, xs_fr, xs_rl, xs_rr
+    m.xsdot_fl, m.xsdot_fr, m.xsdot_rl, m.xsdot_rr = xsfl_dot, xsfr_dot, xsrl_dot, xsrr_dot
+    m.fzs_fl, m.fzs_fr, m.fzs_rl, m.fzs_rr = fzs_fl, fzs_fr, fzs_rl, fzs_rr
     # aero
     m.f_drag, m.f_lift = f_drag, f_lift
     m.f_lift_fl, m.f_lift_fr, m.f_lift_rl, m.f_lift_rr = f_lift_fl, f_lift_fr, f_lift_rl, f_lift_rr

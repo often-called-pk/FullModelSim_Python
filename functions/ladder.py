@@ -98,7 +98,8 @@ def qss_profile(ctx, load_model="vehModel", ds_fine=1.0):
     """Rung 0: functions.ggv.build_envelope(ctx, load_model) + march(env, ctx.track.s,
     ctx.track.k, ctx.vi, ds_fine) on the fine grid. Returns the march dict (s, k, v,
     ax, ay, t, lap_time, ...) plus 'env'. ctx must be past userOpts (pt.EM4 / pt.ATD,
-    ctx.aero). Sample it at any station with np.interp on prof['s']."""
+    ctx.aero); the envelope follows ctx.physics. Sample it at any station with
+    np.interp on prof['s']."""
     from functions.ggv import build_envelope, march
     env = build_envelope(ctx, load_model=load_model)
     prof = march(env, ctx.track.s, ctx.track.k, float(ctx.vi), ds_fine=ds_fine)
@@ -106,20 +107,29 @@ def qss_profile(ctx, load_model="vehModel", ds_fine=1.0):
     return prof
 
 
-def quasi_static_states(vp, vx):
+def quasi_static_states(vp, vx, physics="matlab"):
     """Physical seeds of the 18 states after eps (rows 5-22 of the 23-state vector:
     Om_fl, Om_fr, Om_rl, Om_rr, the ten suspension / unsprung states, zt_fl..zt_rr)
     for the speeds ``vx`` [m/s]: rolling wheels (Om = vx / Rw_f, vx / Rw_r),
-    suspension at rest (0) and the static tyre deflections W0 / kt. Shared by
+    suspension at rest (0) and the static tyre deflections. Shared by
     MLTP.warmstart_guesses (7-state init), MLTP.warmstart_refined (mesh refinement)
-    and seed_m23 (QSS profile); MLTP re-exports it."""
+    and seed_m23 (QSS profile); MLTP re-exports it.
+
+    physics='matlab': zt = W0 / kt. physics='corrected' (fix A1): zt is the static
+    equilibrium of the corrected unsprung row, kt zt = m_u g + k xsi, with the per-corner
+    unsprung mass (vp from a corrected vehParams). The seed has no aero lift (vp carries
+    no aero data) and no speed dependence besides the wheel speeds."""
     vx = np.asarray(vx, dtype=float).reshape(-1)
     n = vx.size
     z0 = np.zeros(n)
+    if physics == "corrected":
+        zt = [(getattr(vp, f"m_u_{c}") * vp.g + getattr(vp, f"k_{c}") * getattr(vp, f"xsi_{c}")) / vp.kt
+              for c in ("fl", "fr", "rl", "rr")]
+    else:
+        zt = [vp.Wfl0 / vp.kt, vp.Wfr0 / vp.kt, vp.Wrl0 / vp.kt, vp.Wrr0 / vp.kt]
     return np.vstack([vx / vp.Rw_f, vx / vp.Rw_f, vx / vp.Rw_r, vx / vp.Rw_r,
                       z0, z0, z0, z0, z0, z0, z0, z0, z0, z0,
-                      (vp.Wfl0 / vp.kt) * np.ones(n), (vp.Wfr0 / vp.kt) * np.ones(n),
-                      (vp.Wrl0 / vp.kt) * np.ones(n), (vp.Wrr0 / vp.kt) * np.ones(n)])
+                      zt[0] * np.ones(n), zt[1] * np.ones(n), zt[2] * np.ones(n), zt[3] * np.ones(n)])
 
 
 def lon_model(ctx, tier):
@@ -132,7 +142,8 @@ def lon_model(ctx, tier):
              LIFT (f_lift = q Cl v^2 adds to the axle loads; DATA_AA Cl < 0)
       'm23'  vehModel at the static wing angles: M = vp.ms, four wheels,
              c0 = f (ms + 4 mus) g, c2 = q (Cd - f Cl); equal to the QSS envelope's
-             M / c_res0 / c_res2 with load_model='vehModel'"""
+             M / c_res0 / c_res2 with load_model='vehModel'. With ctx.physics ==
+             'corrected': M = vp.m, c0 = f m g (same match with the corrected envelope)"""
     vp = ctx.vp
     q = 0.5 * vp.rho * vp.A
     if tier == "m7":
@@ -144,7 +155,7 @@ def lon_model(ctx, tier):
     if tier == "m23":
         from functions.ggv import aero_coefficients, _load_basis
         ac = aero_coefficients(vp, getattr(ctx, "aero", None))
-        M, Fz_f0, Fz_r0, _, _ = _load_basis(vp, ac, "vehModel")
+        M, Fz_f0, Fz_r0, _, _ = _load_basis(vp, ac, "vehModel", getattr(ctx, "physics", "matlab"))
         return dict(M=float(M), n_wheels=4, c0=float(vp.f * (Fz_f0 + Fz_r0)),
                     c2=float(q * (ac["Cd"] - vp.f * ac["Cl"])), c_drag=float(q * ac["Cd"]))
     raise ValueError(f"lon_model: tier must be 'm7' or 'm23', got {tier!r}")
@@ -303,12 +314,13 @@ def seed_m23(ctx, m, disc, prof, input_keys):
                TW 0 (warmstart._NEUTRAL_INPUT, as warmstart_guesses); delta 0"""
     vp, pt = ctx.vp, ctx.pt
     e = float(ctx.OPT_e)
+    phys = getattr(ctx, "physics", "matlab")
     lon = lon_model(ctx, "m23")
 
     def rule(s):
         v, ax = _profile_at(prof, s)
         E = np.full(v.size, e)
-        return np.vstack([v, E, E, E, np.zeros(v.size), quasi_static_states(vp, v)]), v, ax
+        return np.vstack([v, E, E, E, np.zeros(v.size), quasi_static_states(vp, v, phys)]), v, ax
 
     Xk, v, ax = rule(disc["s_knot"])
     Xc = rule(disc["s_col"])[0]
@@ -337,7 +349,7 @@ def seed_m23(ctx, m, disc, prof, input_keys):
     x_s = _vec(m.x_s)
 
     def rederive(j):                    # chassis rows quasi-static at a clipped end knot
-        rows_ = quasi_static_states(vp, [x0[0, j] * x_s[0]])[:, 0]
+        rows_ = quasi_static_states(vp, [x0[0, j] * x_s[0]], phys)[:, 0]
         x0[5:, j] = np.clip(rows_ / x_s[5:], _vec(m.x_min)[5:], _vec(m.x_max)[5:])
 
     _clip_ends(x0, m, getattr(ctx, "Xi", None), getattr(ctx, "Xf", None), e, rederive)

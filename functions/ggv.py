@@ -31,6 +31,9 @@ Loads     load_model='vehModel' (default) reproduces the quasi-steady vertical
               (the pitch balance acts on fzs, which already contains
               f_lift_i, so the Cl front/rear split only changes body attitude);
             * translational mass M = vp.ms (dvx/dvy divide by vp.ms).
+          With ctx.physics == 'corrected' (fix A1) the first and last quirk go: M = vp.m
+          and the tyre loads sum to vp.m*g (axle load = g*(unsprung axle mass + lever-rule
+          sprung share)); the rolling basis follows (c_res0 = f*m*g).
           load_model='nominal' is the textbook alternative: M = vp.m, static
           corner loads vp.Wfl0..Wrr0, aero split by Cl_front/Cl_rear.
 Transfer  First order, from the vehModel moment balances. Longitudinal:
@@ -256,13 +259,21 @@ def _bisect_fixed_point(fun, lo, hi, iters=_BISECT_ITERS):
     return lo
 
 
-def _load_basis(vp, aero_c, load_model):
-    """Mass, static axle loads, aero front fraction and pitch lever arm."""
+def _load_basis(vp, aero_c, load_model, physics="matlab"):
+    """Mass, static axle loads, aero front fraction and pitch lever arm.
+    physics='corrected' (A1) puts the 'vehModel' basis on the corrected model: translational
+    mass vp.m, axle loads g*(unsprung axle mass + lever-rule sprung share), so the tyre loads
+    sum to m*g (and the rolling basis c_res0 = f*m*g)."""
     g, L = vp.g, vp.l_f + vp.l_r
     if load_model == "vehModel":
-        M = vp.ms
-        Fz_f0 = 2.0 * vp.mus * g + vp.ms * g * vp.l_r / L
-        Fz_r0 = 2.0 * vp.mus * g + vp.ms * g * vp.l_f / L
+        if physics == "corrected":
+            M = vp.m
+            Fz_f0 = g * (vp.muf + vp.ms * vp.l_r / L)
+            Fz_r0 = g * (vp.mur + vp.ms * vp.l_f / L)
+        else:
+            M = vp.ms
+            Fz_f0 = 2.0 * vp.mus * g + vp.ms * g * vp.l_r / L
+            Fz_r0 = 2.0 * vp.mus * g + vp.ms * g * vp.l_f / L
         aero_front = vp.l_r / L
         # vehModel pitch lever arm  Rw - zt + ls,  ls = lsi - (xs - xsi),
         # evaluated at the static equilibrium (springs carry ms*g in the CG ratio)
@@ -306,7 +317,8 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     v = np.sort(np.asarray(v_grid, dtype=float).reshape(-1))
 
     L = vp.l_f + vp.l_r
-    M, Fz_f0, Fz_r0, aero_front, h_x = _load_basis(vp, aero_c, load_model)
+    M, Fz_f0, Fz_r0, aero_front, h_x = _load_basis(vp, aero_c, load_model,
+                                                   getattr(ctx, "physics", "matlab"))
 
     # ---- aero (vehModel sign convention: Cl < 0 is downforce) ----------------
     q = 0.5 * vp.rho * vp.A * v * v

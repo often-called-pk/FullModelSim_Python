@@ -46,8 +46,8 @@ def matlab_seed():
     looks up at call time and restores it on exit. Validation only: production code keeps its seed."""
     orig = _mltp.quasi_static_states
 
-    def seed(vp, vx):
-        out = orig(vp, vx)
+    def seed(vp, vx, physics="matlab"):
+        out = orig(vp, vx, physics)
         out[4:] = 1e-2                                  # rows 4-17 of the 18 = states 9-22; OPT_e (equal in both codes)
         return out
 

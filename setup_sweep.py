@@ -293,8 +293,9 @@ def nlp_signature(ctx, TyreModel="CombinedSlip"):
     return graph, scale
 
 
-def _vp_snapshot(base_ov, extra, data_dir, tyre_set):
+def _vp_snapshot(base_ov, extra, data_dir, tyre_set, physics="matlab"):
     c = Ctx()
+    c.physics = physics          # vehParams reads it: a corrected sweep snapshots the corrected vp
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         vehParams(c, data_dir=data_dir, vp_overrides={**base_ov, **extra}, tyre_set=tyre_set)
@@ -317,6 +318,7 @@ def _classify(specs, base_ov, cfg, kw, TyreModel, load_model, ds_fine, nlp):
     dict(circuit, vi, ni, AeroConfig, ATD, Electric_4Motors)."""
     t0 = time.perf_counter()
     data_dir, tyre_set = kw.get("data_dir", "Data"), kw.get("tyre_set", "MF205")
+    physics = kw.get("physics", "matlab")
 
     def octx(extra):
         c = Ctx()
@@ -331,7 +333,7 @@ def _classify(specs, base_ov, cfg, kw, TyreModel, load_model, ds_fine, nlp):
         t1 = time.perf_counter()
         info["base_graph_sha"], info["base_scale_sha"], info["nh"] = _nlp_probe(octx({}), TyreModel)
         info["t_nlp_probe_ms"].append(1e3 * (time.perf_counter() - t1))
-    snap0 = _vp_snapshot(base_ov, {}, data_dir, tyre_set)
+    snap0 = _vp_snapshot(base_ov, {}, data_dir, tyre_set, physics)
     flags = {}
     for f, lo, hi in specs:
         b = _field_value(base, f)
@@ -346,7 +348,7 @@ def _classify(specs, base_ov, cfg, kw, TyreModel, load_model, ds_fine, nlp):
             fl["graph_changed"] = g != info["base_graph_sha"]
             fl["scale_changed"] = s != info["base_scale_sha"]
             fl["nlp_live"] = bool(fl["graph_changed"] or fl["scale_changed"])
-        snap = _vp_snapshot(base_ov, {f: v}, data_dir, tyre_set)
+        snap = _vp_snapshot(base_ov, {f: v}, data_dir, tyre_set, physics)
         changed = sorted(k for k in set(snap) | set(snap0)
                          if k != f and (k not in snap or k not in snap0 or not _same(snap[k], snap0[k])))
         fl["phase2_free"] = not changed

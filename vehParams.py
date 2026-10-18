@@ -13,6 +13,8 @@ shipped set with MATLAB 'Test'-case lateral coefficients (pKy4 = 0, i.e. zero
 cornering stiffness), kept for reproducing old results. ``vp_overrides`` are
 applied last, on top of either set.
 ``ctx.mf_overrides``: sorted mf keys ``vp_overrides`` changed vs the base set ([] if none).
+``ctx.physics`` (set by userOpts, default "matlab"): "corrected" adds m_u_fl..rr and
+re-derives Wfl0..Wrr0, xsi_*, xti_*, lsi_* by the lever rule; "matlab" keeps the MATLAB values.
 """
 import os
 import warnings
@@ -171,6 +173,19 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
     vp.lsi_fr = vp.hcg - (vp.Rw - vp.xti_fr)
     vp.lsi_rl = vp.hcg - (vp.Rw - vp.xti_rl)
     vp.lsi_rr = vp.hcg - (vp.Rw - vp.xti_rr)
+
+    if getattr(ctx, "physics", "matlab") == "corrected":
+        # A1, physics='corrected' only (the lines above stay as MATLAB has them): per-corner unsprung
+        # mass m_u_i, and static corner load / spring preload by the lever rule (the front axle
+        # carries ms*l_r/l, MATLAB's xsi uses l_f); the deflections follow.
+        for c in ("fl", "fr", "rl", "rr"):
+            m_axle, share = (vp.muf, vp.l_r / vp.l) if c[0] == "f" else (vp.mur, vp.l_f / vp.l)
+            W0 = vp.g * (m_axle / 2 + vp.ms * share / 2)
+            setattr(vp, f"m_u_{c}", m_axle / 2)
+            setattr(vp, f"W{c}0", W0)
+            setattr(vp, f"xsi_{c}", vp.g * vp.ms * share / (2 * getattr(vp, f"k_{c}")))
+            setattr(vp, f"xti_{c}", W0 / vp.kt)
+            setattr(vp, f"lsi_{c}", vp.hcg - (vp.Rw - W0 / vp.kt))
 
     # ---- aerodynamics (DATA_AA overwrites Cd/Cl when present) -------------
     aa_path = os.path.join(data_dir, "DATA_AA.mat")
