@@ -13,7 +13,7 @@ Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``
 ``m.TyreModel`` also selects MLTP.build_path_constraints' row set, as in MLTP.m.
 ``ctx.physics`` (userOpts; "matlab" default) selects the equations: "matlab" keeps the inherited
 vehModel.m terms bit for bit, "corrected" applies the opt-in fixes of docs/laptime_sim_improvements.md
-section A (per-corner unsprung mass, planar mass m, frame-consistent body equations so far).
+section A (A1 mass bookkeeping, A2 suspension, A3 frame-consistent body equations, A4 aero load path so far).
 
 There are NO aux variables (ny = 0): the load transfers are produced by the
 suspension/tyre states, not by algebraic decision variables.
@@ -34,6 +34,22 @@ def _poly(coeffs, x, powers):
     for i, p in enumerate(powers):
         out = out + float(coeffs[i]) * x**p
     return out
+
+
+# physics="corrected" (A2): smooth bump and rebound stops on the strut travel xs [m, > 0 = compression]
+# replace MATLAB's hard cap, force zeroing and wheel-torque cutoff.
+# ponytail: fixed constants, promote to vp primaries when stop tuning matters
+BUMP_GAP, REBOUND_GAP, K_STOP, W_STOP = 0.075, 0.05, 1e6, 0.002
+
+
+def _softplus(z):
+    """log(1 + exp(z)); z itself above 30, so exp cannot overflow."""
+    return ca.if_else(z > 30, z, ca.log1p(ca.exp(z)))
+
+
+def _stop_force(xs):
+    """Bump (xs > BUMP_GAP) minus rebound (xs < -REBOUND_GAP) stop force on the body [N]."""
+    return K_STOP * W_STOP * (_softplus((xs - BUMP_GAP) / W_STOP) - _softplus((-xs - REBOUND_GAP) / W_STOP))
 
 
 def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
@@ -246,23 +262,37 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     xsrl_dot = wu_rl - (+vp.l_r * thetadot + (vp.t/2) * phidot + zsdot)
     xsrr_dot = wu_rr - (+vp.l_r * thetadot - (vp.t/2) * phidot + zsdot)
 
-    xs_fl = -(zs - vp.l_f * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
-    xs_fr = -(zs - vp.l_f * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
-    xs_rl = -(zs + vp.l_r * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
-    xs_rr = -(zs + vp.l_r * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
+    if phys == "corrected":
+        # A2: the strut runs from the body to the wheel, so its travel includes the tyre deflection
+        # (zt - xti), at small angles: xs_dot above is then the exact time derivative of xs. Smooth
+        # stops replace the hard cap and the force zeroing. A4: the aero downforce is no spring force
+        # (it acts on the body in dzsdot, dthetadot and dphidot below).
+        xs_fl = -(zs - vp.l_f * theta + (vp.t/2) * phi) - (zt_fl - vp.xti_fl)
+        xs_fr = -(zs - vp.l_f * theta - (vp.t/2) * phi) - (zt_fr - vp.xti_fr)
+        xs_rl = -(zs + vp.l_r * theta + (vp.t/2) * phi) - (zt_rl - vp.xti_rl)
+        xs_rr = -(zs + vp.l_r * theta - (vp.t/2) * phi) - (zt_rr - vp.xti_rr)
+        fzs_fl = vp.k_fl * (xs_fl + vp.xsi_fl) + vp.c_fl * xsfl_dot + _stop_force(xs_fl)
+        fzs_fr = vp.k_fr * (xs_fr + vp.xsi_fr) + vp.c_fr * xsfr_dot + _stop_force(xs_fr)
+        fzs_rl = vp.k_rl * (xs_rl + vp.xsi_rl) + vp.c_rl * xsrl_dot + _stop_force(xs_rl)
+        fzs_rr = vp.k_rr * (xs_rr + vp.xsi_rr) + vp.c_rr * xsrr_dot + _stop_force(xs_rr)
+    else:
+        xs_fl = -(zs - vp.l_f * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
+        xs_fr = -(zs - vp.l_f * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
+        xs_rl = -(zs + vp.l_r * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
+        xs_rr = -(zs + vp.l_r * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
 
-    def _cap(xs):
-        return ca.if_else(xs >= 0.075, 0.075, ca.if_else(xs <= -0.05, -0.05, xs))
-    xs_fl, xs_fr, xs_rl, xs_rr = _cap(xs_fl), _cap(xs_fr), _cap(xs_rl), _cap(xs_rr)
+        def _cap(xs):
+            return ca.if_else(xs >= 0.075, 0.075, ca.if_else(xs <= -0.05, -0.05, xs))
+        xs_fl, xs_fr, xs_rl, xs_rr = _cap(xs_fl), _cap(xs_fr), _cap(xs_rl), _cap(xs_rr)
 
-    fzs_fl = vp.k_fl * (xs_fl + vp.xsi_fl) + vp.c_fl * xsfl_dot + f_lift_fl
-    fzs_fr = vp.k_fr * (xs_fr + vp.xsi_fr) + vp.c_fr * xsfr_dot + f_lift_fr
-    fzs_rl = vp.k_rl * (xs_rl + vp.xsi_rl) + vp.c_rl * xsrl_dot + f_lift_rl
-    fzs_rr = vp.k_rr * (xs_rr + vp.xsi_rr) + vp.c_rr * xsrr_dot + f_lift_rr
-    fzs_fl = ca.if_else(xs_fl >= 0.075, 0, fzs_fl)
-    fzs_fr = ca.if_else(xs_fr >= 0.075, 0, fzs_fr)
-    fzs_rl = ca.if_else(xs_rl >= 0.075, 0, fzs_rl)
-    fzs_rr = ca.if_else(xs_rr >= 0.075, 0, fzs_rr)
+        fzs_fl = vp.k_fl * (xs_fl + vp.xsi_fl) + vp.c_fl * xsfl_dot + f_lift_fl
+        fzs_fr = vp.k_fr * (xs_fr + vp.xsi_fr) + vp.c_fr * xsfr_dot + f_lift_fr
+        fzs_rl = vp.k_rl * (xs_rl + vp.xsi_rl) + vp.c_rl * xsrl_dot + f_lift_rl
+        fzs_rr = vp.k_rr * (xs_rr + vp.xsi_rr) + vp.c_rr * xsrr_dot + f_lift_rr
+        fzs_fl = ca.if_else(xs_fl >= 0.075, 0, fzs_fl)
+        fzs_fr = ca.if_else(xs_fr >= 0.075, 0, fzs_fr)
+        fzs_rl = ca.if_else(xs_rl >= 0.075, 0, fzs_rl)
+        fzs_rr = ca.if_else(xs_rr >= 0.075, 0, fzs_rr)
 
     fzt_fl = zt_fl * vp.kt
     fzt_fr = zt_fr * vp.kt
@@ -508,10 +538,6 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
             T_fr = ATD_FR*T_motor*vp.gear + ATD_FR*T_brake*2
             T_rl = ATD_RL*T_motor*vp.gear + ATD_RL*T_brake*2
             T_rr = ATD_RR*T_motor*vp.gear + ATD_RR*T_brake*2
-        T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
-        T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
-        T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
-        T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
         P_motor = T_motor * Om_motor
         Om_motor_each = P_motor_each = None
     else:
@@ -521,13 +547,14 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
         T_fr = T_motor_fr*vp.gear + T_brake*vp.brkB
         T_rl = T_motor_rl*vp.gear + T_brake*(1 - vp.brkB)
         T_rr = T_motor_rr*vp.gear + T_brake*(1 - vp.brkB)
+        P_motor_fl = T_motor_fl*Om_motor_fl; P_motor_fr = T_motor_fr*Om_motor_fr
+        P_motor_rl = T_motor_rl*Om_motor_rl; P_motor_rr = T_motor_rr*Om_motor_rr
+        Om_motor = P_motor = None
+    if phys != "corrected":      # MATLAB: a strut at the bump gap cuts its wheel torque (A2: smooth stops instead)
         T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
         T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
         T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
         T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
-        P_motor_fl = T_motor_fl*Om_motor_fl; P_motor_fr = T_motor_fr*Om_motor_fr
-        P_motor_rl = T_motor_rl*Om_motor_rl; P_motor_rr = T_motor_rr*Om_motor_rr
-        Om_motor = P_motor = None
 
     # ===================== change of variable & derivatives ===============
     sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
@@ -560,10 +587,18 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
         dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
                   - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
     dtheta = thetadot * sf
-    dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
-                 - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y
+    if phys == "corrected":      # A4: the downforce acts on the body: nose-down and left-side-down moments
+        dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r - (fzs_fl + fzs_fr)*vp.l_f
+                     + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r) * sf / vp.I_y
+    else:
+        dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
+                     - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y
     dphi = phidot * sf
-    dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t) * sf / vp.I_x
+    if phys == "corrected":
+        dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t
+                   - (f_lift_fl + f_lift_rl - f_lift_fr - f_lift_rr)*0.5*vp.t) * sf / vp.I_x
+    else:
+        dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t) * sf / vp.I_x
     if phys == "corrected":      # A1: each corner carries its own unsprung mass (muf/2, mur/2)
         mu_fl, mu_fr, mu_rl, mu_rr = vp.m_u_fl, vp.m_u_fr, vp.m_u_rl, vp.m_u_rr
     else:                        # MATLAB: every corner subtracts the TOTAL unsprung mass

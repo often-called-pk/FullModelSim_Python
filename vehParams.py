@@ -13,8 +13,9 @@ shipped set with MATLAB 'Test'-case lateral coefficients (pKy4 = 0, i.e. zero
 cornering stiffness), kept for reproducing old results. ``vp_overrides`` are
 applied last, on top of either set.
 ``ctx.mf_overrides``: sorted mf keys ``vp_overrides`` changed vs the base set ([] if none).
-``ctx.physics`` (set by userOpts, default "matlab"): "corrected" adds m_u_fl..rr and
-re-derives Wfl0..Wrr0, xsi_*, xti_*, lsi_* by the lever rule; "matlab" keeps the MATLAB values.
+``ctx.physics`` (set by userOpts, default "matlab"): "corrected" adds m_u_fl..rr and m_c_fl..rr,
+re-derives Wfl0..Wrr0, xsi_*, xti_*, lsi_* by the lever rule and c_* = 2 zeta sqrt(k m_c);
+"matlab" keeps the MATLAB values.
 """
 import os
 import warnings
@@ -178,10 +179,15 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
         # A1, physics='corrected' only (the lines above stay as MATLAB has them): per-corner unsprung
         # mass m_u_i, and static corner load / spring preload by the lever rule (the front axle
         # carries ms*l_r/l, MATLAB's xsi uses l_f); the deflections follow.
+        # A2: sprung corner mass m_c_i, and the damper rate c_i = 2 zeta sqrt(k m_c) (MATLAB has
+        # zeta 2 sqrt(m_eff/2) k, stiffness outside the root).
         for c in ("fl", "fr", "rl", "rr"):
             m_axle, share = (vp.muf, vp.l_r / vp.l) if c[0] == "f" else (vp.mur, vp.l_f / vp.l)
             W0 = vp.g * (m_axle / 2 + vp.ms * share / 2)
+            m_c = vp.ms * share / 2
             setattr(vp, f"m_u_{c}", m_axle / 2)
+            setattr(vp, f"m_c_{c}", m_c)
+            setattr(vp, f"c_{c}", 2 * getattr(vp, f"zeta_{c}") * np.sqrt(getattr(vp, f"k_{c}") * m_c))
             setattr(vp, f"W{c}0", W0)
             setattr(vp, f"xsi_{c}", vp.g * vp.ms * share / (2 * getattr(vp, f"k_{c}")))
             setattr(vp, f"xti_{c}", W0 / vp.kt)

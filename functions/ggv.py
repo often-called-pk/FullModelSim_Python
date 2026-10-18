@@ -33,7 +33,9 @@ Loads     load_model='vehModel' (default) reproduces the quasi-steady vertical
             * translational mass M = vp.ms (dvx/dvy divide by vp.ms).
           With ctx.physics == 'corrected' (fix A1) the first and last quirk go: M = vp.m
           and the tyre loads sum to vp.m*g (axle load = g*(unsprung axle mass + lever-rule
-          sprung share)); the rolling basis follows (c_res0 = f*m*g).
+          sprung share)); the rolling basis follows (c_res0 = f*m*g). With fix A4 the
+          second goes too: the downforce acts on the body and reaches the axles through
+          the springs, in the Cl_front / Cl split (as load_model='nominal').
           load_model='nominal' is the textbook alternative: M = vp.m, static
           corner loads vp.Wfl0..Wrr0, aero split by Cl_front/Cl_rear.
 Transfer  First order, from the vehModel moment balances. Longitudinal:
@@ -261,20 +263,22 @@ def _bisect_fixed_point(fun, lo, hi, iters=_BISECT_ITERS):
 
 def _load_basis(vp, aero_c, load_model, physics="matlab"):
     """Mass, static axle loads, aero front fraction and pitch lever arm.
-    physics='corrected' (A1) puts the 'vehModel' basis on the corrected model: translational
+    physics='corrected' puts the 'vehModel' basis on the corrected model: (A1) translational
     mass vp.m, axle loads g*(unsprung axle mass + lever-rule sprung share), so the tyre loads
-    sum to m*g (and the rolling basis c_res0 = f*m*g)."""
+    sum to m*g (and the rolling basis c_res0 = f*m*g); (A4) the downforce reaches the axles
+    through the springs in the Cl front / rear split, as in the 'nominal' basis."""
     g, L = vp.g, vp.l_f + vp.l_r
     if load_model == "vehModel":
         if physics == "corrected":
             M = vp.m
             Fz_f0 = g * (vp.muf + vp.ms * vp.l_r / L)
             Fz_r0 = g * (vp.mur + vp.ms * vp.l_f / L)
+            aero_front = aero_c["Cl_front"] / aero_c["Cl"]
         else:
             M = vp.ms
             Fz_f0 = 2.0 * vp.mus * g + vp.ms * g * vp.l_r / L
             Fz_r0 = 2.0 * vp.mus * g + vp.ms * g * vp.l_f / L
-        aero_front = vp.l_r / L
+            aero_front = vp.l_r / L
         # vehModel pitch lever arm  Rw - zt + ls,  ls = lsi - (xs - xsi),
         # evaluated at the static equilibrium (springs carry ms*g in the CG ratio)
         S_f, S_r = 0.5 * vp.ms * g * vp.l_r / L, 0.5 * vp.ms * g * vp.l_f / L
