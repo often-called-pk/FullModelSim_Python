@@ -69,7 +69,7 @@ default because the SX graph is large (peak commit ~8 GB at BCN N=465).
 Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (29 today) are plain scripts whose assertions run at module top level (no
+files (33 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -99,7 +99,11 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_ladder.py`: `functions/ladder.py` (ladder registry, `homotopy_schedule`, exact-mu `friction_overrides`, the longitudinal torque rules, `qss_profile` = the screen's march, `seed_m7` / `seed_m23` on the real model scales across configs and meshes incl. the Xi-box clip) and the wiring: `MLTP_initial(seed='const')` guesses bit-identical to the legacy constants, `MLTP(ladder=...)` / `MLTP(homotopy=...)` with stand-ins, one real Sturn solve capped at `max_iter=5` (~17 s; sections 4-10 need casadi + `Data/DATA_AA.mat`)
 - `test_setup_sweep.py`: `setup_sweep.py`, `functions/sweep.py` and `MLTP_screen.screen_batch` (Sobol/LHS design, shortlist, bridges, rank metrics, `screen_batch == screen_sweep` exactly incl. a worker pool, a casadi-blocked child run, field classification; section 5 is a ~1 min real Sturn mini-sweep in a child process: hub check at 0 iterations, resume, determinism, `SweepError`s)
 - `test_vehmodel_matlab.py`: `vehModel.py` vs `vehModel.m` reference values and the inherited model quirks (casadi + `Data/DATA_AA.mat`)
-- `test_matlab_parity.py`: MATLAB parity gates against stored MATLAB exports in `tests/data/` (section 1: parameter dump of Sturn ds30, BCN and NBR ds10, only hit the dormant CG_p table; section 2: 23-state NLP bounds exact, f and g within 1e-10 at the MATLAB start point, a random point and the MATLAB solution, Sturn N=18 at IPOPT max_iter 0; casadi + `Data/DATA_AA.mat`, no solve)
+- `test_matlab_parity.py`: MATLAB parity gates against stored MATLAB exports in `tests/data/` (section 1: parameter dump of Sturn ds30, BCN and NBR ds10, no hit since the CG_p table port of 2026-10-18; section 2: 23-state NLP bounds exact, f and g within 1e-10 at the MATLAB start point, a random point and the MATLAB solution, Sturn N=18 at IPOPT max_iter 0; casadi + `Data/DATA_AA.mat`, no solve)
+- `test_physics_flag.py`: `userOpts(physics=...)` values, the `_physCorrected` result stem, `data.physics` in the QSS record
+- `test_physics_mass_frame.py`: corrected A1/A3 vs matlab: static equilibrium (shift-free tyre), planar mass `m` vs `ms`, no attitude gravity or Euler terms, QSS Sturn lap +7..13%, corrected seed equilibrium
+- `test_physics_suspension_aero.py`: corrected A2/A4: damper formula, `xsdot` = d(xs)/dt, vertical modes (max|eig| < 2000 1/s, a 1-4 Hz body mode), smooth stops, no downforce in `fzs`, pitch sign, QSS Cl split
+- `test_physics_em4_kinematics.py`: corrected A5/A6: EM4 `Om_motor = gear*Om` (model and QSS), toe indices, `Steering` / `CamberGain` options, CG_p table, table extrapolation as `linear_interp.m`
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -327,10 +331,12 @@ is generated analytically by `_synthetic_curvature` (`Straight`, `Hairpin`, `Stu
 Other kwargs: `vp_overrides` (vehParams primaries + Pacejka coefficients), `tyre_set` (default
 `'MF205'`; `'CopyB'` is the legacy set, see the tyre bullet), `OPT_ds` / `OPT_d` / `OPT_e`, `mesh`
 (default `'auto'`, see Collocation mesh) / `mesh_opts`, `max_iter` / `tol`, `linear_solver` /
-`hsl_dir`, `cse` / `jit` (opt-in), `screening`, and `ipopt_overrides` (dict of any IPOPT options,
+`hsl_dir`, `cse` / `jit` (opt-in), `screening`, `physics` (`'matlab'` default | `'corrected'`, see the physics
+bullet), `Steering` (`'NA'` | `'Ackermann'`) / `CamberGain` (`'Off'` | `'Linear'` | `'Table'`), and `ipopt_overrides` (dict of any IPOPT options,
 merged last so it beats every default, the screening preset and the warm-start recipe; a non-exact
 `hessian_approximation` warns). Kept on `ctx.mesh` (resolved), `ctx.mesh_requested`,
-`ctx.mesh_opts`, `ctx.tyre_set`, `ctx.screening`, `ctx.ipopt_overrides`, `ctx.cse`, `ctx.jit`.
+`ctx.mesh_opts`, `ctx.tyre_set`, `ctx.screening`, `ctx.ipopt_overrides`, `ctx.cse`, `ctx.jit`, `ctx.physics`,
+`ctx.Steering`, `ctx.CamberGain` (`vehModel(ctx)` reads the last two when its arguments are None).
 
 ### Helpers (`functions/`)
 - **Solver-side:** `collocation.py` (Legendre points/coeffs; CasADi-native with a numpy fallback),
@@ -427,6 +433,22 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   = 26.0 kN, not `m*g` = 20.5 kN; planar dynamics use `ms`); the front/rear Cl split does not move steady axle
   loads (aero reaches them in `l_r/l`, only attitude changes); with ATD On `brkB`/`Tdist` are inert. Open Python
   deviation: active-aero inputs are live (dead in `vehModel.m`).
+- **Physics flag (2026-10-18, pinned by `tests/test_physics_*.py`).** `userOpts(physics='matlab' | 'corrected')`.
+  Default `'matlab'` = the MATLAB physics above, bit for bit (serialized SX graph hash checked in 10+ configs, parity
+  gates green). `'corrected'` (opt-in) fixes the inherited physics, items A1-A6 of `docs/laptime_sim_improvements.md`:
+  A1 per-corner unsprung mass `muf/2`, `mur/2`, planar equations over `m`, lever-rule static loads; A2 damper
+  `c = 2*zeta*sqrt(k*m_corner)`, spring to the wheel (small-angle `xs` incl. wheel travel, so `xsdot` is exact), smooth
+  bump/rebound stops (`vehModel.BUMP_GAP`, `REBOUND_GAP`, `K_STOP`, `W_STOP`), no torque cutoff; A3 no body-attitude
+  gravity or Euler terms on a flat road; A4 downforce through the springs plus aero pitch/roll moments; A5 EM4
+  `Om_motor = Om*gear`; A6 toe indices. All as python `if` branches. The QSS envelope (`_load_basis(..., physics)`,
+  EM4 limits) and the ladder seeds (`quasi_static_states(vp, vx, physics)`) follow the flag. Results get the
+  `_physCorrected` stem and `data.physics`. Corrected vertical modes: heave 1.9 Hz zeta 0.53, roll 3.0 Hz zeta 0.57,
+  pitch 5.2 Hz zeta 0.35, max|eig| 191 1/s (matlab 2.7e4). Measured (Linux, MUMPS, cold): Sturn 18.019 -> 20.024 s
+  (+11.1%, 152 -> 218 iterations), BCN 116.444 -> 130.035 s (+11.7%, 207 -> 179 iterations); QSS forecast +10.0% /
+  +11.1%. Watch: the body sits 9.4 mm low at 60 m/s under corrected, the start box holds zs to +-OPT_e = 10 mm, so
+  vi above ~62 m/s makes the start infeasible (fix = item B1, rolling start). Not in the GUI / cfg.json yet. Skipped:
+  per-motor ratings, gear as a setup field, regen, drag pitch moment. `Steering` / `CamberGain` are now `userOpts`
+  kwargs (both physics); the CG_p table is ported, and `_linear_interp` extrapolates as `linear_interp.m`.
 - **23-state NLP constraint set matches `MLTP.m` (fixed 2026-10-04, pinned by `test_mltp_constraints.py`).**
   Two port gaps were closed. (1) The input-rate bounds are divided by `u_s` (`m.duk_lb/ub`, as `vehModel.m`
   L377-379 and the 7-state model do). Before, the physical Nm/s, rad/s and deg/s values bounded the normalised

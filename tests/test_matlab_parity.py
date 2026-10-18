@@ -11,7 +11,7 @@ copy (validation/matlab_batch.py export; the shipped IPOPT options are the ones 
     python validation/matlab_batch.py export --circuit BCN --opt-ds 10 --out tests\\data
 
 Tracks: Sturn at OPT_ds 30, BCN and NBR at OPT_ds 10 (the MATLAB default). Floats rel 1e-12, ints and strings
-exact. The only expected hit is the dormant camber-gain pitch table. Needs casadi and Data/DATA_AA.mat
+exact. No hit is expected since the camber-gain pitch table port (2026-10-18). Needs casadi and Data/DATA_AA.mat
 (prints SKIP and exits 0 otherwise).
 
 Section 2 is validation gate 2 (docs section 5): the Python NLP built at IPOPT max_iter 0 (validation/py_export.nlp,
@@ -72,7 +72,7 @@ for circuit, ds, N, track_sha in CASES:
        mat["ipopt"]["tol"] == 1e-8 and mat["ipopt"]["acceptable_tol"] == 1e-6 and mat["ipopt"]["max_iter"] == 6000
        and "linear_solver" not in mat["ipopt"] and "mu_strategy" not in mat["ipopt"])
     ok(f"{circuit}: steering u_s is pi/8 in both codes", mat["u_s"][-1] == math.pi / 8 == py["u_s"][-1])
-    ok(f"{circuit}: no hit but the expected one", {k for k, _ in hits} == EXPECTED)
+    ok(f"{circuit}: no hit", {k for k, _ in hits} == EXPECTED)
     ok(f"{circuit}: Python-only IPOPT keys are print_timing_statistics only", [k for k, _ in info] == ["ipopt.print_timing_statistics"])
     if circuit == "Sturn":                  # the diff must see a real difference and ignore rounding noise
         bad = copy.deepcopy(py)

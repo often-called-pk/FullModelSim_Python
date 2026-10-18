@@ -10,6 +10,22 @@ Compiled 17 October 2026 from `docs/lap_time_simulation_literature.md` and a rev
 - **Evidence.** No NLP solve ran during the review. The numbers come from stored results, stored multipliers and the QSS screener. Treat them as estimates until an NLP run checks them.
 - **Outcome.** 21 items passed all three checks, 11 passed two, and 6 failed two. This list keeps 30 items, some of them merged or narrowed. The section "Skipped for now" holds the rest, each with a trigger.
 
+## Status on 18 October 2026
+
+Items A1 to A6 are built on branch `physics-fixes`, behind the opt-in flag `physics='corrected'`. The default `physics='matlab'` keeps the MATLAB behaviour bit for bit, and the parity gates stay green. All 33 test files pass on Linux.
+
+| Circuit | `physics='matlab'` | `physics='corrected'` | Change | QSS forecast |
+|---|---|---|---|---|
+| Sturn | 18.019 s, 152 iterations | 20.024 s, 218 iterations | +11.1% | +10.0% |
+| BCN | 116.444 s, 207 iterations | 130.035 s, 179 iterations | +11.7% | +11.1% |
+
+The runs used MUMPS on Linux, from a cold start. The default BCN lap matches the Windows ma57 baseline within 0.2 ms.
+
+Two limits remain:
+
+- With `physics='corrected'` the body sits 9.4 mm low at 60 m/s. The start box allows 10 mm, so a start speed above about 62 m/s makes the start infeasible. Item B1 removes this limit.
+- A5 changes only the motor speed. The per-motor ratings, the gear as a setup field and regenerative braking are still open. A4 has no drag pitch moment yet.
+
 ## Read this first: parity is not physics
 
 The MATLAB validation of 7 and 8 October 2026 proved port fidelity. The parameters, the NLP functions and the laps agree within 0.01%. That validation did not check the physics of the original.
