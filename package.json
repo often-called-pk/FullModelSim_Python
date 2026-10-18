@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@casadi/casadi-wasm": "^3.8.1"
+  }
+}
