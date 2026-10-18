@@ -101,7 +101,7 @@ META = {
     "f": ParamMeta("Rolling resistance", "", "Rolling-resistance coefficient", 0.0, 0.1, 0.001, 4),
     "kt": ParamMeta("Tyre vert. stiffness", "N/m", "Tyre vertical stiffness", 0.0, 1.0e6, 1000.0, 1),
     "Fz0": ParamMeta("Nominal tyre load", "N", "Pacejka nominal vertical load", 0.0, 20000.0, 50.0, 1),
-    "Fz0_shift": ParamMeta("Nominal load shift", "", "Scale on nominal load Fz0", 0.0, 5.0, 0.05, 4),
+    "Fz0_shift": ParamMeta("Nominal load shift", "", "Load scale into the tyre (fz / Fz0_shift); MLTP_TyreOptim also scales Fz0", 0.0, 5.0, 0.05, 4),
     # Suspension stiffness
     "k_fl": ParamMeta("Spring rate FL", "N/m", "Front-left spring rate", 0.0, 300000.0, 1000.0, 1),
     "k_fr": ParamMeta("Spring rate FR", "N/m", "Front-right spring rate", 0.0, 300000.0, 1000.0, 1),

@@ -46,7 +46,7 @@ from MLTP_initial import MLTP_initial
 def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
                     warm_start=None, AeroConfig="Static", ATD="On",
                     Electric_4Motors="Off", save=True, results_dir="Results",
-                    warm_start_duals=True, **useropts_kwargs):
+                    warm_start_duals=True, Fz0_follows_shift=False, **useropts_kwargs):
     """Solve the MLTP with the given design parameters promoted to decision
     variables. ``param_specs`` is a list of (vp_field_name, lower, upper).
     Returns ctx with ctx.data (including ctx.data.optimal_params) and
@@ -75,7 +75,11 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     ``start_state`` (a userOpts kwarg) works as in MLTP, except that 'rolling' raises
     ValueError: its start equilibrium depends on the design parameters. data.start_state and
     data.Xi record the start box. ``n_bounds`` (a userOpts kwarg) works as in MLTP: the result
-    saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag."""
+    saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag.
+
+    ``Fz0_follows_shift=True`` (only MLTP_TyreOptim passes it) multiplies vp.Fz0 by Fz0_shift
+    before it builds the model, as MLTP_TyreOptim.m:128 does. MLTP_paramOptim and the setup_sweep
+    finish keep Fz0 fixed, as MLTP.m and MLTP_paramOptim.m do."""
     t0 = time.time()
     elapsed = {}
     ctx = Ctx()
@@ -96,6 +100,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         p_x0.append(x0_val); p_names.append(field)
     P = ca.vertcat(*P_syms)
     nP = len(p_names)
+    if Fz0_follows_shift:       # MLTP_TyreOptim.m:128: vp.Fz0 = 4905*vp.Fz0_shift before vehModel
+        vp.Fz0 = vp.Fz0 * vp.Fz0_shift
 
     def _init7():
         """The 7-state init solve (warm_start=None, or a refused full result)."""
