@@ -155,6 +155,17 @@ PHYSICS = ("matlab", "corrected")
 STEERING = ("NA", "Ackermann")
 CAMBER_GAIN = ("Off", "Linear", "Table")
 
+# userOpts(start_state=...) sets how the lap starts. The check is case-sensitive.
+#   'matlab'   (default) the MATLAB start box: vx = vi, vy = 0, heave / pitch / roll = 0,
+#              the rest free.
+#   'rolling'  r = 0 and a narrow box (ROLL_TOL) around the straight-line coast
+#              equilibrium on rows 9-22. MLTP fills the rows from the model.
+#   'periodic' free start. The end state and input equal the start (flying lap).
+#              Closed circuits only (CLOSED_CIRCUITS).
+START_STATES = ("matlab", "rolling", "periodic")
+ROLL_TOL = 1e-3  # ponytail: fixed chassis start-box half-width, promote to a kwarg when tuning matters
+CLOSED_CIRCUITS = ("BCN", "Jarama", "Spa", "NBR", "Circle")
+
 
 # ----------------------------------------------------------------------------- 
 # Rate-limit / regularisation table (the MATLAB 'c' struct)
@@ -259,12 +270,21 @@ def userOpts(ctx,
              ipopt_overrides=None,         # dict of IPOPT options merged in last (any option, per call)
              physics="matlab",             # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
              Steering="NA",                # 'NA' | 'Ackermann': front steering geometry (vehModel)
-             CamberGain="Off"):            # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
+             CamberGain="Off",             # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
+             start_state="matlab"):        # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
         raise ValueError(f"physics must be one of {list(PHYSICS)}, got {physics!r}")
     ctx.physics = physics
+
+    # ---- start state: checked before any work, like the physics flag
+    if start_state not in START_STATES:
+        raise ValueError(f"start_state must be one of {list(START_STATES)}, got {start_state!r}")
+    if start_state == "periodic" and circuit not in CLOSED_CIRCUITS:
+        raise ValueError(f"start_state='periodic' needs a closed circuit, one of "
+                         f"{list(CLOSED_CIRCUITS)}, got {circuit!r}")
+    ctx.start_state, ctx.periodic = start_state, start_state == "periodic"
 
     # ---- vehModel switches (checked here, read by vehModel through ctx)
     if Steering not in STEERING:
@@ -300,6 +320,14 @@ def userOpts(ctx,
 
     # ---- track ------------------------------------------------------------
     ctx.track = _load_track(circuit, circuits_dir)
+    tr = ctx.track
+    if ctx.periodic and getattr(tr, "x", None) is not None:
+        # Spa, NBR: the file stops one step short of the start. Close the lap with a
+        # sample at the start point so the periodic rows join the same position.
+        gap = float(np.hypot(tr.x[-1] - tr.x[0], tr.y[-1] - tr.y[0]))
+        if gap > 1e-3:
+            tr.s, tr.k = np.append(tr.s, tr.s[-1] + gap), np.append(tr.k, tr.k[0])
+            tr.x, tr.y = np.append(tr.x, tr.x[0]), np.append(tr.y, tr.y[0])
 
     # ---- boundary conditions ----------------------------------------------
     # state order x = [vx vy r n eps Om_fl Om_fr Om_rl Om_rr
@@ -319,6 +347,19 @@ def userOpts(ctx,
                        nan, nan, nan, nan, nan, nan,
                        nan, nan, nan, nan, nan, nan, nan, nan])
     ctx.Xf_init = np.array([vf, nan, nan, nan, nan, nan, nan])
+
+    # start_state variants. Xi_tol holds the half-width of the 23-state start box per state,
+    # in scaled units like OPT_e. None means OPT_e for every state. MLTP_initial does not use it.
+    ctx.Xi_tol = None
+    if start_state == "rolling":
+        # straight start: r = 0, wheels roll. Rows 1 and 5-22 are filled from the model by MLTP.
+        ctx.Xi[2] = ctx.Xi_init[2] = 0.0
+        ctx.Xi_init[5], ctx.Xi_init[6] = vi / vp.Rw_f, vi / vp.Rw_r
+        ctx.Xi_tol = np.r_[np.full(9, OPT_e), np.full(14, ROLL_TOL)]
+    elif start_state == "periodic":
+        # free start (only n if given): the NLP closes the lap with equality rows instead
+        ctx.Xi[:] = ctx.Xi_init[:] = nan
+        ctx.Xi[3] = ctx.Xi_init[3] = ni
 
     # ---- collocation options ----------------------------------------------
     ctx.OPT_ds = OPT_ds         # collocation step (m)

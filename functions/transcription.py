@@ -207,7 +207,7 @@ def _pad_last(M, ca):
 def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
                         disc, guesses, reg, duk_lb, duk_ub,
                         Xi, Xf, OPT_d, OPT_uinter, OPT_e, opts, param=None,
-                        sym_type=None, warm=None):
+                        sym_type=None, warm=None, Xi_tol=None, periodic=False):
     """Assemble and solve the collocation NLP. Mirrors the NLP sections of
     MLTP_initial.m / MLTP.m exactly.
 
@@ -238,13 +238,20 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
                        warm_start_init_point='yes').
               Entries of the wrong length / non-finite are skipped with a
               warning; duals are used only together with an accepted x0.
+    Xi_tol  : optional start-box half-widths, one per state, in scaled units like
+              OPT_e (None = OPT_e for every state). Only the start box (knot 0)
+              uses it. The end box keeps OPT_e. NaN entries of Xi stay free.
+    periodic: True adds nx + nu equality rows LAST in g, Xk[:, N] - Xk[:, 0] = 0
+              and Uk[:, N] - Uk[:, 0] = 0 (closed circuit, flying lap). The aux
+              variables Yk are not periodic. False adds no row.
     Returns : dict(sol, solver, N, nx, nu, ny, Xk, Uk, Yk, Xkj, dt_opt,
               sym_type, t_build, w_opt, lam_g, lam_x, n_w, n_g, structure,
               warm_info, linear_solver) -- t_build = NLP construction wall
               time [s] (entry -> just before the IPOPT call, incl. nlpsol
               creation); w_opt/lam_g/lam_x = numpy primal/dual solution;
-              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param} (what a
-              later solve must match to re-inject them); warm_info = which
+              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic}
+              (what a later solve must match to re-inject them). n_periodic is
+              nx + nu with periodic=True, else 0. warm_info = which
               warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
               linear_solver = the one actually used (after any HSL fallback).
               With env MLTP_KEEP_NLP=1 also nlp_fg (Function w -> (J, g)) and
@@ -300,8 +307,9 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
 
     # boundary bounds (NaN-ignoring, as MATLAB max/min)
     x_min, x_max = m.x_min, m.x_max
-    x0_min = np.fmax(x_min, Xi / x_s - OPT_e)
-    x0_max = np.fmin(x_max, Xi / x_s + OPT_e)
+    e0 = OPT_e if Xi_tol is None else np.asarray(Xi_tol, float).reshape(-1)   # start-box half-width
+    x0_min = np.fmax(x_min, Xi / x_s - e0)
+    x0_max = np.fmin(x_max, Xi / x_s + e0)
     xf_min = np.fmax(x_min, Xf / x_s - OPT_e)
     xf_max = np.fmin(x_max, Xf / x_s + OPT_e)
 
@@ -401,23 +409,30 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     ubw = np.vstack(ubw)
     w0 = np.vstack(w0)
 
+    # periodic lap: end state and end input equal the start, appended last to g
+    gper = [ca.vertcat(Xk[:, N] - Xk[:, 0], Uk[:, N] - Uk[:, 0])] if periodic else []
+    zper = [np.zeros((nx + nu, 1))] if periodic else []
+
     # assemble g and bounds
-    g = ca.vertcat(*gb, *gck, ghk, gduk)
+    g = ca.vertcat(*gb, *gck, ghk, gduk, *gper)
     lbg = np.vstack(lbg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_lb).reshape(-1, 1), (N + 1, 1))]
-                    + [np.tile(np.asarray(duk_lb).reshape(-1, 1), (N, 1))])
+                    + [np.tile(np.asarray(duk_lb).reshape(-1, 1), (N, 1))]
+                    + zper)
     ubg = np.vstack(ubg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_ub).reshape(-1, 1), (N + 1, 1))]
-                    + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))])
+                    + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))]
+                    + zper)
 
     nlp = {"f": J, "x": w, "g": g}
 
     # ---- structure record + optional primal/dual warm start ---------------
     n_w, n_g = int(w.size1()), int(g.size1())
     structure = dict(nx=int(nx), nu=int(nu), ny=int(ny), N=int(N), OPT_d=int(OPT_d),
-                     n_w=n_w, n_g=n_g, n_param=int(P.numel()) if has_param else 0)
+                     n_w=n_w, n_g=n_g, n_param=int(P.numel()) if has_param else 0,
+                     n_periodic=int(nx + nu) if periodic else 0)
     solve_kw = {}
     warm_info = dict(x0=False, lam_g0=False, lam_x0=False, ipopt=False, duals=False)
     if warm:

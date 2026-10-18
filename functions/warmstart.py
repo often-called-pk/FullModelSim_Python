@@ -35,7 +35,10 @@ import numpy as np
 
 # integer fields of the NLP structure record (n_param = number of static design
 # parameters appended to w by MLTP_paramOptim; 0 for a plain MLTP solve)
-STRUCT_KEYS = ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g", "n_param")
+# n_periodic = number of periodic-lap rows at the end of g (nx + nu with
+# start_state='periodic', else 0). A record without n_param or n_periodic (an older
+# result) counts it as 0.
+STRUCT_KEYS = ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g", "n_param", "n_periodic")
 
 # neutral seeds for input channels a source result does not have (as in
 # MLTP.warmstart_guesses: equal torque split, wings at 0)
@@ -72,15 +75,18 @@ def warm_start_ipopt_opts(mu_init=1e-6, push=1e-10):
     }
 
 
-def nlp_structure(nx, nu, ny, N, OPT_d, nh, n_param=0):
+def nlp_structure(nx, nu, ny, N, OPT_d, nh, n_param=0, n_periodic=0):
     """Sizes of the NLP that build_and_solve_nlp assembles:
     w = [Xk; Uk; (Yk); Xkj (; P)],
     g = [x0 bounds; xN bounds; (OPT_d+1)*nx defects per interval; nh path
-         constraints per knot; nu input-rate constraints per interval]."""
-    nx, nu, ny, N, d, nh, n_param = (int(v) for v in (nx, nu, ny, N, OPT_d, nh, n_param))
+         constraints per knot; nu input-rate constraints per interval
+         (; n_periodic rows closing the lap)]."""
+    nx, nu, ny, N, d, nh, n_param, n_periodic = (
+        int(v) for v in (nx, nu, ny, N, OPT_d, nh, n_param, n_periodic))
     n_w = (nx + nu + ny) * (N + 1) + nx * N * d + n_param
-    n_g = 2 * nx + (d + 1) * N * nx + nh * (N + 1) + nu * N
-    return dict(nx=nx, nu=nu, ny=ny, N=N, OPT_d=d, n_w=n_w, n_g=n_g, n_param=n_param)
+    n_g = 2 * nx + (d + 1) * N * nx + nh * (N + 1) + nu * N + n_periodic
+    return dict(nx=nx, nu=nu, ny=ny, N=N, OPT_d=d, n_w=n_w, n_g=n_g, n_param=n_param,
+                n_periodic=n_periodic)
 
 
 def get_field(obj, key, default=None):
@@ -132,17 +138,18 @@ def scaling_changed(saved, expected, rtol=1e-12):
 def structure_mismatch(saved, expected, s_atol=1e-6):
     """Reasons why `saved` cannot seed `expected` with its exact w / lam vectors.
 
-    Both are dicts with the STRUCT_KEYS integers and optionally `input_keys` and
-    `s_full` (the collocation grid: same N on another mesh puts the same w
-    entries at other track positions); these are compared only when present in
-    both. Setup values (vp / tyre parameters, vp_overrides) are deliberately NOT
-    part of the structure: a sweep re-injects across them.
+    Both are dicts with the STRUCT_KEYS integers (a missing n_param / n_periodic
+    counts as 0) and optionally `input_keys` and `s_full` (the collocation grid:
+    same N on another mesh puts the same w entries at other track positions);
+    these are compared only when present in both. Setup values (vp / tyre
+    parameters, vp_overrides) are deliberately NOT part of the structure: a
+    sweep re-injects across them.
     Returns [] when compatible, else a list of human-readable reasons."""
     if not saved:
         return ["no saved NLP structure"]
     reasons = []
     for k in STRUCT_KEYS:
-        dflt = 0 if k == "n_param" else None
+        dflt = 0 if k in ("n_param", "n_periodic") else None
         a, b = get_field(saved, k, dflt), get_field(expected, k, dflt)
         try:
             same = a is not None and b is not None and int(a) == int(b)
@@ -280,6 +287,10 @@ def plan_full_warm_start(src, expected, use_duals=True, ipopt_overrides=None):
     but not across a different tyre SET: when ``expected`` carries "tyre_set"
     (the target ctx.tyre_set) it must equal the source's data.tyre_set (absent =
     a pre-flip result = 'CopyB'); without the key the check is skipped.
+    When ``expected`` carries "start_state" it is compared with the source's
+    data.start_state (absent = 'matlab'). A difference refuses the multipliers
+    only: they price other start bounds or periodic rows. The primal is still
+    interpolated.
     Returns (warm, mode, note):
 
       None, "cold"                  the tyre sets differ: ``src`` is no usable
@@ -287,9 +298,10 @@ def plan_full_warm_start(src, expected, use_duals=True, ipopt_overrides=None):
                                     included (a CopyB seed sat in IPOPT
                                     restoration for 4000+ iterations on an
                                     MF205 target, a cold start needs 489)
-      None, "full-interp"           no saved NLP vectors, or the structure
-                                    differs: the caller uses s-interpolated
-                                    primal guesses only (no duals)
+      None, "full-interp"           no saved NLP vectors, the structure
+                                    differs, or the start_state differs: the
+                                    caller uses s-interpolated primal guesses
+                                    only (no duals)
       {x0}, "full-primal"           identical structure, use_duals=False:
                                     exact saved w_opt, cold IPOPT options
       {x0, lam_g0, lam_x0, ipopt},  identical structure: exact primal + duals
@@ -304,6 +316,13 @@ def plan_full_warm_start(src, expected, use_duals=True, ipopt_overrides=None):
             return None, "cold", (f"source result used tyre_set {have!r}, target is {want!r}; "
                                   "a different tyre set is not a usable warm start "
                                   "(primal-only included)")
+    start = get_field(expected, "start_state")
+    if start is not None:
+        have = str(get_field(src, "start_state", None) or "matlab").strip()
+        want = str(start).strip()
+        if have != want:
+            return None, "full-interp", (f"source result used start_state {have!r}, target is {want!r}; "
+                                         "its multipliers price other start bounds (primal interpolated only)")
     nlp = get_field(src, "nlp")
     if nlp is None:
         return None, "full-interp", "full result has no saved NLP vectors (data.nlp)"
