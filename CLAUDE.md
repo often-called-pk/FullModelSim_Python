@@ -507,7 +507,7 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   a feasible start. Corrected Sturn vi 67.9-69.5 m/s warns (box edge <= 68.5), a feasible point is likely,
   untested. At the default vi = 60 the warning also fires on other tracks (fake build, not solved). Margin = box
   edge 59 m/s minus the QSS limit (matlab / corrected). Jarama +0.6 / +8.5 m/s, BCN_S2 +4.9 / +9.0,
-  Circle +11.1 / +17.5 (curved start). Corrected only: Hairpin +1.7, ZigZag +1.8. Silent: Sturn, Spa, NBR, BCN.
+  Circle +11.1 / +17.5 (curved start). Corrected only: Hairpin +1.7, ZigZag and ZigZagMirror +1.8. Silent: Sturn, Spa, NBR, BCN.
   Only Sturn has a slack measurement (1.6 m/s). The old cold fragility
   (530 iterations, 18.61105 s) came from the seed. Its quasi-static rows 9-22 (rows 9-18 = 0, zt = W0/kt, no aero)
   miss the pinned start. Mechanism not isolated (likely the slow matlab chassis modes, tau 8-35 s). `_init_guesses` now

@@ -47,7 +47,8 @@ Open items:
   - Jarama: +0.6 m/s with the default physics, +8.5 m/s with `physics='corrected'`.
   - BCN_S2: +4.9 m/s with the default physics, +9.0 m/s with `physics='corrected'`.
   - Circle: +11.1 m/s with the default physics, +17.5 m/s with `physics='corrected'`. Circle has a curved start, so the straight-start warning also fires.
-  - Hairpin and ZigZag: +1.7 m/s and +1.8 m/s, only with `physics='corrected'`.
+  - Hairpin: +1.7 m/s, only with `physics='corrected'`.
+  - ZigZag and ZigZagMirror: +1.8 m/s each, only with `physics='corrected'`.
   - Sturn, Spa, NBR and BCN: no warning with either physics.
 - C6 part 2, the Magic Formula scaling factors, waits for the owner's sign-off, together with E3.
 - Stage M of D1, E1 and C2 is not built.
