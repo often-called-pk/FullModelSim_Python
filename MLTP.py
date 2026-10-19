@@ -406,7 +406,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         v_brk = float(qss_profile(ctx)["v_bwd"][0])
         lo = ctx.vi - ctx.Xi_tol[0] * m.x_s[0]
         if lo > v_brk:
-            warnings.warn(f"start_state='rolling': the vx start box begins at {lo:.1f} m/s. "
+            warnings.warn(f"start_state='rolling': the vx start box has its lower edge at {lo:.1f} m/s. "
                           f"This is above the QSS braking limit {v_brk:.1f} m/s at s = 0. "
                           "The NLP can be infeasible. If IPOPT does not converge, "
                           "use a lower vi or start_state='matlab'.")

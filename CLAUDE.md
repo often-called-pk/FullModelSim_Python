@@ -107,7 +107,7 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_track_qa.py`: `functions/track_qa.py` verdicts (`check_track` turning, closure, sign, spacing; `k_from_xy` on circles, an open arc, a stadium), load gate (error -> ValueError, else one warning), rebuilt Jarama + BCN sectors, BCN k untouched (one warning), BCNAssetto out of the registry, QSS lap pins on the rebuilt tracks
 - `test_output_channels.py`: E1: `m.ax = Lon_acc - vy*r`, `m.ay = Lat_acc + vx*r` (both physics, EM4 on/off), `data.vehicle` += `ax, ay, delta, Om_fl..Om_rr`, energy stored in Wh and shown in kWh, `plotSDI.accel_channels` (stored, derived for a pre-E1 result, or (None, None)), stored BCN RMS(vx*r)
 - `test_start_state.py`: `userOpts(start_state=...)` boxes (matlab unchanged, rolling `Xi_tol`, periodic closed circuits only + closing sample), start stems, `n_periodic` in the structure record and the warm-start planning, periodic rows + start box in a fake-solver build
-- `test_start_wiring.py`: `vehModel.rolling_start` (60 m/s coast equilibrium, variants, bounds, failures); start_state through `MLTP`, `MLTP_initial`, `optimise_design`, the refine passes, `setup_sweep._precheck_base`, the `MLTP_screen` stem; real builds with a fake solver (saved records, warm-start modes, plotSDI folder)
+- `test_start_wiring.py`: `vehModel.rolling_start` (60 m/s coast equilibrium, variants, bounds, failures); start_state through `MLTP`, `MLTP_initial`, `optimise_design`, the refine passes, `setup_sweep._precheck_base`, the `MLTP_screen` stem; real builds with a fake solver (saved records, warm-start modes, plotSDI folder). Section 12: braking-limit warning (text values, silent at vi 67.5), rolling seed rows 9-22 at the equilibrium, rows 0-8 and inputs = matlab-start seed
 - `test_track_width.py`: `userOpts(n_bounds=...)` forms + errors, `n_tag` stems, bounds at knots + collocation points (23- and 7-state), `n_bounds=4.0` == default, empty-start-box and corner-radius ValueErrors, `reconstruct_track` edges, full+duals warm start with a band, narrow-band continuity, periodic Spa arrays, `MLTP_screen` stem
 - `test_sensitivity.py`: `functions/sensitivity.py`: `nlp_index` rows of w and g, `limit_prices` (W start-row rule, torque, brake, power, start speed), `lateral_prices`, `costates`, prices of the stored results, KKT check on the rebuilt Sturn NLP, oracle (rebuilt Lagrangian differences == prices)
 - `test_tyreoptim_fz0.py`: C6: TyreOptim model at `Fz0_shift = S` == plain model with `Fz0 = 4905*S` (both physics), the coupling at S = 0.5, S = 1 exact, no coupling in `MLTP_paramOptim`
@@ -474,8 +474,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   +11.1%. Watch: the body sits 9.4 mm low at 60 m/s under corrected (12.8 mm at 70 m/s), and the matlab start box
   holds zs to +-OPT_e = 10 mm. The old claim "vi above ~62 m/s makes the start infeasible" is wrong: corrected Sturn
   at vi = 70 m/s converges (404 iterations, 20.18902 s) with zs(0) on the -10 mm box edge, so the car starts off its
-  equilibrium. Under corrected, a coast rolling start on Sturn reaches at most 68.5 m/s (two frontier solves). So
-  rolling at vi = 70 m/s is infeasible as posed (see the start-state bullet). Not in the GUI / cfg.json yet. Skipped:
+  equilibrium. Under corrected, two local frontier solves on Sturn (2 seeds, no global proof) put the highest coast
+  rolling vx(0) at about 68.5 m/s. Their rows 1-22 stay in the vi = 70 rolling box. So rolling at vi = 70 m/s is
+  infeasible as posed (see the start-state bullet). Not in the GUI / cfg.json yet. Skipped:
   per-motor ratings, gear as a setup field, regen, drag pitch moment. `Steering` / `CamberGain` are now `userOpts`
   kwargs (both physics); the CG_p table is ported, and `_linear_interp` extrapolates as `linear_interp.m`.
 - **Start state (2026-10-18, pinned by `tests/test_start_state.py`, `tests/test_start_wiring.py`).**
@@ -496,19 +497,25 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   order +0.197); periodic Circle cold 65, 21.71527 s, periodic residual 0; periodic BCN seeded 74, 116.91133 s (+0.467,
   forecast ~+0.3). Rolling start rows end on their box edges (rows 9-22 at +-1e-3, Om at +-2.8 rad/s).
   **B1 cause and fix (2026-10-19, pinned by `tests/test_start_wiring.py` section 12).** Corrected Sturn rolling at
-  vi = 70 m/s is infeasible as posed, not a solver or transcription bug. Two frontier solves (max vx(0), rows 1-22 in
-  the rolling box, 2 seeds) reach 68.50 / 68.53 m/s. The vx box edge is 69 m/s. With only the vx(0) box widened to
-  [59, 71], the cold solve converges (348 iterations, vx(0) 65.475 inside). The corrected matlab-start solve at vi = 70
-  converges only pre-braked, off the equilibrium (rear wheels locked, wu on the bounds). Rolling now warns ("braking
-  limit") when the vx box lower edge `vi - Xi_tol[0]*x_s[0]` (vi - 1 m/s) is above the QSS limit
-  `qss_profile(ctx)["v_bwd"][0]`. Sturn centreline limit: corrected 66.87 m/s, matlab 70.79 m/s. The solve still runs.
-  The QSS limit is ~1.6 m/s below the frontier, so the warning can fire for a feasible start. The old cold fragility
+  vi = 70 m/s is infeasible as posed, not a solver or transcription bug. Two local frontier solves (max vx(0), rows
+  1-22 in the rolling box, 2 seeds, no global proof) put vx(0) at 68.50 / 68.53 m/s. The vx box edge is
+  69 m/s. With only the vx(0) box widened to [59, 71], the cold solve converges (348 iterations, vx(0) 65.475
+  inside). The corrected matlab-start solve at vi = 70 converges only pre-braked, off the equilibrium (rear wheels
+  locked, wu on the bounds). Rolling now warns ("braking limit") when the vx box lower edge `vi - Xi_tol[0]*x_s[0]`
+  (vi - 1 m/s) is above the QSS limit `qss_profile(ctx)["v_bwd"][0]`. Sturn centreline limit: corrected 66.87 m/s,
+  matlab 70.79 m/s. The solve still runs. The QSS limit is ~1.6 m/s below the frontier, so the warning can fire for
+  a feasible start. Corrected Sturn vi 67.9-69.5 m/s warns (box edge <= 68.5), a feasible point is likely,
+  untested. At the default vi = 60 the warning also fires on other tracks (fake build, not solved). Margin = box
+  edge 59 m/s minus the QSS limit (matlab / corrected). Jarama +0.6 / +8.5 m/s, BCN_S2 +4.9 / +9.0,
+  Circle +11.1 / +17.5 (curved start). Corrected only: Hairpin +1.7, ZigZag +1.8. Silent: Sturn, Spa, NBR, BCN.
+  Only Sturn has a slack measurement (1.6 m/s). The old cold fragility
   (530 iterations, 18.61105 s) came from the seed. Its quasi-static rows 9-22 (rows 9-18 = 0, zt = W0/kt, no aero)
   miss the pinned start. Mechanism not isolated (likely the slow matlab chassis modes, tau 8-35 s). `_init_guesses` now
   seeds rows 9-22 at `Xi / x_s` at every knot and collocation point (7-state init, init7 warm start, qss23). Matlab and
   periodic seeds unchanged. Measured 2026-10-19 (Linux, MUMPS, cold): rolling Sturn 149 iterations, 18.06169 s
   (+0.045 s vs stored, first order +0.045), 13 s wall (was 93 s). That is 0.023 s below the seeded rolling Sturn.
-  Corrected vi = 60 rolling: 220 iterations, 20.03744 s (was 270, 20.02972 s). Default cold Sturn and seeded rolling
+  Corrected vi = 60 rolling: 220 iterations, 20.03744 s (was 270, 20.02972 s: lap +0.008 s, another local optimum).
+  Default cold Sturn and seeded rolling
   Sturn unchanged to every digit. Not built: the rows 9-22 override in `warmstart_refined` (refine reseed), add when
   a rolling run uses refine. No solve covers qss23 + rolling. Rejected: a knot-0 clip of the seed (no gain, moves the
   default seed bytes).

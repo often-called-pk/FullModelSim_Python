@@ -513,6 +513,10 @@ def start_rows(res, rec):
 
 hits = braking_warns(physics="corrected", vi=70.0, start_state="rolling")
 ok("corrected vi 70 rolling: one warning names the braking limit", len(hits) == 1)
+ok("corrected vi 70 rolling: the warning gives the box edge 69.0 m/s and the limit 66.9 m/s",
+   "lower edge at 69.0 m/s" in hits[0] and "braking limit 66.9 m/s" in hits[0])
+ok("corrected vi 67.5 rolling: no braking-limit warning (box edge 66.5 m/s below the limit)",
+   not braking_warns(physics="corrected", vi=67.5, start_state="rolling", warm_start=INIT))
 ok("matlab vi 70 rolling: no braking-limit warning",
    not braking_warns(physics="matlab", vi=70.0, start_state="rolling"))
 ok("corrected vi 60 rolling: no braking-limit warning",
@@ -522,15 +526,25 @@ ok("corrected vi 70 matlab start: no braking-limit warning",
 
 # The qss23 case reaches the QSS-seed return of _init_guesses. The other cases reach the
 # 7-state-init return. The cold case runs MLTP_initial, so the fake solver wraps every capture.
+caps = {}
 for label, kw in (("rolling cold", {}), ("rolling init7 warm start", dict(warm_start=INIT)),
                   ("rolling qss23 ladder", dict(ladder="qss23"))):
     with fake_ipopt({}):
-        cap = capture(mltp_mod, "MLTP", circuit="Sturn", start_state="rolling", mesh="uniform",
-                      save=False, plot=False, **kw)
+        cap = caps[label] = capture(mltp_mod, "MLTP", circuit="Sturn", start_state="rolling", mesh="uniform",
+                                    save=False, plot=False, **kw)
     Xk, Xc = start_rows(*build_only(cap))
     pin = (cap["Xi"] / cap["m"].x_s)[9:23, None]
     ok(f"{label}: knot rows 9-22 == Xi / x_s (1e-15)", np.max(np.abs(Xk[9:23] - pin)) <= 1e-15)
     ok(f"{label}: collocation rows 9-22 == Xi / x_s (1e-15)", np.max(np.abs(Xc[9:23] - pin)) <= 1e-15)
+
+# warmstart_guesses does not read Xi, so rows 0-8 and the inputs keep the matlab-start init7 seed.
+g_r = caps["rolling init7 warm start"]["guesses"]
+g_m = capture(mltp_mod, "MLTP", circuit="Sturn", mesh="uniform", save=False, plot=False,
+              warm_start=INIT)["guesses"]
+ok("rolling init7: knot rows 0-8 == matlab-start init7 seed", np.array_equal(g_r["x0"][:9], g_m["x0"][:9]))
+ok("rolling init7: collocation rows 0-8 == matlab-start init7 seed",
+   np.array_equal(g_r["xc0"][:9], g_m["xc0"][:9]))
+ok("rolling init7: inputs == matlab-start init7 seed", np.array_equal(g_r["u0"], g_m["u0"]))
 
 with fake_ipopt({}):
     cap3 = capture(mltp_mod, "MLTP", circuit="Sturn", mesh="uniform", save=False, plot=False)
