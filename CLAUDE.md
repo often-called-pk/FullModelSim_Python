@@ -474,7 +474,8 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   +11.1%. Watch: the body sits 9.4 mm low at 60 m/s under corrected (12.8 mm at 70 m/s), and the matlab start box
   holds zs to +-OPT_e = 10 mm. The old claim "vi above ~62 m/s makes the start infeasible" is wrong: corrected Sturn
   at vi = 70 m/s converges (404 iterations, 20.18902 s) with zs(0) on the -10 mm box edge, so the car starts off its
-  equilibrium. The rolling start does not converge there yet (see the start-state bullet). Not in the GUI / cfg.json yet. Skipped:
+  equilibrium. Under corrected, a coast rolling start on Sturn reaches at most 68.5 m/s (two frontier solves). So
+  rolling at vi = 70 m/s is infeasible as posed (see the start-state bullet). Not in the GUI / cfg.json yet. Skipped:
   per-motor ratings, gear as a setup field, regen, drag pitch moment. `Steering` / `CamberGain` are now `userOpts`
   kwargs (both physics); the CG_p table is ported, and `_linear_interp` extrapolates as `linear_interp.m`.
 - **Start state (2026-10-18, pinned by `tests/test_start_state.py`, `tests/test_start_wiring.py`).**
@@ -494,12 +495,23 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   (full-interp) 95, 18.08490 s (+0.069 s, first order +0.045); rolling BCN seeded 118, 116.72927 s (+0.285, first
   order +0.197); periodic Circle cold 65, 21.71527 s, periodic residual 0; periodic BCN seeded 74, 116.91133 s (+0.467,
   forecast ~+0.3). Rolling start rows end on their box edges (rows 9-22 at +-1e-3, Om at +-2.8 rad/s).
-  **Open defect (B1):** rolling is fragile. Cold rolling Sturn (matlab physics) takes 530 iterations to a worse
-  optimum (18.61105 s). Corrected physics at vi = 70 m/s with rolling does not converge: cold stops at max_iter 6000
-  (inf_pr 0.3-170, inf_du up to 7e15, restoration), and seeded from the converged matlab-start solve (full-interp) it
-  starts at inf_pr 8.9 and stops at the 2000 cap, never feasible. Cause unknown. Not built: seed ends clipped with the
-  scalar OPT_e box (`ladder._clip_ends`), wider than the rolling box. Until fixed: rolling with matlab physics, seeded
-  from a default-start result.
+  **B1 cause and fix (2026-10-19, pinned by `tests/test_start_wiring.py` section 12).** Corrected Sturn rolling at
+  vi = 70 m/s is infeasible as posed, not a solver or transcription bug. Two frontier solves (max vx(0), rows 1-22 in
+  the rolling box, 2 seeds) reach 68.50 / 68.53 m/s. The vx box edge is 69 m/s. With only the vx(0) box widened to
+  [59, 71], the cold solve converges (348 iterations, vx(0) 65.475 inside). The corrected matlab-start solve at vi = 70
+  converges only pre-braked, off the equilibrium (rear wheels locked, wu on the bounds). Rolling now warns ("braking
+  limit") when the vx box lower edge `vi - Xi_tol[0]*x_s[0]` (vi - 1 m/s) is above the QSS limit
+  `qss_profile(ctx)["v_bwd"][0]`. Sturn centreline limit: corrected 66.87 m/s, matlab 70.79 m/s. The solve still runs.
+  The QSS limit is ~1.6 m/s below the frontier, so the warning can fire for a feasible start. The old cold fragility
+  (530 iterations, 18.61105 s) came from the seed. Its quasi-static rows 9-22 (rows 9-18 = 0, zt = W0/kt, no aero)
+  miss the pinned start. Mechanism not isolated (likely the slow matlab chassis modes, tau 8-35 s). `_init_guesses` now
+  seeds rows 9-22 at `Xi / x_s` at every knot and collocation point (7-state init, init7 warm start, qss23). Matlab and
+  periodic seeds unchanged. Measured 2026-10-19 (Linux, MUMPS, cold): rolling Sturn 149 iterations, 18.06169 s
+  (+0.045 s vs stored, first order +0.045), 13 s wall (was 93 s). That is 0.023 s below the seeded rolling Sturn.
+  Corrected vi = 60 rolling: 220 iterations, 20.03744 s (was 270, 20.02972 s). Default cold Sturn and seeded rolling
+  Sturn unchanged to every digit. Not built: the rows 9-22 override in `warmstart_refined` (refine reseed), add when
+  a rolling run uses refine. No solve covers qss23 + rolling. Rejected: a knot-0 clip of the seed (no gain, moves the
+  default seed bytes).
 - **Track width (2026-10-18, pinned by `tests/test_track_width.py`).** `userOpts(n_bounds=W | (lo, hi))`: bounds on
   n (CG path, m), scalars or arrays on `ctx.track.s` (after the periodic closing sample), applied at knots and
   collocation points only. None = model default +-4 m (`n_bounds=4.0` builds the same NLP). `lo < hi` everywhere:

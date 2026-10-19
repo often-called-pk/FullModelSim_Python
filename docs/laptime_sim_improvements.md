@@ -20,7 +20,7 @@ The runs below used MUMPS on Linux. The column "Seed" names the warm start. A la
 |---|---|---|---|
 | V0 | Sturn, defaults | Cold | 18.01857 s, 152 iterations, the same as the first batch |
 | V1 | Sturn, `start_state='rolling'` | Stored Sturn result | 18.08490 s, 95 iterations, +0.069 s (first-order estimate +0.045 s) |
-| V1c | Sturn, `start_state='rolling'` | Cold | 18.61105 s, 530 iterations, a worse local optimum |
+| V1c | Sturn, `start_state='rolling'` | Cold | Before the fix: 18.61105 s, 530 iterations, a worse local optimum. After the fix: 18.06169 s, 149 iterations, +0.045 s (first-order estimate +0.045 s). |
 | V2 | BCN, `start_state='rolling'` | Stored BCN result | 116.72927 s, 118 iterations, +0.285 s (first-order estimate +0.197 s) |
 | V3a | Sturn, `physics='corrected'`, vi = 70 m/s | Cold | 20.18902 s, 404 iterations, body height at s = 0 on the -10 mm box edge |
 | V3b | V3a with `start_state='rolling'` | Cold | No convergence in 6000 iterations |
@@ -33,15 +33,17 @@ The runs below used MUMPS on Linux. The column "Seed" names the warm start. A la
 
 Findings:
 
-- **Rolling start (B1).** A seeded rolling start works with the default physics (V1, V2). A cold rolling start is not reliable (V1c). With `physics='corrected'` at 70 m/s, the rolling start does not converge, cold or seeded (V3b, V3c). The cause is not known. Until a fix, use the rolling start with the default physics, and seed it from a default-start result. B1 uses the equilibrium of the model itself, not `ladder.quasi_static_states`.
-- **Start limit.** With `physics='corrected'`, a start speed above 62 m/s does not make the start infeasible (V3a). The body height stays at the edge of the start box instead.
+- **Rolling start (B1), cold seed.** A seeded rolling start works with the default physics (V1, V2). B1 uses the equilibrium of the model itself, not `ladder.quasi_static_states`. Before the fix, the cold seed set rows 9-22 (body, unsprung and tyre states) to static values without aero, not to the rolling-start equilibrium. So the cold V1c took 530 iterations to a worse local optimum. The fix sets rows 9-22 of the cold seed to the start equilibrium at all knots and collocation points. Now V1c takes 149 iterations, and its lap is 0.023 s shorter than the lap of the seeded V1.
+- **Rolling start (B1), start speed.** With `physics='corrected'` at 60 m/s, a cold rolling start takes 220 iterations to 20.03744 s (before the fix: 270 iterations, 20.02972 s). At 70 m/s, the rolling start is infeasible as posed (V3b, V3c), and the solver and the transcription have no bug. Two solves, from two seeds, found the highest start speed with every other start state in the rolling box: 68.50 m/s and 68.53 m/s. The vx start box at 70 m/s has its lower edge at 69 m/s. When only this box widens to 59-71 m/s, the cold V3b solve converges in 348 iterations, with a start speed of 65.475 m/s.
+- **Braking-limit warning.** `MLTP` now warns when the vx box of a rolling start has its lower edge above the QSS braking limit at s = 0. On the Sturn centreline, this limit is 66.87 m/s with `physics='corrected'` and 70.79 m/s with the default physics. The QSS limit is about 1.6 m/s below the highest start speed that the NLP found. So the warning can also fire for a feasible start. The solve still runs after the warning.
+- **Start limit.** With `physics='corrected'`, a start speed above 62 m/s does not make the start infeasible (V3a). The body height stays at the edge of the start box instead. At 70 m/s, the solve with the default start box converges only from a pre-braked start away from the equilibrium. At s = 0, the rear wheels lock, and the unsprung states sit on their bounds.
 - **Periodic lap (B2).** The periodic rows hold exactly (V4, V5). The BCN curvature does not close the lap (-1.023 laps), so treat the +0.467 s of V5 as provisional until a closed BCN track exists.
 - **Width prices (C1, C2).** The first-order prices predict the change of the objective within 1.1% (V6, V7). One metre of half-width is worth about 1.86 s on BCN.
 - **TyreOptim (C6).** The fix moves the Sturn optimum from the 0.5 bound (15.750 s) to an interior point (17.499 s at Fz0_shift 0.787). A second solve that started at Fz0_shift 0.53 ended on a worse optimum (21.832 s).
 
 Open items:
 
-- B1 has the convergence failure above. One candidate fix is not built: the cold seed uses the box OPT_e at its ends, and this box is wider than the rolling box.
+- B1: the refine reseed (`warmstart_refined`) still sets rows 9-22 to static values. Change it when a rolling start runs with refine. No solve checks a rolling start with the qss23 ladder. Only Sturn solves check the braking-limit warning. The fix does not clip the ends of the cold seed to the start box. A clip gives no measured gain, and the proposed form changes the default seed.
 - C6 part 2, the Magic Formula scaling factors, waits for the owner's sign-off, together with E3.
 - Stage M of D1, E1 and C2 is not built.
 - BCN keeps its original file for the parity gates, so it loads with one QA warning.
@@ -59,7 +61,7 @@ The runs used MUMPS on Linux, from a cold start. The default BCN lap matches the
 
 Two limits remain:
 
-- With `physics='corrected'` the body sits 9.4 mm low at 60 m/s, and the start box allows 10 mm. This limit is softer than this list first said. At 70 m/s the solve converges, but the body height at s = 0 stays at the edge of the box. So the car starts away from its equilibrium (run V3a in the status of 19 October). The rolling start of item B1 does not converge in this case yet (runs V3b and V3c).
+- With `physics='corrected'` the body sits 9.4 mm low at 60 m/s, and the start box allows 10 mm. This limit is softer than this list first said. At 70 m/s the solve converges, but the body height at s = 0 stays at the edge of the box. So the car starts away from its equilibrium (run V3a in the status of 19 October). The rolling start of item B1 is infeasible in this case (runs V3b and V3c, see the status of 19 October).
 - A5 changes only the motor speed. The per-motor ratings, the gear as a setup field and regenerative braking are still open. A4 has no drag pitch moment yet.
 
 ## Read this first: parity is not physics
