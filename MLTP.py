@@ -403,6 +403,13 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         X0, _ = rolling_start(ctx, m, ctx.vi)
         idx = [1] + list(range(5, 23))
         ctx.Xi[idx] = X0[idx]
+        v_brk = float(qss_profile(ctx)["v_bwd"][0])
+        lo = ctx.vi - ctx.Xi_tol[0] * m.x_s[0]
+        if lo > v_brk:
+            warnings.warn(f"start_state='rolling': the vx start box begins at {lo:.1f} m/s. "
+                          f"This is above the QSS braking limit {v_brk:.1f} m/s at s = 0. "
+                          "The NLP can be infeasible. If IPOPT does not converge, "
+                          "use a lower vi or start_state='matlab'.")
 
     # ---- OCP: path constraints (powertrain; + friction circles if PureSlip) ----
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
@@ -419,6 +426,13 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     elapsed["ladder"] = lname
     prof = None                                 # QSS profile of a qss -> m23 ladder (cached)
 
+    def _rolling_seed(g):
+        # The quasi-static seed rows miss the pinned start. The matlab chassis modes are slow.
+        if ctx.start_state == "rolling":
+            pinned = (ctx.Xi[9:23] / m.x_s[9:23])[:, None]
+            g["x0"][9:23] = g["xc0"][9:23] = pinned
+        return g
+
     def _init_guesses(disc_):
         """Cold-start guesses on disc_ from the ladder's rung below m23: the QSS
         profile (ladder.seed_m23; computed once) or the 7-state init interpolated by
@@ -434,7 +448,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             if not np.isfinite(ladder_rec["qss_wall_s"]):
                 ladder_rec["qss_wall_s"] = dt
             elapsed["init"] += dt
-            return g
+            return _rolling_seed(g)
         if init is None:
             t_init = time.time()
             ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
@@ -459,8 +473,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                       f"{ladder_rec['m7_iters']} iterations; continuing from it (data['ladder'])")
         init_x = np.asarray(init.x_opt, dtype=float)
         init_u = np.asarray(init.u_opt, dtype=float)
-        return warmstart_guesses(ctx, m, init_x, init_u, disc_["s_knot"],
-                                 solution_knots(init, init_x.shape[1]))
+        return _rolling_seed(warmstart_guesses(ctx, m, init_x, init_u, disc_["s_knot"],
+                                               solution_knots(init, init_x.shape[1])))
 
     warm = None                         # primal/dual seeds from a full result
     if src_full is not None:

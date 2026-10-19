@@ -4,13 +4,14 @@ and the rolling equilibrium).
 rolling_start() is the straight-line coast equilibrium of the 23-state model, not
 quasi_static_states: the residual rows, the pinned matlab / corrected values, the variants, the
 bounds and the Newton failures. MLTP, MLTP_initial and optimise_design forward Xi_tol, periodic
-and start_state to the NLP build; MLTP fills ctx.Xi for a rolling start, warns on a curved one,
-passes Xi_tol to the refine passes; the sweep precheck checks the periodic rows and start_state;
-the result files get the start suffix.
+and start_state to the NLP build; MLTP fills ctx.Xi for a rolling start, warns on a curved one
+or on a start box above the braking limit, seeds the chassis rows at the equilibrium, passes
+Xi_tol to the refine passes; the sweep precheck checks the periodic rows and start_state; the
+result files get the start suffix.
 
-Run order: sections 7 and 10 first (casadi-free), then sections 1-6, 8, 9 and 11 in number order.
-Sections 1-6, 8, 9 and 11 build the real NLP through a stand-in (no IPOPT) and need casadi and
-Data/DATA_AA.mat (SKIP, exit 0 otherwise). Run from anywhere:
+Run order: sections 7 and 10 first (casadi-free), then sections 1-6, 8, 9, 11 and 12 in
+number order. Sections 1-6, 8, 9, 11 and 12 build the real NLP through a stand-in (no IPOPT)
+and need casadi and Data/DATA_AA.mat (SKIP, exit 0 otherwise). Run from anywhere:
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_start_wiring.py
 """
@@ -112,7 +113,7 @@ else:
 
 # ---- casadi sections: need the aero data file -------------------------------------
 if not os.path.exists(DATA_AA):
-    print("SKIP test_start_wiring sections 1-6, 8, 9, 11: Data/DATA_AA.mat missing")
+    print("SKIP test_start_wiring sections 1-6, 8, 9, 11, 12: Data/DATA_AA.mat missing")
     sys.exit(0)
 
 import casadi as ca
@@ -490,5 +491,57 @@ try:
 finally:
     shutil.rmtree(RES_TMP, ignore_errors=True)
     shutil.rmtree(PLOTS_TMP, ignore_errors=True)
+
+# ---- 12. rolling start: braking-limit warning and chassis seed at the equilibrium ----------
+print("12. rolling start: braking-limit warning and chassis seed at the equilibrium")
+from functions.ladder import quasi_static_states
+from functions.sensitivity import nlp_index
+
+
+def braking_warns(**kw):
+    """MLTP(**kw) on Sturn, fake solver: the recorded warnings that name the braking limit."""
+    with fake_ipopt({}):
+        quiet(mltp_mod.MLTP, **dict(dict(circuit="Sturn", mesh="uniform", save=False, plot=False), **kw))
+    return [w for w in WARNS if "braking limit" in w]
+
+
+def start_rows(res, rec):
+    """Knot (nx, N+1) and collocation (nx, N*d) state blocks of the packed initial guess."""
+    ix = nlp_index(res["structure"])
+    return rec["x0"][ix["X"]], rec["x0"][ix["XC"]]
+
+
+hits = braking_warns(physics="corrected", vi=70.0, start_state="rolling")
+ok("corrected vi 70 rolling: one warning names the braking limit", len(hits) == 1)
+ok("matlab vi 70 rolling: no braking-limit warning",
+   not braking_warns(physics="matlab", vi=70.0, start_state="rolling"))
+ok("corrected vi 60 rolling: no braking-limit warning",
+   not braking_warns(physics="corrected", vi=60.0, start_state="rolling"))
+ok("corrected vi 70 matlab start: no braking-limit warning",
+   not braking_warns(physics="corrected", vi=70.0, start_state="matlab"))
+
+# The qss23 case reaches the QSS-seed return of _init_guesses. The other cases reach the
+# 7-state-init return. The cold case runs MLTP_initial, so the fake solver wraps every capture.
+for label, kw in (("rolling cold", {}), ("rolling init7 warm start", dict(warm_start=INIT)),
+                  ("rolling qss23 ladder", dict(ladder="qss23"))):
+    with fake_ipopt({}):
+        cap = capture(mltp_mod, "MLTP", circuit="Sturn", start_state="rolling", mesh="uniform",
+                      save=False, plot=False, **kw)
+    Xk, Xc = start_rows(*build_only(cap))
+    pin = (cap["Xi"] / cap["m"].x_s)[9:23, None]
+    ok(f"{label}: knot rows 9-22 == Xi / x_s (1e-15)", np.max(np.abs(Xk[9:23] - pin)) <= 1e-15)
+    ok(f"{label}: collocation rows 9-22 == Xi / x_s (1e-15)", np.max(np.abs(Xc[9:23] - pin)) <= 1e-15)
+
+with fake_ipopt({}):
+    cap3 = capture(mltp_mod, "MLTP", circuit="Sturn", mesh="uniform", save=False, plot=False)
+res3, rec3 = build_only(cap3)
+Xk3, Xc3 = start_rows(res3, rec3)
+qs3 = quasi_static_states(c_m.vp, [1.0], c_m.physics)[14:18, 0] / cap3["m"].x_s[19:23]
+ok("matlab start: knot rows 9-18 == 0", np.all(Xk3[9:19] == 0))
+ok("matlab start: collocation rows 9-18 == 0", np.all(Xc3[9:19] == 0))
+ok("matlab start: knot rows 19-22 == quasi-static tyre deflections (1e-15)",
+   np.max(np.abs(Xk3[19:23] - qs3[:, None])) <= 1e-15)
+ok("matlab start: collocation rows 19-22 == quasi-static tyre deflections (1e-15)",
+   np.max(np.abs(Xc3[19:23] - qs3[:, None])) <= 1e-15)
 
 print("test_start_wiring: done")
