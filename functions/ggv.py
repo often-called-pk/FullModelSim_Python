@@ -36,7 +36,9 @@ Loads     load_model='vehModel' (default) reproduces the quasi-steady vertical
           and the tyre loads sum to vp.m*g (axle load = g*(unsprung axle mass + lever-rule
           sprung share)); the rolling basis follows (c_res0 = f*m*g). With fix A4 the
           second goes too: the downforce acts on the body and reaches the axles through
-          the springs, in the Cl_front / Cl split (as load_model='nominal').
+          the springs, in the Cl_front / Cl split (as load_model='nominal'). The rear-wing
+          drag acts at vp.hw, above the CG at vp.hcg. It moves the axle load to the rear by
+          dFz = q Cd_rw (hw - hcg) / L, for both load models.
           load_model='nominal' is the textbook alternative: M = vp.m, static
           corner loads vp.Wfl0..Wrr0, aero split by Cl_front/Cl_rear.
 Transfer  First order, from the vehModel moment balances. Longitudinal:
@@ -185,9 +187,9 @@ def _poly(coeffs, x, powers):
 def aero_coefficients(vp, aero):
     """Aero coefficients at the static wing angles, exactly as vehModel.py builds
     them (lines 'aerodynamic coefficients'). Returns a dict with Cl_front,
-    Cl_rear, Cl_left, Cl_right, Cl, Cd, the per-corner Cl_fl..Cl_rr and
-    Cs_front/Cs_rear. Wing angles are vp.alpha_* in degrees (active aero is
-    evaluated at these nominal angles)."""
+    Cl_rear, Cl_left, Cl_right, Cl, Cd, Cd_rw (the rear-wing part of Cd), the
+    per-corner Cl_fl..Cl_rr and Cs_front/Cs_rear. Wing angles are vp.alpha_* in
+    degrees (active aero is evaluated at these nominal angles)."""
     if aero is None:
         raise RuntimeError("DATA_AA.mat must be loaded (ctx.aero) to build the QSS envelope.")
     aFL, aFR = float(vp.alpha_FL), float(vp.alpha_FR)
@@ -216,7 +218,7 @@ def aero_coefficients(vp, aero):
     Cl_front, Cl_rear, Cl_left, Cl_right = (c * vp.Cl_scale for c in (Cl_front, Cl_rear, Cl_left, Cl_right))
     Cl = Cl_front + Cl_rear
     return dict(Cl_front=Cl_front, Cl_rear=Cl_rear, Cl_left=Cl_left, Cl_right=Cl_right,
-                Cl=Cl, Cd=(vp.Cd0 + RW_Cd) * vp.Cd_scale,
+                Cl=Cl, Cd=(vp.Cd0 + RW_Cd) * vp.Cd_scale, Cd_rw=RW_Cd * vp.Cd_scale,
                 Cl_fl=Cl_front * (Cl_left / Cl), Cl_fr=Cl_front * (Cl_right / Cl),
                 Cl_rl=Cl_rear * (Cl_left / Cl), Cl_rr=Cl_rear * (Cl_right / Cl),
                 Cs_front=vp.Cs0_front, Cs_rear=vp.Cs0_rear + TW_Cs_rear)
@@ -326,8 +328,8 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     v = np.sort(np.asarray(v_grid, dtype=float).reshape(-1))
 
     L = vp.l_f + vp.l_r
-    M, Fz_f0, Fz_r0, aero_front, h_x = _load_basis(vp, aero_c, load_model,
-                                                   getattr(ctx, "physics", "matlab"))
+    physics = getattr(ctx, "physics", "matlab")
+    M, Fz_f0, Fz_r0, aero_front, h_x = _load_basis(vp, aero_c, load_model, physics)
 
     # ---- aero (vehModel sign convention: Cl < 0 is downforce) ----------------
     q = 0.5 * vp.rho * vp.A * v * v
@@ -335,6 +337,9 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     F_drag = q * aero_c["Cd"]
     Fz_f = Fz_f0 + aero_front * F_lift                      # axle loads, no transfer
     Fz_r = Fz_r0 + (1.0 - aero_front) * F_lift
+    if physics == "corrected":      # A4: the rear-wing drag acts at hw, the CG at hcg: axle load moves to the rear
+        dFz = q * aero_c["Cd_rw"] * (vp.hw - vp.hcg) / L
+        Fz_f, Fz_r = Fz_f - dFz, Fz_r + dFz
 
     # ---- tyre peak forces per corner ----------------------------------------
     Fz0, shift = vp.Fz0 * mf.LFZO, vp.Fz0_shift             # Fz0' = LFZO * Fz0 (MF 5.2). LKX and LKY do not change the peak

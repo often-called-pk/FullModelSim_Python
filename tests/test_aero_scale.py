@@ -10,10 +10,11 @@ Plain script, no pytest. Each check prints PASS or FAIL, and the first FAIL stop
      without it the 7-state model reads them
   3. full model, both physics: f_drag x Cd_scale, f_lift and the four f_lift_i x Cl_scale, f_side unchanged
   4. QSS: aero_coefficients and the envelope scale like vehModel; the lap moves in the right direction
+  5. corrected drag pitch moment (A4): rear-wing drag at hw, body drag at hcg, none in matlab; scales with
+     Cd_scale; the QSS axle shift matches the coast equilibrium; the QSS lap moves less than 0.01 %
   6. parity export: Cd_scale and Cl_scale left out at 1.0, both exported when one of them is not 1.0
 
-Section 5 (the A4 drag pitch moment) is not here yet. Sections 2 to 4 and 6 need casadi and
-Data/DATA_AA.mat (SKIP and exit 0 otherwise). Nothing is solved.
+Sections 2 to 6 need casadi and Data/DATA_AA.mat (SKIP and exit 0 otherwise). Nothing is solved.
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
@@ -65,7 +66,7 @@ ok("labels: the Cd and Cl rows say placeholder",
    "placeholder" in meta_for("Cd").label.lower() and "placeholder" in meta_for("Cl").label.lower())
 
 if not os.path.exists(os.path.join(_bootstrap.ROOT, "Data", "DATA_AA.mat")):
-    print("SKIP sections 2-4 and 6 (test_aero_scale): Data/DATA_AA.mat missing")
+    print("SKIP sections 2-6 (test_aero_scale): Data/DATA_AA.mat missing")
     sys.exit(0)
 
 # model imports come after the DATA_AA guard
@@ -73,7 +74,7 @@ import casadi as ca  # noqa: E402
 from MLTP_screen import MLTP_screen  # noqa: E402
 from functions.ggv import aero_coefficients, build_envelope  # noqa: E402
 from userOpts import userOpts  # noqa: E402
-from vehModel import vehModel  # noqa: E402
+from vehModel import rolling_start, vehModel  # noqa: E402
 from vehModel_initial import vehModel_initial  # noqa: E402
 import validation.py_export as py_export  # noqa: E402
 
@@ -179,6 +180,71 @@ ok("envelope: F_drag x 1.2 and F_lift x 0.85 on the speed grid (rel 1e-12)",
 lap_d, lap_l = qss_lap(Cd_scale=1.2), qss_lap(Cl_scale=1.2)
 ok(f"QSS lap: Cd_scale 1.2 is slower ({lap_d - lap0:+.4f} s), Cl_scale 1.2 is faster ({lap_l - lap0:+.4f} s), "
    f"each by more than 1 ms", lap_d - lap0 > 1e-3 and lap0 - lap_l > 1e-3)
+
+
+# =============================================================================
+print("5. corrected drag pitch moment (A4): rear-wing drag at hw, body drag at hcg")
+
+
+def dxdt(c, X, U):
+    """Physical time derivative dx/dt of the state on a straight road. m.dx is the normalised space
+    derivative, so dx/dt = m.dx * x_s / sf."""
+    m = c.m23
+    F = ca.Function("F", [m.x, m.u, m.pv], [m.dx, m.sf])
+    xs, us = np.asarray(m.x_s, float), np.asarray(m.u_s, float)
+    dx, sf = F(X / xs, U / us, 0.0)
+    return np.array(dx).ravel() * xs / float(sf)
+
+
+def drag_moment(c, v):
+    """Closed form of the drag term in dthetadot: -q RW_Cd (hw - hcg) / I_y, RW_Cd at the static wing angle."""
+    vp = c.vp
+    q = 0.5 * vp.rho * vp.A * v * v
+    cd_rw = sum(float(c.aero.RW.Cd[i]) * vp.alpha_RW ** p for i, p in enumerate((2, 1)))
+    return -q * cd_rw * (vp.hw - vp.hcg) / vp.I_y
+
+
+cc, ch = model("corrected"), model("corrected", hw=0.5)      # hw 1.28 (default) and hw = hcg = 0.5
+for v in (20.0, 60.0):
+    X, U = static_state(cc, v), coast(cc)
+    want = drag_moment(cc, v)
+    got = dxdt(cc, X, U)[12] - dxdt(ch, X, U)[12]
+    ok(f"corrected: dthetadot at hw 1.28 minus at hw = hcg equals the closed form at {v:.0f} m/s (rel 1e-9)",
+       abs(got - want) <= 1e-9 * abs(want))
+mm, mh = model(), model(hw=0.5)
+X, U = static_state(mm, 60.0), coast(mm)
+env_m = quiet(build_envelope, mm, v_grid=np.array([60.0]))
+env_mh = quiet(build_envelope, mh, v_grid=np.array([60.0]))
+ok("matlab: the state derivative and the QSS axle loads do not depend on hw (exact)",
+   np.array_equal(dxdt(mm, X, U), dxdt(mh, X, U))
+   and np.array_equal(env_m.Fz_front, env_mh.Fz_front) and np.array_equal(env_m.Fz_rear, env_mh.Fz_rear))
+cd12 = model("corrected", Cd_scale=1.2)
+X, U = static_state(cc, 60.0), coast(cc)
+want = 0.2 * drag_moment(cc, 60.0)
+got = dxdt(cd12, X, U)[12] - dxdt(cc, X, U)[12]
+ok("corrected: the drag term scales with Cd_scale (Cd_scale 1.2 adds 0.2 times the closed form, rel 1e-9)",
+   abs(got - want) <= 1e-9 * abs(want))
+fz_r = [quiet(build_envelope, c, v_grid=np.array([60.0])).Fz_rear[0] for c in (ch, cc, cd12)]
+ok("corrected: the QSS axle shift scales with Cd_scale too (Cd_scale 1.2 adds 0.2 times the shift, rel 1e-9)",
+   abs((fz_r[2] - fz_r[1]) - 0.2 * (fz_r[1] - fz_r[0])) <= 1e-9 * abs(fz_r[1] - fz_r[0]))
+for v in (30.0, 50.0, 70.0):
+    X_hw, _ = rolling_start(cc, cc.m23, v)
+    X_hcg, _ = rolling_start(ch, ch.m23, v)
+    fz_hw, fz_hcg = X_hw[19:23] * cc.vp.kt, X_hcg[19:23] * ch.vp.kt
+    d_front = (fz_hw[0] + fz_hw[1]) - (fz_hcg[0] + fz_hcg[1])
+    d_rear = (fz_hw[2] + fz_hw[3]) - (fz_hcg[2] + fz_hcg[3])
+    ok(f"corrected: coast equilibrium at {v:.0f} m/s: front load falls, rear rises, sum 0, theta falls "
+       f"({d_front:+.2f} / {d_rear:+.2f} N)",
+       d_rear > 0 > d_front and abs(d_front + d_rear) < 0.05 and X_hw[11] < X_hcg[11])
+    env_hw = quiet(build_envelope, cc, v_grid=np.array([v]))
+    env_hcg = quiet(build_envelope, ch, v_grid=np.array([v]))
+    q_front = float(env_hw.Fz_front[0] - env_hcg.Fz_front[0])
+    q_rear = float(env_hw.Fz_rear[0] - env_hcg.Fz_rear[0])
+    ok(f"corrected: QSS axle shift at {v:.0f} m/s equals the coast equilibrium shift (0.05 N)",
+       abs(q_front - d_front) < 0.05 and abs(q_rear - d_rear) < 0.05)
+lap_hw, lap_hcg = qss_lap("corrected"), qss_lap("corrected", hw=0.5)
+ok(f"corrected: QSS lap on Sturn is lower by less than 0.01 % ({100 * (lap_hw / lap_hcg - 1):+.4f} %)",
+   -1e-4 < lap_hw / lap_hcg - 1 < 0)
 
 
 # =============================================================================

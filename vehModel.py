@@ -626,8 +626,11 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
                   - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
     dtheta = thetadot * sf
     if phys == "corrected":      # A4: the downforce acts on the body: nose-down and left-side-down moments
+        # The rear-wing drag acts at hw and the body drag at hcg (no moment), as in MLTP*.m.
+        # A rearward force above the CG lifts the nose.
         dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r - (fzs_fl + fzs_fr)*vp.l_f
-                     + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r) * sf / vp.I_y
+                     + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r
+                     - 0.5*vp.rho*vp.A*vx**2*_mf_scale(RW_Cd, vp.Cd_scale)*(vp.hw - vp.hcg)) * sf / vp.I_y
     else:
         dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
                      - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y

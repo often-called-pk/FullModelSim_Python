@@ -87,7 +87,7 @@ META = {
     "hcg": ParamMeta("CoG height", "m", "Centre-of-gravity height", 0.0, 1.5, 0.01, 4),
     "huf": ParamMeta("Unsprung CoG h front", "m", "Front unsprung CoG height", 0.0, 1.0, 0.001, 7),
     "hur": ParamMeta("Unsprung CoG h rear", "m", "Rear unsprung CoG height", 0.0, 1.0, 0.001, 7),
-    "hw": ParamMeta("Wing height", "m", "Aero application height", 0.0, 2.0, 0.01, 4),
+    "hw": ParamMeta("Wing height", "m", "Rear-wing height. The rear-wing drag acts here (drag pitch moment, physics=corrected)", 0.0, 2.0, 0.01, 4),
     "hRCf": ParamMeta("Roll centre h front", "m", "Front roll-centre height", -0.5, 1.0, 0.01, 4),
     "hRCr": ParamMeta("Roll centre h rear", "m", "Rear roll-centre height", -0.5, 1.0, 0.01, 4),
     "hride": ParamMeta("Ride height", "m", "Static ride height", 0.0, 0.5, 0.001, 4),

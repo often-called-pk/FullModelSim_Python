@@ -273,7 +273,7 @@ ok("matlab: front-left deflection above Wfl0 / kt (mus quirk, not quasi_static_s
    X_m[19] - c_m.vp.Wfl0 / c_m.vp.kt > 6e-3)
 ok("matlab: vy between 0.29 and 0.33 m/s", 0.29 < X_m[1] < 0.33)
 ok("corrected: zs between -9.5 and -9.3 mm (aero sink)", -9.5e-3 < X_c[9] < -9.3e-3)
-ok("corrected: pitch between 2.2 and 2.3 mrad", 2.2e-3 < X_c[11] < 2.3e-3)
+ok("corrected: pitch between 2.0 and 2.1 mrad", 2.0e-3 < X_c[11] < 2.1e-3)
 ok("corrected: |phi| < 1e-9 rad", abs(X_c[13]) < 1e-9)
 ok("corrected: front tyre deflections equal", abs(X_c[19] - X_c[20]) < 1e-9)
 ok("corrected: rear tyre deflections equal", abs(X_c[21] - X_c[22]) < 1e-9)
