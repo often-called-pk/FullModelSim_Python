@@ -10,6 +10,36 @@ Compiled 17 October 2026 from `docs/lap_time_simulation_literature.md` and a rev
 - **Evidence.** No NLP solve ran during the review. The numbers come from stored results, stored multipliers and the QSS screener. Treat them as estimates until an NLP run checks them.
 - **Outcome.** 21 items passed all three checks, 11 passed two, and 6 failed two. This list keeps 30 items, some of them merged or narrowed. The section "Skipped for now" holds the rest, each with a trigger.
 
+## Status on 20 October 2026
+
+Branch `sim-phase2` now holds part 2 of C6 and the grip part of E3. The owner decisions of 19 October 2026 and Table 5 of `docs/tyre_scaling_track_method.md` set the scope. That research report gives a candidate method to estimate the factors from lap times, tyre temperature and tyre pressure. No human reviewed the report.
+
+Built:
+
+- **LMUX and LMUY.** These are the standard Magic Formula 5.2 peak-grip factors (lambda_mux and lambda_muy), default 1. As in MF 5.2, they scale the peak friction and the vertical shift on each axis. The slip stiffness does not change.
+- **Scope.** The full model and the QSS screener apply the factors. The 7-state model ignores them, and `Fz0_shift` does not change.
+- **Default.** At exactly 1, the model skips the multiplication. The default NLP stays byte-identical in seven test builds, and the parity gates stay green. The parity export leaves out the two factors while both are 1, because MATLAB has no counterpart.
+- **Tests.** The new file `tests/test_mf_scaling.py` passes. The verification ran 13 of the 41 test files, and all 13 pass.
+
+Not built, with the reason from the research report:
+
+- **LKX and LKY (slip stiffness).** The QSS uses only the peak friction, so these factors cannot change the QSS lap time. This is a structural limit: no lap-time data can identify them through the QSS. A better estimate needs steer, wheel or motor speeds and IMU data.
+- **LFZO (nominal load).** In the QSS, LFZO shares the peak-friction channel with LMUX, LMUY and the Cl scale. On one circuit, it is nearly collinear with the peak grip. The report says: never fit it from lap times.
+- **Cd and Cl scales (E3).** A 20% drag error moves the QSS lap by only about 0.1%. Power, wind and rolling resistance confound this small effect. On one circuit, the Cl scale is collinear with LMUY. The report names coast-down runs for Cd, and ride-height or GPS data for Cl.
+- **A QSS tool for the grip scale.** The tool would turn stint median lap times into a grip scale. Add it when the first session data exist.
+- **LMUX and LMUY as design variables.** `optimise_design` does not promote them. Add this when a co-optimisation needs it.
+
+The run below used MUMPS on Linux. The lap change compares with the stored Sturn baseline of 18.01633 s.
+
+| Run | Case | Seed | Result |
+|---|---|---|---|
+| V9 | Sturn, LMUX = LMUY = 0.95 | Stored Sturn result with duals | 18.24010 s, 20 iterations, +0.22377 s (+1.24%), 3.5 s wall |
+
+Findings:
+
+- **Lap response.** With 5% less peak grip on both axes, the Sturn lap is 1.24% longer. The QSS forecast is +1.26%: the QSS lap changes from 18.74393 s at 1 to 18.98036 s at 0.95. At 1, the QSS lap is equal to the default QSS lap.
+- **Use of the factors.** The report links LMUX and LMUY to one value. It sets that value from data only in the QSS, after four gates. It keeps the full model at 1 until a simulation study (B2) gives the full-model elasticity. The code has two keys, so set both keys to the same value for this use.
+
 ## Status on 19 October 2026
 
 Branch `sim-phase2` holds the second batch of items. The batch contains D1 (stage S), F1, E1 (stage S), B1, B2, C1, C2 (stage S) and the port gap of C6. Each item is opt-in or changes only outputs. The default NLP stays byte-identical in seven test builds, and the parity gates stay green. All 40 test files pass on Linux.
@@ -50,7 +80,7 @@ Open items:
   - Hairpin: +1.7 m/s, only with `physics='corrected'`.
   - ZigZag and ZigZagMirror: +1.8 m/s each, only with `physics='corrected'`.
   - Sturn, Spa, NBR and BCN: no warning with either physics.
-- C6 part 2, the Magic Formula scaling factors, waits for the owner's sign-off, together with E3.
+- C6 part 2, the Magic Formula scaling factors, waits for the owner's sign-off, together with E3. The status of 20 October gives the result.
 - Stage M of D1, E1 and C2 is not built.
 - BCN keeps its original file for the parity gates, so it loads with one QA warning.
 
@@ -224,6 +254,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Effect.** This is why the Python TyreOptim ran to the 0.5 bound (Sturn 15.750 s against 18.016 s). The parity gates do not cover the co-optimisation scripts. With the gap closed, the Sturn optimum is interior: 17.499 s at Fz0_shift 0.787 (run V8). On these two results, the gap explains about 77% of the old gain of 2.266 s.
 - **Change.** Substitute the nominal load in the Python TyreOptim path as MATLAB does, and add a test. Add Magic Formula scaling factors for load, grip and stiffness, default 1, shared with E3.
 - **Status.** The checks rejected the first version of this item, because the literature has no source on scaling factors. The code check found the port gap itself.
+- **Status on 20 October 2026.** Part 2 adds only the grip factors LMUX and LMUY, default 1, in the full model and the QSS screener. It does not add the load factor LFZO or the stiffness factors LKX and LKY. The status of 20 October gives the reasons.
 
 ## D. Track data
 
@@ -257,6 +288,8 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Change.** Add `Cd_scale`, `Cl_scale`, `mu_x_scale` and `mu_y_scale`, default 1, in the model and the QSS screener. Use one implementation with the C6 scaling factors. A "driver margin" is the same knob.
 - **Gain.** The staged matching of Section 8 becomes possible with the existing sweep tools. In QSS, 5% more grip changes the lap by -1.3% to -1.4%.
 - **Risk.** The knobs absorb model error. Do A1 to A3 first.
+- **Status on 20 October 2026.** The C6 factors LMUX and LMUY are the grip knobs `mu_x_scale` and `mu_y_scale`, in one implementation. The branch does not add `Cd_scale` and `Cl_scale`, and the problem with the `Cd` and `Cl` fields stays open. The status of 20 October gives the reasons.
+- **Driver margin.** The research report advises a different use. It keeps the effective grip level, which includes the driver margin, out of the vehicle model, as a lap-time ratio.
 
 ### E4. Logging specification (S)
 
