@@ -85,6 +85,9 @@ def _default_mf():
         rHy1=-9.1492e-11, rHy2=0.0,
         rVy1=22.965, rVy2=0.37981, rVy3=1.8552,
         rVy4=0.08767, rVy5=-8.8234e-11, rVy6=0.90374,
+        # MF 5.2 peak-grip scaling factors lambda_mux and lambda_muy. 1.0 leaves the set as it is.
+        # MATLAB has no counterpart. vehModel.py and functions/ggv.py apply them.
+        LMUX=1.0, LMUY=1.0,
     )
 
 

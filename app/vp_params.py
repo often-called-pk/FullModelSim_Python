@@ -54,7 +54,7 @@ PARAM_GROUPS = [
     ("Dimensions", ["A", "t", "l", "wB", "hcg", "huf", "hur", "hw",
                     "hRCf", "hRCr", "hride"]),
     ("Inertias", ["I_z", "I_y", "I_x"]),
-    ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift"]),
+    ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift", "LMUX", "LMUY"]),
     ("Suspension stiffness", ["k_fl", "k_fr", "k_rl", "k_rr"]),
     ("Suspension damping", ["zeta_fl", "zeta_fr", "zeta_rl", "zeta_rr"]),
     ("Brakes", ["Tbrake_max"]),
@@ -102,6 +102,9 @@ META = {
     "kt": ParamMeta("Tyre vert. stiffness", "N/m", "Tyre vertical stiffness", 0.0, 1.0e6, 1000.0, 1),
     "Fz0": ParamMeta("Nominal tyre load", "N", "Pacejka nominal vertical load", 0.0, 20000.0, 50.0, 1),
     "Fz0_shift": ParamMeta("Nominal load shift", "", "Load scale into the tyre (fz / Fz0_shift); MLTP_TyreOptim also scales Fz0", 0.0, 5.0, 0.05, 4),
+    # MF keys use the sci field (tests/test_vp_params.py), which ignores lo, hi and step.
+    "LMUX": ParamMeta("Grip scale X (LMUX)", "", "MF 5.2 lambda_mux. Scales mu_x and SVx. Kxk does not change", 0.5, 1.5, 0.01, 4, kind="sci"),
+    "LMUY": ParamMeta("Grip scale Y (LMUY)", "", "MF 5.2 lambda_muy. Scales mu_y and SVy. Kya does not change", 0.5, 1.5, 0.01, 4, kind="sci"),
     # Suspension stiffness
     "k_fl": ParamMeta("Spring rate FL", "N/m", "Front-left spring rate", 0.0, 300000.0, 1000.0, 1),
     "k_fr": ParamMeta("Spring rate FR", "N/m", "Front-right spring rate", 0.0, 300000.0, 1000.0, 1),

@@ -47,8 +47,10 @@ Transfer  First order, from the vehModel moment balances. Longitudinal:
           balance, Fy_f = M*ay*l_r/L. Combined (ax + ay) transfer is ignored.
 Tyres     Peak friction from the Pacejka 5.2 set in ctx.mf, same expressions
           and scaling as vehModel.py:
-            mu_x = pDx1 + pDx2*dfz,   mu_y = (pDy1 + pDy2*dfz)/(1 + pDy3*gamma^2),
+            mu_x = (pDx1 + pDx2*dfz)*LMUX,
+            mu_y = (pDy1 + pDy2*dfz)/(1 + pDy3*gamma^2)*LMUY,
             dfz  = (Fz - Fz0)/Fz0,     peak force D = mu*Fz/Fz0_shift,
+          LMUX, LMUY = MF 5.2 peak-grip scales lambda_mux, lambda_muy (default 1).
           gamma = static camber (CamberGain='Off'). The slip shape (B, C, E)
           and vertical shifts Sv are ignored. NOTE: with the legacy
           tyre_set='CopyB' (mf.pKy4 = 0) vehModel's cornering stiffness, and so
@@ -219,16 +221,16 @@ def aero_coefficients(vp, aero):
 
 def peak_mu_x(Fz, mf, Fz0):
     """Peak longitudinal friction coefficient = vehModel's mu_*_x (MF 5.2 Dx/Fz):
-    pDx1 + pDx2*dfz with dfz = (Fz - Fz0)/Fz0 (no camber term in vehModel)."""
+    (pDx1 + pDx2*dfz)*LMUX with dfz = (Fz - Fz0)/Fz0 (no camber term in vehModel)."""
     dfz = (np.asarray(Fz, dtype=float) - Fz0) / Fz0
-    return mf.pDx1 + mf.pDx2 * dfz
+    return (mf.pDx1 + mf.pDx2 * dfz) * mf.LMUX
 
 
 def peak_mu_y(Fz, mf, Fz0, gamma=0.0):
     """Peak lateral friction coefficient = vehModel's mu_*_y (MF 5.2 Dy/Fz):
-    (pDy1 + pDy2*dfz) / (1 + pDy3*gamma^2), gamma = camber [rad]."""
+    (pDy1 + pDy2*dfz) / (1 + pDy3*gamma^2) * LMUY, gamma = camber [rad]."""
     dfz = (np.asarray(Fz, dtype=float) - Fz0) / Fz0
-    return (mf.pDy1 + mf.pDy2 * dfz) / (1.0 + mf.pDy3 * np.asarray(gamma, dtype=float) ** 2)
+    return (mf.pDy1 + mf.pDy2 * dfz) / (1.0 + mf.pDy3 * np.asarray(gamma, dtype=float) ** 2) * mf.LMUY
 
 
 def _peak_force(mu, Fz, Fz0_shift):

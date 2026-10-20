@@ -115,6 +115,9 @@ def params(circuit, opt_ds, mesh="uniform"):
     d, nh = ctx.OPT_d, len(hnames)
 
     out = {k: _plain(_get(ctx, v)) for k, v in MAP.items()}
+    # MATLAB has no LMUX or LMUY, and 1.0 changes nothing: leave both out (gate 1 flags Python-only keys).
+    if ctx.mf.LMUX == ctx.mf.LMUY == 1.0:
+        del out["mf"]["LMUX"], out["mf"]["LMUY"]
     out.update(
         circuit=ctx.circuit, tire=TIRE[ctx.tyre_set], N=N,
         n_w=(m.nx + m.nu) * (N + 1) + m.nx * N * d,

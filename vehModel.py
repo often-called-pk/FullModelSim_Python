@@ -38,6 +38,12 @@ def _poly(coeffs, x, powers):
     return out
 
 
+def _mf_scale(v, f):
+    """Apply the MF 5.2 scaling factor f to v. Skip the multiplication when f is a plain number equal to
+    1.0, so the default graph stays the same. A symbolic f always multiplies."""
+    return v if isinstance(f, (int, float)) and f == 1.0 else v * f
+
+
 # physics="corrected" (A2): smooth bump and rebound stops on the strut travel xs [m, > 0 = compression]
 # replace MATLAB's hard cap, force zeroing and wheel-torque cutoff.
 # ponytail: fixed constants, promote to vp primaries when stop tuning matters
@@ -379,10 +385,11 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
 
     # ===================== Pacejka 5.2: longitudinal (Fx) =================
     Cx = mf.pCx1
-    mu_fl_x = mf.pDx1 + mf.pDx2 * dfz_fl
-    mu_fr_x = mf.pDx1 + mf.pDx2 * dfz_fr
-    mu_rl_x = mf.pDx1 + mf.pDx2 * dfz_rl
-    mu_rr_x = mf.pDx1 + mf.pDx2 * dfz_rr
+    # MF 5.2 mu_x = (pDx1 + pDx2 dfz) lambda_mux. Kxk does not change, so Bx = Kxk/(Cx Dx) falls as Dx rises.
+    mu_fl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fl, mf.LMUX)
+    mu_fr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fr, mf.LMUX)
+    mu_rl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rl, mf.LMUX)
+    mu_rr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rr, mf.LMUX)
     Dx_fl = mu_fl_x * fz_fl_shift; Dx_fr = mu_fr_x * fz_fr_shift
     Dx_rl = mu_rl_x * fz_rl_shift; Dx_rr = mu_rr_x * fz_rr_shift
 
@@ -400,7 +407,8 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     Bx_fl = Kxk_fl / (Cx*Dx_fl + vp.eps_x); Bx_fr = Kxk_fr / (Cx*Dx_fr + vp.eps_x)
     Bx_rl = Kxk_rl / (Cx*Dx_rl + vp.eps_x); Bx_rr = Kxk_rr / (Cx*Dx_rr + vp.eps_x)
 
-    def _svx(fzs, dfz): return fzs * (mf.pVx1 + mf.pVx2*dfz)
+    # MF 5.2 SVx = Fz (pVx1 + pVx2 dfz) lambda_Vx lambda_mux. lambda_Vx is 1.
+    def _svx(fzs, dfz): return _mf_scale(fzs * (mf.pVx1 + mf.pVx2*dfz), mf.LMUX)
     Svx_fl = _svx(fz_fl_shift, dfz_fl); Svx_fr = _svx(fz_fr_shift, dfz_fr)
     Svx_rl = _svx(fz_rl_shift, dfz_rl); Svx_rr = _svx(fz_rr_shift, dfz_rr)
 
@@ -427,23 +435,26 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     Gxa_rr = _gxa(Bxa_rr, Exa_rr, aS_rr, Bxa_rr, Exa_rr)
 
     # ===================== Pacejka 5.2: lateral (Fy) ======================
-    mu_fl_y = (mf.pDy1 + mf.pDy2*dfz_fl) / (1 + mf.pDy3*dynamic_camber_fl**2)
-    mu_fr_y = (mf.pDy1 + mf.pDy2*dfz_fr) / (1 + mf.pDy3*dynamic_camber_fr**2)
-    mu_rl_y = (mf.pDy1 + mf.pDy2*dfz_rl) / (1 + mf.pDy3*dynamic_camber_rl**2)
-    mu_rr_y = (mf.pDy1 + mf.pDy2*dfz_rr) / (1 + mf.pDy3*dynamic_camber_rr**2)
+    # MF 5.2 mu_y = (pDy1 + pDy2 dfz) (camber term) lambda_muy. Kya does not change, so By = Kya/(Cy Dy) falls as Dy rises.
+    mu_fl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fl) / (1 + mf.pDy3*dynamic_camber_fl**2), mf.LMUY)
+    mu_fr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fr) / (1 + mf.pDy3*dynamic_camber_fr**2), mf.LMUY)
+    mu_rl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rl) / (1 + mf.pDy3*dynamic_camber_rl**2), mf.LMUY)
+    mu_rr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rr) / (1 + mf.pDy3*dynamic_camber_rr**2), mf.LMUY)
     Dy_fl = mu_fl_y * fz_fl_shift; Dy_fr = mu_fr_y * fz_fr_shift
     Dy_rl = mu_rl_y * fz_rl_shift; Dy_rr = mu_rr_y * fz_rr_shift
     Cy = mf.pCy1
 
-    def _svyg(fzs, dfz, gam): return fzs * (mf.pVy3 + mf.pVy4*dfz) * gam
+    # MF 5.2 SVy = Fz {(pVy1 + pVy2 dfz) lambda_Vy + (pVy3 + pVy4 dfz) gamma} lambda_muy. lambda_Vy is 1.
+    # The camber part Svy_gamma carries LMUY too. Shy subtracts Svy_gamma, so the camber shift still cancels at small slip.
+    def _svyg(fzs, dfz, gam): return _mf_scale(fzs * (mf.pVy3 + mf.pVy4*dfz) * gam, mf.LMUY)
     Svy_gamma_fl = _svyg(fz_fl_shift, dfz_fl, dynamic_camber_fl)
     Svy_gamma_fr = _svyg(fz_fr_shift, dfz_fr, dynamic_camber_fr)
     Svy_gamma_rl = _svyg(fz_rl_shift, dfz_rl, dynamic_camber_rl)
     Svy_gamma_rr = _svyg(fz_rr_shift, dfz_rr, dynamic_camber_rr)
-    Svy_fl = fz_fl_shift*(mf.pVy1 + mf.pVy2*dfz_fl) + Svy_gamma_fl
-    Svy_fr = fz_fr_shift*(mf.pVy1 + mf.pVy2*dfz_fr) + Svy_gamma_fr
-    Svy_rl = fz_rl_shift*(mf.pVy1 + mf.pVy2*dfz_rl) + Svy_gamma_rl
-    Svy_rr = fz_rr_shift*(mf.pVy1 + mf.pVy2*dfz_rr) + Svy_gamma_rr
+    Svy_fl = _mf_scale(fz_fl_shift*(mf.pVy1 + mf.pVy2*dfz_fl), mf.LMUY) + Svy_gamma_fl
+    Svy_fr = _mf_scale(fz_fr_shift*(mf.pVy1 + mf.pVy2*dfz_fr), mf.LMUY) + Svy_gamma_fr
+    Svy_rl = _mf_scale(fz_rl_shift*(mf.pVy1 + mf.pVy2*dfz_rl), mf.LMUY) + Svy_gamma_rl
+    Svy_rr = _mf_scale(fz_rr_shift*(mf.pVy1 + mf.pVy2*dfz_rr), mf.LMUY) + Svy_gamma_rr
 
     def _kya(fzs, gam):
         return mf.pKy1 * vp.Fz0 * ca.sin(mf.pKy4 * ca.atan(fzs / ((mf.pKy2 + mf.pKy5*gam**2)*vp.Fz0))) / (1 + mf.pKy3*gam**2)
