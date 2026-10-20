@@ -71,6 +71,7 @@ MAP = {
     "u_min": "m23.u_min", "u_max": "m23.u_max", "duk_lb": "m23.duk_lb", "duk_ub": "m23.duk_ub",
     "ru": "ru", "rdu": "rdu", "rdu2": "rdu2", "ipopt": "opts.ipopt",
 }
+MF_SCALES = ("LMUX", "LMUY", "LFZO", "LKX", "LKY")       # MF 5.2 scaling factors with no MATLAB counterpart
 TIRE = {"MF205": "MF_205_60R15_V91"}                    # tyre_set -> the `tire` string vehParams.m selects
 
 
@@ -115,9 +116,10 @@ def params(circuit, opt_ds, mesh="uniform"):
     d, nh = ctx.OPT_d, len(hnames)
 
     out = {k: _plain(_get(ctx, v)) for k, v in MAP.items()}
-    # MATLAB has no LMUX or LMUY, and 1.0 changes nothing: leave both out (gate 1 flags Python-only keys).
-    if ctx.mf.LMUX == ctx.mf.LMUY == 1.0:
-        del out["mf"]["LMUX"], out["mf"]["LMUY"]
+    # MATLAB has no MF scaling factors, and 1.0 changes nothing: leave all five out while all are 1.0 (gate 1 flags Python-only keys).
+    if all(getattr(ctx.mf, k) == 1.0 for k in MF_SCALES):
+        for k in MF_SCALES:
+            del out["mf"][k]
     out.update(
         circuit=ctx.circuit, tire=TIRE[ctx.tyre_set], N=N,
         n_w=(m.nx + m.nu) * (N + 1) + m.nx * N * d,

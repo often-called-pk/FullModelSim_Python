@@ -85,9 +85,10 @@ def _default_mf():
         rHy1=-9.1492e-11, rHy2=0.0,
         rVy1=22.965, rVy2=0.37981, rVy3=1.8552,
         rVy4=0.08767, rVy5=-8.8234e-11, rVy6=0.90374,
-        # MF 5.2 peak-grip scaling factors lambda_mux and lambda_muy. 1.0 leaves the set as it is.
-        # MATLAB has no counterpart. vehModel.py and functions/ggv.py apply them.
-        LMUX=1.0, LMUY=1.0,
+        # MF 5.2 scaling factors (PAC2002): peak grip lambda_mux and lambda_muy, nominal load lambda_Fz0,
+        # slip stiffness lambda_Kx and lambda_Ky. 1.0 leaves the set as it is. MATLAB has no counterpart.
+        # vehModel.py applies all five. functions/ggv.py applies LMUX, LMUY and LFZO.
+        LMUX=1.0, LMUY=1.0, LFZO=1.0, LKX=1.0, LKY=1.0,
     )
 
 

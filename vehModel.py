@@ -348,10 +348,12 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     sx_rl = (vp.Rw_r*Om_rl - v_rlx) / v_rlx
     sx_rr = (vp.Rw_r*Om_rr - v_rrx) / v_rrx
 
-    dfz_fl = (fz_fl - vp.Fz0) / vp.Fz0
-    dfz_fr = (fz_fr - vp.Fz0) / vp.Fz0
-    dfz_rl = (fz_rl - vp.Fz0) / vp.Fz0
-    dfz_rr = (fz_rr - vp.Fz0) / vp.Fz0
+    # MF 5.2 (PAC2002 eq 16): dfz = (Fz - Fz0') / Fz0' with Fz0' = LFZO * Fz0. Fz0' also sets Kya below.
+    Fz0p = _mf_scale(vp.Fz0, mf.LFZO)
+    dfz_fl = (fz_fl - Fz0p) / Fz0p
+    dfz_fr = (fz_fr - Fz0p) / Fz0p
+    dfz_rl = (fz_rl - Fz0p) / Fz0p
+    dfz_rr = (fz_rr - Fz0p) / Fz0p
     fz_fl_shift = fz_fl / vp.Fz0_shift
     fz_fr_shift = fz_fr / vp.Fz0_shift
     fz_rl_shift = fz_rl / vp.Fz0_shift
@@ -401,7 +403,8 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     Ex_fl = _ex(dfz_fl, kx_fl); Ex_fr = _ex(dfz_fr, kx_fr)
     Ex_rl = _ex(dfz_rl, kx_rl); Ex_rr = _ex(dfz_rr, kx_rr)
 
-    def _kxk(fzs, dfz): return fzs * (mf.pKx1 + mf.pKx2*dfz) * ca.exp(mf.pKx3*dfz)
+    # MF 5.2 Kxk = Fz (pKx1 + pKx2 dfz) exp(pKx3 dfz) lambda_Kx. Dx does not change, so Bx = Kxk/(Cx Dx) scales with LKX.
+    def _kxk(fzs, dfz): return _mf_scale(fzs * (mf.pKx1 + mf.pKx2*dfz) * ca.exp(mf.pKx3*dfz), mf.LKX)
     Kxk_fl = _kxk(fz_fl_shift, dfz_fl); Kxk_fr = _kxk(fz_fr_shift, dfz_fr)
     Kxk_rl = _kxk(fz_rl_shift, dfz_rl); Kxk_rr = _kxk(fz_rr_shift, dfz_rr)
     Bx_fl = Kxk_fl / (Cx*Dx_fl + vp.eps_x); Bx_fr = Kxk_fr / (Cx*Dx_fr + vp.eps_x)
@@ -456,8 +459,10 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     Svy_rl = _mf_scale(fz_rl_shift*(mf.pVy1 + mf.pVy2*dfz_rl), mf.LMUY) + Svy_gamma_rl
     Svy_rr = _mf_scale(fz_rr_shift*(mf.pVy1 + mf.pVy2*dfz_rr), mf.LMUY) + Svy_gamma_rr
 
+    # MF 5.2 Kya = pKy1 Fz0' sin(pKy4 atan(Fz / ((pKy2 + pKy5 gamma^2) Fz0'))) / (1 + pKy3 gamma^2) * lambda_Ky, Fz0' = LFZO * Fz0.
+    # By = Kya/(Cy Dy) and the camber part of Shy both use the scaled Kya.
     def _kya(fzs, gam):
-        return mf.pKy1 * vp.Fz0 * ca.sin(mf.pKy4 * ca.atan(fzs / ((mf.pKy2 + mf.pKy5*gam**2)*vp.Fz0))) / (1 + mf.pKy3*gam**2)
+        return _mf_scale(mf.pKy1 * Fz0p * ca.sin(mf.pKy4 * ca.atan(fzs / ((mf.pKy2 + mf.pKy5*gam**2)*Fz0p))) / (1 + mf.pKy3*gam**2), mf.LKY)
     Kya_fl = _kya(fz_fl_shift, dynamic_camber_fl); Kya_fr = _kya(fz_fr_shift, dynamic_camber_fr)
     Kya_rl = _kya(fz_rl_shift, dynamic_camber_rl); Kya_rr = _kya(fz_rr_shift, dynamic_camber_rr)
     By_fl = Kya_fl / (Cy*Dy_fl + vp.eps_y); By_fr = Kya_fr / (Cy*Dy_fr + vp.eps_y)

@@ -49,7 +49,7 @@ Tyres     Peak friction from the Pacejka 5.2 set in ctx.mf, same expressions
           and scaling as vehModel.py:
             mu_x = (pDx1 + pDx2*dfz)*LMUX,
             mu_y = (pDy1 + pDy2*dfz)/(1 + pDy3*gamma^2)*LMUY,
-            dfz  = (Fz - Fz0)/Fz0,     peak force D = mu*Fz/Fz0_shift,
+            dfz  = (Fz - Fz0')/Fz0',   Fz0' = LFZO*Fz0,   peak force D = mu*Fz/Fz0_shift,
           LMUX, LMUY = MF 5.2 peak-grip scales lambda_mux, lambda_muy (default 1).
           gamma = static camber (CamberGain='Off'). The slip shape (B, C, E)
           and vertical shifts Sv are ignored. NOTE: with the legacy
@@ -334,7 +334,7 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     Fz_r = Fz_r0 + (1.0 - aero_front) * F_lift
 
     # ---- tyre peak forces per corner ----------------------------------------
-    Fz0, shift = vp.Fz0, vp.Fz0_shift
+    Fz0, shift = vp.Fz0 * mf.LFZO, vp.Fz0_shift             # Fz0' = LFZO * Fz0 (MF 5.2). LKX and LKY do not change the peak
     gam_f, gam_r = vp.gamma_fl_rad, vp.gamma_rl_rad         # mirrored camber -> same gamma^2
 
     def Dx(Fz):

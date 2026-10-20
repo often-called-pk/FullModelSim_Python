@@ -54,7 +54,7 @@ PARAM_GROUPS = [
     ("Dimensions", ["A", "t", "l", "wB", "hcg", "huf", "hur", "hw",
                     "hRCf", "hRCr", "hride"]),
     ("Inertias", ["I_z", "I_y", "I_x"]),
-    ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift", "LMUX", "LMUY"]),
+    ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift", "LMUX", "LMUY", "LFZO", "LKX", "LKY"]),
     ("Suspension stiffness", ["k_fl", "k_fr", "k_rl", "k_rr"]),
     ("Suspension damping", ["zeta_fl", "zeta_fr", "zeta_rl", "zeta_rr"]),
     ("Brakes", ["Tbrake_max"]),
@@ -105,6 +105,9 @@ META = {
     # MF keys use the sci field (tests/test_vp_params.py), which ignores lo, hi and step.
     "LMUX": ParamMeta("Grip scale X (LMUX)", "", "MF 5.2 lambda_mux. Scales mu_x and SVx. Kxk does not change", 0.5, 1.5, 0.01, 4, kind="sci"),
     "LMUY": ParamMeta("Grip scale Y (LMUY)", "", "MF 5.2 lambda_muy. Scales mu_y and SVy. Kya does not change", 0.5, 1.5, 0.01, 4, kind="sci"),
+    "LFZO": ParamMeta("Nominal load scale (LFZO)", "", "MF 5.2 lambda_Fz0. Fz0' = LFZO * Fz0 in dfz and Kya, full model and QSS. Same as a Fz0 override, but the 7-state init ignores it", 0.5, 1.5, 0.01, 4, kind="sci"),
+    "LKX": ParamMeta("Slip stiffness scale X (LKX)", "", "MF 5.2 lambda_Kx. Scales Kxk. Peak grip does not change. No QSS effect", 0.5, 1.5, 0.01, 4, kind="sci"),
+    "LKY": ParamMeta("Cornering stiffness scale (LKY)", "", "MF 5.2 lambda_Ky. Scales Kya. Peak grip does not change. No QSS effect", 0.5, 1.5, 0.01, 4, kind="sci"),
     # Suspension stiffness
     "k_fl": ParamMeta("Spring rate FL", "N/m", "Front-left spring rate", 0.0, 300000.0, 1000.0, 1),
     "k_fr": ParamMeta("Spring rate FR", "N/m", "Front-right spring rate", 0.0, 300000.0, 1000.0, 1),

@@ -1,12 +1,13 @@
-"""MF 5.2 peak-grip scaling factors LMUX and LMUY (plan
-docs/superpowers/plans/2026-10-20-mf-peak-grip-scaling.md, Task 1).
+"""MF 5.2 scaling factors: peak grip LMUX and LMUY, nominal load LFZO, slip stiffness LKX and LKY (plans
+docs/superpowers/plans/2026-10-20-mf-peak-grip-scaling.md, Task 1, and
+docs/superpowers/plans/2026-10-20-finish-partials.md, Task 1 (C6)).
 
 Plain script, no pytest. Each check prints PASS or FAIL, and the first FAIL stops the file. Run from the
 repo root:
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_mf_scaling.py
 
-  1. defaults (MF205 and CopyB give 1.0), vp_overrides plumbing, unknown key raises
+  1. defaults (MF205 and CopyB give 1.0 for all five), vp_overrides plumbing, unknown key raises
   2. full model, both physics, camber on (no solve):
        mu_*_x ratio 0.9 and mu_*_y ratio 0.8 at 3 operating states,
        peak fx over kappa (alpha 0) ratio 0.9 and peak fy over alpha (kappa 0) ratio 0.8 (bounded search),
@@ -14,9 +15,14 @@ repo root:
        vertical shifts Svx and Svy at zero slip, with the peak zeroed (zero-peak probe),
        camber off and pVy1 = pVy2 = 0: the fy zero crossing alpha = -SHy does not move, and Svyk scales
        (zero-crossing probe)
-  3. QSS screener: peak_mu_x and peak_mu_y scale, the lap moves, factors 1.0 give the same lap
-  4. 7-state model: builds with the factors and matches the default build exactly
-  5. parity export: no LMUX or LMUY while both are 1.0, both exported when one of them is not 1.0
+  2b. full model, both physics, camber on: LFZO 0.9 equals the Fz0 = 0.9 x 4905 override (mu, fx, fy);
+       LKX 1.2 scales dfx/dkappa at zero slip and moves no peak, mu_x, mu_y or fy;
+       LKY 1.2 scales dfy/dalpha at zero slip (pHy1 = pHy2 = 0) and moves no peak, mu_x, mu_y or fx
+  3. QSS screener: peak_mu_x and peak_mu_y scale, the lap moves, factors 1.0 give the same lap;
+       LFZO 0.9 gives the Fz0 = 0.9 x 4905 override lap; LKX and LKY leave the lap unchanged
+  4. 7-state model: builds with the factors and matches the default build exactly, LFZO, LKX, LKY included
+  5. parity export: no LMUX or LMUY while both are 1.0, both exported when one of them is not 1.0;
+       the five MF scales are dropped or kept together
 
 Sections 2 to 5 need casadi and Data/DATA_AA.mat. Without DATA_AA they print SKIP and exit 0.
 """
@@ -59,10 +65,16 @@ for tyre_set in ("MF205", "CopyB"):
     lx, ly = getattr(c.mf, "LMUX", None), getattr(c.mf, "LMUY", None)
     ok(f"{tyre_set}: mf.LMUX and mf.LMUY are float 1.0",
        isinstance(lx, float) and isinstance(ly, float) and lx == 1.0 and ly == 1.0)
+    ok(f"{tyre_set}: mf.LFZO, mf.LKX and mf.LKY are float 1.0",
+       all(isinstance(getattr(c.mf, k, None), float) and getattr(c.mf, k) == 1.0 for k in ("LFZO", "LKX", "LKY")))
 c = Ctx()
 quiet(vehParams, c, vp_overrides={"LMUX": 0.9, "LMUY": 1.1})
 ok("vp_overrides LMUX 0.9 and LMUY 1.1 land in ctx.mf",
    getattr(c.mf, "LMUX", None) == 0.9 and getattr(c.mf, "LMUY", None) == 1.1)
+c = Ctx()
+quiet(vehParams, c, vp_overrides={"LFZO": 0.9, "LKX": 1.1, "LKY": 1.2})
+ok("vp_overrides LFZO 0.9, LKX 1.1 and LKY 1.2 land in ctx.mf and ctx.mf_overrides",
+   (c.mf.LFZO, c.mf.LKX, c.mf.LKY) == (0.9, 1.1, 1.2) and c.mf_overrides == ["LFZO", "LKX", "LKY"])
 try:
     quiet(vehParams, Ctx(), vp_overrides={"LMUZ": 1.0})
     raised = False
@@ -226,6 +238,45 @@ for physics in ("matlab", "corrected"):
        f"max rel err {e:.1e} <= 1e-9)", vmin > 1.0 and e <= 1e-9)
 
 
+print("2b. LFZO, LKX, LKY (C6): full model, both physics, camber on")
+for physics in ("matlab", "corrected"):
+    c_def = build(physics, CAMBER)
+    S = op_states(c_def)
+    names = [f"mu_{w}_x" for w in W] + [f"mu_{w}_y" for w in W] + [f"fx_{w}" for w in W] + [f"fy_{w}" for w in W]
+    c_l, c_f = build(physics, {**CAMBER, "LFZO": 0.9}), build(physics, {**CAMBER, "Fz0": 0.9 * 4905.0})
+    d0, d1 = values(c_def, names, S), values(c_l, names, S)
+    e = rel_err(d1, values(c_f, names, S))
+    ok(f"{physics}: LFZO = 0.9 equals the Fz0 = 0.9 x 4905 override in mu, fx and fy at 3 states "
+       f"(max rel err {e:.1e} <= 1e-12)", e <= 1e-12)
+    ok(f"{physics}: LFZO = 0.9 moves mu and the forces (max rel change {np.max(np.abs(d1 / d0 - 1)):.2e} > 1e-3)",
+       np.max(np.abs(d1 / d0 - 1)) > 1e-3)
+
+    c_k = build(physics, {**CAMBER, "LKX": 1.2})
+    keep = [f"mu_{w}_x" for w in W] + [f"mu_{w}_y" for w in W] + [f"fy_{w}" for w in W]
+    e = rel_err(values(c_k, keep, S), values(c_def, keep, S))
+    ok(f"{physics}: LKX = 1.2 leaves mu_x, mu_y and fy at 3 states unchanged (max rel err {e:.1e} <= 1e-12)",
+       e <= 1e-12)
+    e = rel_err(zero_slip_slopes(c_k, "x"), zero_slip_slopes(c_def, "x"), 1.2)
+    ok(f"{physics}: LKX = 1.2 gives dfx/dkappa at zero slip = 1.2 x default (central difference h=1e-6, "
+       f"max rel err {e:.1e} <= 1e-6)", e <= 1e-6)
+    e = rel_err(peaks(c_k, "x"), peaks(c_def, "x"))
+    ok(f"{physics}: LKX = 1.2 leaves the peak fx unchanged (bounded search over kappa, "
+       f"max rel err {e:.1e} <= 1e-6)", e <= 1e-6)
+
+    c_h = build(physics, {**CAMBER, **HY0})
+    c_y = build(physics, {**CAMBER, **HY0, "LKY": 1.2})
+    keep = [f"mu_{w}_x" for w in W] + [f"mu_{w}_y" for w in W] + [f"fx_{w}" for w in W]
+    e = rel_err(values(c_y, keep, S), values(c_h, keep, S))
+    ok(f"{physics}: LKY = 1.2 leaves mu_x, mu_y and fx at 3 states unchanged (max rel err {e:.1e} <= 1e-12)",
+       e <= 1e-12)
+    e = rel_err(zero_slip_slopes(c_y, "y"), zero_slip_slopes(c_h, "y"), 1.2)
+    ok(f"{physics}: LKY = 1.2 gives dfy/dalpha at zero slip = 1.2 x default (pHy1 = pHy2 = 0, central difference "
+       f"h=1e-6, max rel err {e:.1e} <= 1e-6)", e <= 1e-6)
+    e = rel_err(peaks(c_y, "y"), peaks(c_h, "y"))
+    ok(f"{physics}: LKY = 1.2 leaves the peak fy unchanged (bounded search over alpha, "
+       f"max rel err {e:.1e} <= 1e-6)", e <= 1e-6)
+
+
 # =============================================================================
 print("3. QSS screener")
 c0, c1 = Ctx(), Ctx()
@@ -246,6 +297,12 @@ def qss_lap(ov):
 lap0, lap95, lap1 = qss_lap({}), qss_lap({"LMUX": 0.95, "LMUY": 0.95}), qss_lap({"LMUX": 1.0, "LMUY": 1.0})
 ok(f"QSS lap at LMUX = LMUY = 0.95 ({lap95:.3f} s) is longer than default ({lap0:.3f} s)", lap95 > lap0)
 ok(f"QSS lap at LMUX = LMUY = 1.0 equals default exactly ({lap1!r} == {lap0!r})", lap1 == lap0)
+lapF, lapK = qss_lap({"LFZO": 0.9}), qss_lap({"Fz0": 0.9 * 4905.0})
+ok(f"QSS lap at LFZO = 0.9 ({lapF:.5f} s) equals the Fz0 = 0.9 x 4905 override lap ({lapK:.5f} s) "
+   f"and differs from default ({lap0:.5f} s)", lapF == lapK and lapF != lap0)
+lapX = qss_lap({"LKX": 1.2, "LKY": 1.2})
+ok(f"QSS lap at LKX = LKY = 1.2 equals default exactly ({lapX!r} == {lap0!r}): the screener reads the peak only",
+   lapX == lap0)
 
 
 # =============================================================================
@@ -263,6 +320,13 @@ Fa = ca.Function("Fa", [a.m7.x, a.m7.u, a.m7.y, a.m7.pv], [a.m7.dx])
 Fb = ca.Function("Fb", [b.m7.x, b.m7.u, b.m7.y, b.m7.pv], [b.m7.dx])
 diff = max(float(np.max(np.abs(np.array(Fa(x, u, y, k)) - np.array(Fb(x, u, y, k))))) for x, u, y, k in pts)
 ok(f"7-state dx with the factors equals the default build (max abs diff {diff!r} == 0.0)", diff == 0.0)
+d = Ctx()
+quiet(userOpts, d, circuit="Sturn", vp_overrides={"LFZO": 0.9, "LKX": 1.1, "LKY": 1.2})
+quiet(vehModel_initial, d)
+Fd = ca.Function("Fd", [d.m7.x, d.m7.u, d.m7.y, d.m7.pv], [d.m7.dx])
+diff = max(float(np.max(np.abs(np.array(Fa(x, u, y, k)) - np.array(Fd(x, u, y, k))))) for x, u, y, k in pts)
+ok(f"7-state dx with LFZO 0.9, LKX 1.1 and LKY 1.2 equals the default build (max abs diff {diff!r} == 0.0)",
+   diff == 0.0)
 
 
 # =============================================================================
@@ -281,10 +345,16 @@ print("5. parity export")
 mf0 = export(None)["mf"]
 ok("parity export at default: no LMUX or LMUY in the mf block", "LMUX" not in mf0 and "LMUY" not in mf0)
 ok("parity export sanity: the mf block holds the MF coefficients (pDy1 present)", "pDy1" in mf0)
+ok("parity export at default: no LFZO, LKX or LKY in the mf block", not any(k in mf0 for k in ("LFZO", "LKX", "LKY")))
 # both directions: a filter that tests one factor only hides the other factor from gate 1
 for ov in ({"LMUY": 0.9}, {"LMUX": 0.9}):
     mf1, want = export(ov)["mf"], {"LMUX": 1.0, "LMUY": 1.0, **ov}
     got = {k: mf1.get(k) for k in want}
     ok(f"parity export, vp_overrides {ov}: the mf block has {got} == {want}", got == want)
+for ov in ({"LFZO": 0.9}, {"LKX": 1.1}, {"LKY": 1.2}, {"LMUY": 0.9}):
+    mf1 = export(ov)["mf"]
+    want = {"LMUX": 1.0, "LMUY": 1.0, "LFZO": 1.0, "LKX": 1.0, "LKY": 1.0, **ov}
+    got = {k: mf1.get(k) for k in want}
+    ok(f"parity export, vp_overrides {ov}: all five MF scales in the mf block, {got} == {want}", got == want)
 
 print("ALL mf_scaling TESTS PASSED")
