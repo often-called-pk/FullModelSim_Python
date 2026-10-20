@@ -8,11 +8,15 @@ Configuration is exposed as function arguments with the same defaults as the
 MATLAB file (AeroConfig='Static', ATD='On', Electric_4Motors='Off', circuit='BCN',
 vi=60, ni=nan). Edit the call (or the defaults) the way you would edit userOpts.m.
 
-Linear solver: IPOPT uses MUMPS, which is bundled inside the casadi wheel and
-needs no external library, so a solve runs out of the box on any platform.
+Linear solver: IPOPT defaults to HSL ``ma57`` (Coin-HSL, MC64 auto-scaling) and
+transparently falls back to MUMPS, which is bundled inside the casadi wheel and
+needs no external library, when no working HSL library is found, so a solve runs
+out of the box on any platform.
 """
 
 import os
+import inspect
+import numbers
 import warnings
 import numpy as np
 import scipy.io as sio
@@ -22,6 +26,8 @@ from Powertrain import Powertrain
 from vehParams import vehParams
 from functions.simpleMA import simpleMA
 from functions.importfile import mat_to_namespace
+from functions.mesh import curvature_mesh
+from functions.track_qa import check_track
 
 
 # ----------------------------------------------------------------------------- 
@@ -34,7 +40,7 @@ _REAL_CIRCUITS = {
     "BCN_S3":     "Barcelona_circuit_s3.mat",
     "Jarama":     "Jarama_circuit.mat",
     "Spa":        "Spa_circuit.mat",
-    "BCNAssetto": "Barcelona_circuit_fromassetto.mat",
+    "NBR":        "Nurburgring_circuit.mat",
 }
 
 
@@ -85,12 +91,21 @@ def _load_track(circuit, circuits_dir):
             track = SimpleNamespace(**{k: mat_to_namespace(v)
                                        for k, v in raw.items()
                                        if not k.startswith("__")})
+        if not (hasattr(track, "s") and hasattr(track, "k")):
+            raise ValueError(f"Track file '{path}' has no s/k field (found: {sorted(vars(track))})")
         track.s = np.asarray(track.s, dtype=float).reshape(-1)
         track.k = np.asarray(track.k, dtype=float).reshape(-1)
         if hasattr(track, "x"):
             track.x = np.asarray(track.x, dtype=float).reshape(-1)
         if hasattr(track, "y"):
             track.y = np.asarray(track.y, dtype=float).reshape(-1)
+        _, issues = check_track(track)
+        errors = [text for level, text in issues if level == "error"]
+        if errors:
+            raise ValueError(f"Track '{circuit}' ({path}) fails the track QA: {'; '.join(errors)}. "
+                             "Rebuild k from x, y with functions.track_qa.k_from_xy.")
+        if issues:
+            warnings.warn(f"Track '{circuit}' QA: {'; '.join(text for _, text in issues)}")
         return track
 
     k = _synthetic_curvature(circuit)
@@ -99,6 +114,97 @@ def _load_track(circuit, circuits_dir):
     k = simpleMA(k, 10, 2)                                # smoothen curvature
     s = np.linspace(0, 2 * len(k), len(k))               # ~2 m spacing assumed
     return SimpleNamespace(s=s, k=k)
+
+
+# IPOPT "screening" tolerance preset (userOpts(screening=True)): a looser
+# stopping rule for ranking / sweep solves, not a guaranteed saving. Measured on
+# Sturn (N=18, ma57): iteration counts moved by -41 % to +16 % across five matched
+# pairs (196 vs 257 with the 5-coefficient MF205 override, 290 vs 489 with the
+# full tyre_set='MF205') for lap-time changes of -4 to +20 ms; iteration counts on
+# this NLP swing up to +-40 % under 1-ulp perturbations, so judge it per track.
+# Not for final results. Applied over the defaults and under ipopt_overrides.
+SCREENING_IPOPT = {
+    "tol": 1e-3,
+    "acceptable_tol": 1e-2,
+    "dual_inf_tol": 1e-2,
+    "constr_viol_tol": 1e-3,
+    "compl_inf_tol": 1e-3,
+}
+
+# mesh='auto' (the userOpts default) picks the collocation knots from the lap
+# length L = s[-1] - s[0]: L >= MESH_AUTO_MIN_LENGTH metres gets the
+# curvature-weighted knots (BCN-size real circuits), a shorter lap stays uniform
+# (the short synthetic tracks; ZigZag / ZigZagMirror, ~2.4 km, are above it).
+# 'auto' only redistributes the knots; N stays round(L/OPT_ds). Measured: at
+# equal N the lap error vs a fine reference drops (Sturn N=18: +0.72% -> +0.16%);
+# the 2.5x BCN speedup (curvature N=103 vs uniform N=155, same lap) needs
+# OPT_ds=45 together with the curvature mesh.
+MESH_AUTO_MIN_LENGTH = 2000.0
+
+# Accepted userOpts(mesh_opts=...) keys: the curvature_mesh keyword arguments
+# (s, k and OPT_ds are passed by discretise(), so they are not mesh_opts keys).
+_MESH_OPTS_KEYS = tuple(n for n in inspect.signature(curvature_mesh).parameters
+                        if n not in ("s", "k", "OPT_ds"))
+
+# userOpts(physics=...): 'matlab' (default) keeps the inherited MATLAB vehicle
+# physics bit for bit. 'corrected' is the opt-in set of fixes A1-A6
+# (docs/laptime_sim_improvements.md, section A). The check is case-sensitive.
+PHYSICS = ("matlab", "corrected")
+
+# userOpts(Steering=..., CamberGain=...): the two vehModel switches that MATLAB hard-codes
+# ('NA' and 'Off'). vehModel reads ctx.Steering / ctx.CamberGain when its own argument is None.
+STEERING = ("NA", "Ackermann")
+CAMBER_GAIN = ("Off", "Linear", "Table")
+
+# userOpts(start_state=...) sets how the lap starts. The check is case-sensitive.
+#   'matlab'   (default) the MATLAB start box: vx = vi, vy = 0, heave / pitch / roll = 0,
+#              the rest free.
+#   'rolling'  r = 0 and a narrow box (ROLL_TOL) around the straight-line coast
+#              equilibrium on rows 9-22. MLTP fills the rows from the model.
+#   'periodic' free start. The end state and input equal the start (flying lap).
+#              Closed circuits only (CLOSED_CIRCUITS).
+START_STATES = ("matlab", "rolling", "periodic")
+ROLL_TOL = 1e-3  # ponytail: fixed chassis start-box half-width, promote to a kwarg when tuning matters
+CLOSED_CIRCUITS = ("BCN", "Jarama", "Spa", "NBR", "Circle")
+
+
+def _parse_n_bounds(n_bounds, s):
+    """userOpts(n_bounds=...) -> (lo, hi, tag): float arrays on the track stations ``s`` [m]
+    (n > 0 = left of the centreline) and the result-stem tag. None -> (None, None, "").
+
+      None      the model's own +-4 m bound, nothing per point.
+      W         a real number > 0 (not a bool): the band (-W, W), tag "hw<W>" (3.5 -> "hw3p5").
+      (lo, hi)  a tuple or list of two entries, each a number or an array of len(ctx.track.s)
+                values, tag "nbCustom". The arrays live on ctx.track.s as it is after the
+                periodic closing sample (periodic Spa 1402 values, the file 1401).
+
+    The band bounds the CG path n at the knots and the collocation points only (not between
+    them), and replaces the model's +-4 m there (it may be wider). lo < hi must hold at every point, so a fixed line
+    is a narrow band (n_ref - b, n_ref + b) around it, the correlation mode. That band is
+    continuity-feasible when b >= max |continuity mismatch of n_ref| / 4.67 (Legendre d = 3);
+    a 3 m, 100 m wavelength line at OPT_ds 30 has a mismatch of 0.078 m, so b >= 0.017 m.
+    """
+    if n_bounds is None:
+        return None, None, ""
+    if isinstance(n_bounds, numbers.Real) and not isinstance(n_bounds, (bool, np.bool_)):
+        W = float(n_bounds)
+        if not (np.isfinite(W) and W > 0):
+            raise ValueError(f"n_bounds half-width W must be finite and > 0 m, got {n_bounds!r}")
+        return np.full(s.size, -W), np.full(s.size, W), f"hw{W:g}".replace(".", "p")
+    if not (isinstance(n_bounds, (tuple, list)) and len(n_bounds) == 2):
+        raise ValueError("n_bounds must be None, a number W > 0 (the band -W..W in m) or a (lo, hi) "
+                         f"tuple or list of two entries, got {n_bounds!r:.80}")
+    try:
+        lo, hi = (np.broadcast_to(np.asarray(v, float), s.shape).copy() for v in n_bounds)
+    except (TypeError, ValueError):
+        raise ValueError("n_bounds lo and hi must each be a number or an array of "
+                         f"len(ctx.track.s) = {s.size} values") from None
+    if not (np.isfinite(lo).all() and np.isfinite(hi).all()):
+        raise ValueError("n_bounds lo and hi must be finite")
+    if not (lo < hi).all():
+        raise ValueError("n_bounds needs lo < hi at every track point; a fixed line is a narrow "
+                         "band (n_ref - b, n_ref + b)")
+    return lo, hi, "nbCustom"
 
 
 # ----------------------------------------------------------------------------- 
@@ -186,11 +292,51 @@ def userOpts(ctx,
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
              circuits_dir="Circuits",
-             data_dir="Data"):
+             data_dir="Data",
+             linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
+             hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
+             vp_overrides=None,            # dict of vehParams primary/mf overrides
+             tyre_set="MF205",             # 'MF205' (default, MATLAB-run lateral set) | 'CopyB' (legacy shipped set, pKy4=0)
+             OPT_ds=30,                    # collocation step (m)
+             OPT_d=3,                      # degree of interpolating polynomials
+             OPT_e=1e-2,                   # slack for path constraints / guesses
+             mesh="auto",                  # 'auto' | 'uniform' | 'curvature' collocation knots (auto: by lap length)
+             mesh_opts=None,               # dict for functions.mesh.curvature_mesh (a, b, ds_min, ...)
+             max_iter=6000,                # IPOPT max iterations
+             tol=1e-4,                     # IPOPT convergence tolerance
+             jit=False,                    # JIT-compile the casadi Functions (needs gcc/clang/cl)
+             cse=False,                    # casadi common-subexpression elimination (opt-in)
+             screening=False,              # loose IPOPT tolerances (SCREENING_IPOPT) for sweeps / ranking
+             ipopt_overrides=None,         # dict of IPOPT options merged in last (any option, per call)
+             physics="matlab",             # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
+             Steering="NA",                # 'NA' | 'Ackermann': front steering geometry (vehModel)
+             CamberGain="Off",             # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
+             start_state="matlab",         # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
+             n_bounds=None):               # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
+
+    # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
+    if physics not in PHYSICS:
+        raise ValueError(f"physics must be one of {list(PHYSICS)}, got {physics!r}")
+    ctx.physics = physics
+
+    # ---- start state: checked before any work, like the physics flag
+    if start_state not in START_STATES:
+        raise ValueError(f"start_state must be one of {list(START_STATES)}, got {start_state!r}")
+    if start_state == "periodic" and circuit not in CLOSED_CIRCUITS:
+        raise ValueError(f"start_state='periodic' needs a closed circuit, one of "
+                         f"{list(CLOSED_CIRCUITS)}, got {circuit!r}")
+    ctx.start_state, ctx.periodic = start_state, start_state == "periodic"
+
+    # ---- vehModel switches (checked here, read by vehModel through ctx)
+    if Steering not in STEERING:
+        raise ValueError(f"Steering must be one of {list(STEERING)}, got {Steering!r}")
+    if CamberGain not in CAMBER_GAIN:
+        raise ValueError(f"CamberGain must be one of {list(CAMBER_GAIN)}, got {CamberGain!r}")
+    ctx.Steering, ctx.CamberGain = Steering, CamberGain
 
     # ---- load powertrain and vehicle parameters ---------------------------
     Powertrain(ctx)
-    vehParams(ctx, data_dir=data_dir)
+    vehParams(ctx, data_dir=data_dir, vp_overrides=vp_overrides, tyre_set=tyre_set)
     vp, pt = ctx.vp, ctx.pt
 
     # ---- aerodynamic / torque-distribution configuration ------------------
@@ -215,6 +361,26 @@ def userOpts(ctx,
 
     # ---- track ------------------------------------------------------------
     ctx.track = _load_track(circuit, circuits_dir)
+    tr = ctx.track
+    if ctx.periodic and getattr(tr, "x", None) is not None:
+        # Spa, NBR: the file stops one step short of the start. Close the lap with a
+        # sample at the start point so the periodic rows join the same position.
+        gap = float(np.hypot(tr.x[-1] - tr.x[0], tr.y[-1] - tr.y[0]))
+        if gap > 1e-3:
+            tr.s, tr.k = np.append(tr.s, tr.s[-1] + gap), np.append(tr.k, tr.k[0])
+            tr.x, tr.y = np.append(tr.x, tr.x[0]), np.append(tr.y, tr.y[0])
+
+    # ---- lateral bounds: parsed on the final track (after the closing sample above) ----
+    n_lo, n_hi, ctx.n_tag = _parse_n_bounds(n_bounds, tr.s)
+    ctx.n_bounds = n_bounds
+    if n_lo is not None:
+        # the space-domain factor sf = (1 - n*kappa)/(...) changes sign where |n*kappa| reaches 1
+        nk = np.maximum(np.abs(n_lo), np.abs(n_hi)) * np.abs(np.asarray(tr.k, dtype=float).reshape(-1))
+        if np.max(nk) >= 1.0:
+            i = int(np.argmax(nk))
+            raise ValueError(f"n_bounds reach {max(abs(n_lo[i]), abs(n_hi[i])):.2f} m at s = {float(tr.s[i]):.1f} m, "
+                             f"beyond the corner radius 1/|k| = {1.0 / abs(float(tr.k[i])):.2f} m there")
+        tr.n_lo, tr.n_hi = n_lo, n_hi
 
     # ---- boundary conditions ----------------------------------------------
     # state order x = [vx vy r n eps Om_fl Om_fr Om_rl Om_rr
@@ -235,20 +401,61 @@ def userOpts(ctx,
                        nan, nan, nan, nan, nan, nan, nan, nan])
     ctx.Xf_init = np.array([vf, nan, nan, nan, nan, nan, nan])
 
+    # start_state variants. Xi_tol holds the half-width of the 23-state start box per state,
+    # in scaled units like OPT_e. None means OPT_e for every state. MLTP_initial does not use it.
+    ctx.Xi_tol = None
+    if start_state == "rolling":
+        # straight start: r = 0, wheels roll. Rows 1 and 5-22 are filled from the model by MLTP.
+        ctx.Xi[2] = ctx.Xi_init[2] = 0.0
+        ctx.Xi_init[5], ctx.Xi_init[6] = vi / vp.Rw_f, vi / vp.Rw_r
+        ctx.Xi_tol = np.r_[np.full(9, OPT_e), np.full(14, ROLL_TOL)]
+    elif start_state == "periodic":
+        # free start (only n if given): the NLP closes the lap with equality rows instead
+        ctx.Xi[:] = ctx.Xi_init[:] = nan
+        ctx.Xi[3] = ctx.Xi_init[3] = ni
+
     # ---- collocation options ----------------------------------------------
-    ctx.OPT_ds = 30        # collocation step (m)
-    ctx.OPT_d = 3          # degree of interpolating polynomials
-    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs
-    ctx.OPT_e = 1e-2       # slack for path constraints / initial guesses
+    ctx.OPT_ds = OPT_ds         # collocation step (m)
+    ctx.OPT_d = OPT_d           # degree of interpolating polynomials
+    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs (not exposed)
+    ctx.OPT_e = OPT_e           # slack for path constraints / initial guesses
+    # knot placement for discretise(): 'uniform' = N equal steps of ~OPT_ds;
+    # 'curvature' = the same N redistributed by functions/mesh.curvature_mesh
+    # (denser in corners / at corner entry-exit, sparser on straights);
+    # 'auto' = one of those two by lap length (MESH_AUTO_MIN_LENGTH), resolved
+    # here because it needs the track loaded above. ctx.mesh is always the
+    # concrete 'uniform' / 'curvature' (what discretise, the saved data and
+    # MLTP_screen read); ctx.mesh_requested keeps what was asked for.
+    if mesh not in ("auto", "uniform", "curvature"):
+        raise ValueError(f"mesh must be 'auto', 'uniform' or 'curvature', got {mesh!r}")
+    unknown = [key for key in (mesh_opts or {}) if key not in _MESH_OPTS_KEYS]
+    if unknown:
+        raise ValueError(f"unknown mesh_opts key(s) {unknown}; "
+                         f"allowed: {list(_MESH_OPTS_KEYS)}")
+    ctx.mesh_requested = mesh
+    if mesh == "auto":
+        L = float(ctx.track.s[-1] - ctx.track.s[0])
+        ctx.mesh = "curvature" if L >= MESH_AUTO_MIN_LENGTH else "uniform"
+    else:
+        ctx.mesh = mesh
+    ctx.mesh_opts = dict(mesh_opts) if mesh_opts else None
+    if ctx.mesh_opts and ctx.mesh == "uniform":
+        why = (f"lap {L:.0f} m < MESH_AUTO_MIN_LENGTH {MESH_AUTO_MIN_LENGTH:g} m"
+               if mesh == "auto" else "mesh='uniform'")
+        warnings.warn(f"mesh_opts ignored: mesh resolved to 'uniform' ({why}); "
+                      "pass mesh='curvature' to use them.")
+        ctx.mesh_opts = None
 
     # ---- solver options (IPOPT) -------------------------------------------
-    # MUMPS is the linear solver: it ships inside the casadi wheel and needs no
-    # external library. (HSL/MA57 would be faster but requires a licensed HSL
-    # DLL that IPOPT loads at solve time; not used here.)
+    # `linear_solver` is configurable (default 'ma57'). An ma* solver uses
+    # Coin-HSL, which IPOPT loads at solve time from `hsl_dir` (resolved against
+    # COINHSL_DIR / a seeded default in functions/hsl.py); _make_solver probes it
+    # and transparently falls back to MUMPS if it is unavailable. 'mumps' (the
+    # casadi-bundled solver) is always available and needs no external library.
     ipopt = {
-        "max_iter": 6000,
+        "max_iter": max_iter,
         "fixed_variable_treatment": "make_constraint",
-        "tol": 1e-4,
+        "tol": tol,
         "acceptable_tol": 1e-3,
         "mu_init": 1e-1,
         "mu_strategy": "adaptive",
@@ -257,10 +464,35 @@ def userOpts(ctx,
         "constr_viol_tol": 1e-4,
         "dual_inf_tol": 1e-4,
         "compl_inf_tol": 1e-4,
-        "linear_solver": "mumps",
+        "linear_solver": linear_solver,
         "print_timing_statistics": "yes",
     }
+    # screening=True swaps the five tolerances for the looser SCREENING_IPOPT
+    # preset (it also replaces the `tol` argument). Applied BEFORE the per-call
+    # overrides below, so an explicit ipopt_overrides entry still wins.
+    ctx.screening = bool(screening)
+    if ctx.screening:
+        ipopt.update(SCREENING_IPOPT)
+    # Per-call IPOPT overrides win over every default above (and, in MLTP, over
+    # the dual warm-start recipe functions.warmstart.warm_start_ipopt_opts, which
+    # is applied only to a dual-seeded resolve, never to a cold solve).
+    ctx.ipopt_overrides = dict(ipopt_overrides or {})
+    ipopt.update(ctx.ipopt_overrides)
+    hess = str(ipopt.get("hessian_approximation", "exact")).strip().lower()
+    if hess != "exact":
+        warnings.warn(f"IPOPT hessian_approximation={hess!r}: the MLTP is tuned for the "
+                      "exact Hessian; a quasi-Newton Hessian converges far more slowly on "
+                      "this NLP and can change the local optimum found.")
     ctx.opts = {"ipopt": ipopt}
+    ctx.opts["_hsl_dir"] = hsl_dir          # consumed + stripped by _make_solver
+
+    # ---- casadi Function options ------------------------------------------
+    # Both are opt-in; functions/casadi_opts.fn_opts reads ctx.cse / ctx.jit.
+    # cse=True (or MLTP_CSE=1) turns on common-subexpression elimination.
+    # jit=True (or MLTP_JIT=1) JIT-compiles the symbolic Functions; it needs
+    # gcc/clang/cl on PATH and otherwise warns once and runs without JIT.
+    ctx.jit = bool(jit)
+    ctx.cse = bool(cse)
 
     # ---- rate limits and regularisation -----------------------------------
     c = _build_c()

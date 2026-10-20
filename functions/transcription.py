@@ -10,7 +10,22 @@ Conventions reproduced from MATLAB:
   * all reshapes are column-major (order='F') to match MATLAB
   * boundary bounds use NaN-ignoring max/min (np.fmax/np.fmin) so that NaN entries
     in Xi/Xf leave the corresponding state free, exactly like MATLAB max/min.
+
+NLP symbol type (build_and_solve_nlp `sym_type`, default from env MLTP_SYM_TYPE,
+else "SX"). Both build the same NLP: same packing, constraint order, bounds and
+objective accumulation order; the model Functions are evaluated over all points
+at once via f_dyn.map(N*d) / h_eq.map(N+1) / f_sf.map(N+1).
+  * "SX" (default): the mapped calls are inlined symbolically -- bit-identical to
+    the former per-interval loop (same IPOPT iterates).
+  * "MX": the decision variables are MX, so each map stays ONE call node. nlpsol
+    builds ~15x faster, but CasADi's AD through a mapped call evaluates every
+    derivative direction at every point, so jac_g / hess_l evaluations are
+    ~8x slower, and the Jacobian/Hessian keep extra structural zeros (e.g. at
+    zero-curvature points) that change IPOPT's path. Opt-in only.
 """
+
+import os
+import time
 
 import numpy as np
 
@@ -23,21 +38,47 @@ from .trackLimits import trackLimits
 # ============================================================================
 # 1. Discretisation (pure numpy - testable without casadi)
 # ============================================================================
-def discretise(track, OPT_ds, OPT_d):
+def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None):
     """Build the collocation grid and curvature samples. Returns a namespace-like
-    dict with N, s_knot, dsk, s_col, s_full, k_knot, k_col, k_full, pv_*, tau, C, D, B."""
+    dict with N, mesh, s_knot, dsk, s_col, s_full, k_knot, k_col, k_full, pv_*,
+    tau, C, D, B, n_bounds. n_bounds is None, or (lo, hi) = track.n_lo / track.n_hi
+    (userOpts n_bounds) interpolated onto s_full.
+
+    mesh      : 'uniform' (default) -> N = round(L/OPT_ds) equal intervals;
+                'curvature' -> functions.mesh.curvature_mesh: same N by default,
+                knots redistributed towards corners and corner entry / exit.
+    mesh_opts : dict of keyword arguments for curvature_mesh (a, b, ds_min,
+                ds_max, smooth_window, N, pct, grid_ds); ignored when uniform.
+    s_knot    : explicit knot vector (overrides ``mesh``; reported as 'custom'),
+                strictly increasing, normally spanning the track [s[0], s[-1]].
+    Every output below is computed from s_knot alone, so it holds for any mesh.
+    """
     s = np.asarray(track.s, dtype=float).reshape(-1)
     k = np.asarray(track.k, dtype=float).reshape(-1)
 
     tau = np.asarray(collocation_points(OPT_d, "legendre"), dtype=float)
     C, D, B = collocation_coeff(tau)
 
-    N = int(round(s[-1] / OPT_ds))
-    s_knot = np.linspace(s.min(), s.max(), N + 1)
+    if s_knot is not None:
+        s_knot = np.asarray(s_knot, dtype=float).reshape(-1)
+        if s_knot.size < 2 or not np.all(np.diff(s_knot) > 0):
+            raise ValueError("s_knot must be strictly increasing with >= 2 entries.")
+        mesh = "custom"
+        N = s_knot.size - 1
+    elif mesh == "uniform":
+        N = max(1, int(round((s[-1] - s[0]) / OPT_ds)))
+        s_knot = np.linspace(s.min(), s.max(), N + 1)
+    elif mesh == "curvature":
+        from .mesh import curvature_mesh
+        s_knot = curvature_mesh(s, k, OPT_ds, **dict(mesh_opts or {}))
+        N = s_knot.size - 1
+    else:
+        raise ValueError(f"mesh must be 'uniform' or 'curvature', got {mesh!r}")
     dsk = np.diff(s_knot)                                   # length N
 
-    # s at collocation points (absolute)
-    start = np.concatenate(([0.0], np.cumsum(dsk[:-1])))    # start of each interval
+    # s at collocation points (absolute). start[i] = s_knot[i]: the cumulative
+    # sum is kept (offset by s_knot[0]) so the uniform grid stays bit-identical.
+    start = s_knot[0] + np.concatenate(([0.0], np.cumsum(dsk[:-1])))
     s_col = np.kron(dsk, tau) + np.kron(start, np.ones(OPT_d))
 
     # full ordered array of knot + collocation points
@@ -52,10 +93,13 @@ def discretise(track, OPT_ds, OPT_d):
     k_col = np.interp(s_col, s, k)
     k_full = np.interp(s_full, s, k)
 
-    return dict(N=N, s_knot=s_knot, dsk=dsk, s_col=s_col, s_full=s_full,
+    n_lo = getattr(track, "n_lo", None)                     # per-point lateral band, else None
+    n_bounds = None if n_lo is None else (np.interp(s_full, s, n_lo), np.interp(s_full, s, track.n_hi))
+
+    return dict(N=N, mesh=mesh, s_knot=s_knot, dsk=dsk, s_col=s_col, s_full=s_full,
                 k_knot=k_knot, k_col=k_col, k_full=k_full,
                 pv_knot=k_knot.reshape(1, -1), pv_col=k_col.reshape(1, -1),
-                pv_full=k_full.reshape(1, -1), tau=tau, C=C, D=D, B=B)
+                pv_full=k_full.reshape(1, -1), tau=tau, C=C, D=D, B=B, n_bounds=n_bounds)
 
 
 # ============================================================================
@@ -130,10 +174,15 @@ def interp_inputs(u_opt, s_knot, s_full, OPT_uinter):
 def reconstruct_track(track0, s_full, k_full, n_full, n_halfwidth_bound):
     """Rebuild cartesian track + racing line from the curvilinear solution.
 
-    track0 : original track namespace (may carry x,y centreline)
+    track0 : original track namespace (may carry x,y centreline, and n_lo / n_hi
+             from userOpts(n_bounds=...))
     n_full : lateral offset (x_full[3, :])
-    n_halfwidth_bound : value used for trackLimits width = x_s(4)*x_max(4)*2 + 2
-    Returns a dict with s, k, x, y, xopt, yopt, Xl, Xr.
+    n_halfwidth_bound : the full width given to trackLimits, 2 * the CG bound
+             (x_s[3] * x_max[3] * 2), so the edges are drawn at the CG bound.
+             Not used when track0 has n_lo / n_hi.
+    Returns a dict with s, k, x, y, xopt, yopt, Xl, Xr. With n_lo / n_hi on track0,
+    Xl / Xr are drawn at those per-point bounds (n_hi left, n_lo right) and the dict
+    also holds n_lo, n_hi on s_full.
     """
     if not hasattr(track0, "x") or not hasattr(track0, "y") \
             or getattr(track0, "x", None) is None or getattr(track0, "y", None) is None:
@@ -144,8 +193,15 @@ def reconstruct_track(track0, s_full, k_full, n_full, n_halfwidth_bound):
         y = np.interp(s_full, np.asarray(track0.s, float).reshape(-1),
                       np.asarray(track0.y, float).reshape(-1))
     xopt, yopt = cartPath(x, y, n_full)
-    Xl, Xr = trackLimits(x, y, n_halfwidth_bound)
-    return dict(s=s_full, k=k_full, x=x, y=y, xopt=xopt, yopt=yopt, Xl=Xl, Xr=Xr)
+    if getattr(track0, "n_lo", None) is not None:          # userOpts(n_bounds): per-point edges
+        s0 = np.asarray(track0.s, float).reshape(-1)
+        lo_f, hi_f = np.interp(s_full, s0, track0.n_lo), np.interp(s_full, s0, track0.n_hi)
+        Xl, Xr = np.column_stack(cartPath(x, y, hi_f)), np.column_stack(cartPath(x, y, lo_f))
+        edges = dict(n_lo=lo_f, n_hi=hi_f)
+    else:
+        Xl, Xr = trackLimits(x, y, n_halfwidth_bound)
+        edges = {}
+    return dict(s=s_full, k=k_full, x=x, y=y, xopt=xopt, yopt=yopt, Xl=Xl, Xr=Xr, **edges)
 
 
 # ============================================================================
@@ -166,24 +222,79 @@ def _pad_last(M, ca):
 
 def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
                         disc, guesses, reg, duk_lb, duk_ub,
-                        Xi, Xf, OPT_d, OPT_uinter, OPT_e, opts, param=None):
+                        Xi, Xf, OPT_d, OPT_uinter, OPT_e, opts, param=None,
+                        sym_type=None, warm=None, Xi_tol=None, periodic=False):
     """Assemble and solve the collocation NLP. Mirrors the NLP sections of
     MLTP_initial.m / MLTP.m exactly.
 
     m       : model namespace (nx,nu,ny, x_min/max,u_min/max,y_min/max, x_s,u_s,y_s)
-    f_dyn   : casadi Function (x,u[,y],pv) -> (dx, L)
+    f_dyn   : casadi Function (x,u[,y],pv[,P]) -> (dx, L)
     f_sf    : casadi Function (x,kappa) -> sf
-    h_eq    : casadi Function (x,u[,y],pv) -> h
-    disc    : output of discretise()
+    h_eq    : casadi Function (x,u[,y],pv[,P]) -> h
+    disc    : output of discretise(). disc["n_bounds"] = (lo, hi) on s_full [m], not None
+              when the track carries a userOpts(n_bounds) band: it replaces the model's
+              n bound at the knots, at the collocation points and in the start / end box
+              of n (knot values for the box). A start or end box with lower > upper (a vi
+              or ni outside the state bounds or the band) raises ValueError, always.
     guesses : dict with x0,u0,xc0[,y0]  (already scaled, shapes match)
     reg     : dict with ru,rdu,rdu2[,rdy,rdy2]  (column vectors)
-    Returns : dict(sol, N, nx, nu, ny, dt_opt_funcs, Xkj, Uk, Yk)
+    param   : optional static design parameters dict(sym, lb, ub, x0); appended
+              last to w. Only the shape of ``sym`` is used on the MX route.
+    sym_type: "SX" | "MX" | None (None -> env MLTP_SYM_TYPE, default "SX").
+              SX: the mapped model calls are inlined (bit-identical to the
+              legacy per-interval build). MX: decision variables are MX and
+              f_dyn / h_eq / f_sf are each ONE mapped call node -- much faster
+              to build, slower per IPOPT iteration (see module docstring).
+    warm    : optional warm start from a previous solve of an NLP with the SAME
+              structure: dict with any of
+                x0     full decision vector (length n_w) used instead of the
+                       guesses-built w0 (guesses are still required: they are
+                       the fallback when x0 is absent / the wrong length);
+                lam_g0 constraint multipliers (length n_g);
+                lam_x0 bound multipliers (length n_w);
+                ipopt  IPOPT options merged into opts["ipopt"] ONLY when the
+                       duals are injected (functions.warmstart.
+                       warm_start_ipopt_opts(): IPOPT ignores lam_*0 unless
+                       warm_start_init_point='yes').
+              Entries of the wrong length / non-finite are skipped with a
+              warning; duals are used only together with an accepted x0.
+    Xi_tol  : optional start-box half-widths, one per state, in scaled units like
+              OPT_e (None = OPT_e for every state). Only the start box (knot 0)
+              uses it. The end box keeps OPT_e. NaN entries of Xi stay free.
+    periodic: True adds nx + nu equality rows LAST in g, Xk[:, N] - Xk[:, 0] = 0
+              and Uk[:, N] - Uk[:, 0] = 0 (closed circuit, flying lap). The aux
+              variables Yk are not periodic. False adds no row.
+    Returns : dict(sol, solver, N, nx, nu, ny, Xk, Uk, Yk, Xkj, dt_opt,
+              sym_type, t_build, w_opt, lam_g, lam_x, n_w, n_g, structure,
+              warm_info, linear_solver) -- t_build = NLP construction wall
+              time [s] (entry -> just before the IPOPT call, incl. nlpsol
+              creation); w_opt/lam_g/lam_x = numpy primal/dual solution;
+              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic}
+              (what a later solve must match to re-inject them). n_periodic is
+              nx + nu with periodic=True, else 0. warm_info = which
+              warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
+              linear_solver = the one actually used (after any HSL fallback).
+              With env MLTP_KEEP_NLP=1 also nlp_fg (Function w -> (J, g)) and
+              bounds (1-D numpy lbw, ubw, lbg, ubg and w0, the x0 given to IPOPT).
     """
-    SX = ca.SX
+    t_enter = time.perf_counter()
+    if sym_type is None:
+        sym_type = os.environ.get("MLTP_SYM_TYPE", "SX")
+    sym_type = str(sym_type).strip().upper()
+    if sym_type not in ("MX", "SX"):
+        raise ValueError(f"sym_type must be 'MX' or 'SX', got {sym_type!r}")
+    Sym = ca.MX if sym_type == "MX" else ca.SX
+
     nx, nu, ny = m.nx, m.nu, m.ny
     has_aux = ny > 0
     has_param = param is not None
-    P = param["sym"] if has_param else None
+    P = None
+    if has_param:
+        P = param["sym"]
+        if not isinstance(P, Sym):
+            # the caller's symbol (SX) cannot enter an MX graph: use a fresh
+            # decision symbol of the same shape as the Function input instead
+            P = Sym.sym("P", P.size1(), P.size2())
     N = disc["N"]
     dsk = disc["dsk"]
     tau = disc["tau"]
@@ -192,10 +303,10 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     k_knot = ca.DM(disc["k_knot"].reshape(1, -1))
 
     # decision variables
-    Xk = SX.sym("Xk", nx, N + 1)
-    Uk = SX.sym("Uk", nu, N + 1)
-    Yk = SX.sym("Yk", ny, N + 1) if has_aux else SX.zeros(0, N + 1)
-    Xkj = SX.sym("Xkj", nx, N * OPT_d)
+    Xk = Sym.sym("Xk", nx, N + 1)
+    Uk = Sym.sym("Uk", nu, N + 1)
+    Yk = Sym.sym("Yk", ny, N + 1) if has_aux else Sym.zeros(0, N + 1)
+    Xkj = Sym.sym("Xkj", nx, N * OPT_d)
 
     # input (and aux) derivatives for regularisation
     duk = _col_diff(Uk, dsk, ca)
@@ -216,8 +327,9 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
 
     # boundary bounds (NaN-ignoring, as MATLAB max/min)
     x_min, x_max = m.x_min, m.x_max
-    x0_min = np.fmax(x_min, Xi / x_s - OPT_e)
-    x0_max = np.fmin(x_max, Xi / x_s + OPT_e)
+    e0 = OPT_e if Xi_tol is None else np.asarray(Xi_tol, float).reshape(-1)   # start-box half-width
+    x0_min = np.fmax(x_min, Xi / x_s - e0)
+    x0_max = np.fmin(x_max, Xi / x_s + e0)
     xf_min = np.fmax(x_min, Xf / x_s - OPT_e)
     xf_max = np.fmin(x_max, Xf / x_s + OPT_e)
 
@@ -225,7 +337,31 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     lbg = [x0_min.reshape(-1, 1), xf_min.reshape(-1, 1)]
     ubg = [x0_max.reshape(-1, 1), xf_max.reshape(-1, 1)]
 
-    # collocation constraints + objective
+    # dynamics + objective integrand at ALL N*d collocation points in one call.
+    # Column OPT_d*k + j is point j of interval k (the Xkj column order). Inputs
+    # use the same arithmetic as the per-interval form Uk[:,k] + kron(duk[:,k], tau):
+    # element (i, OPT_d*k+j) = Uk[i,k] + duk[i,k]*tau[j]; 'constant' holds Uk[:,k].
+    nd = N * OPT_d
+    rep = np.repeat(np.arange(N), OPT_d).tolist()       # interval index per point
+
+    # functions/refine.py (nlp_inputs, defect_errors) mirrors this arithmetic and
+    # tests/test_refine.py pins it with a tiny solve: change both together.
+    def _at_points(V, dV):
+        if OPT_uinter == "linear":
+            tau_rep = ca.DM(np.tile(np.asarray(tau).reshape(1, -1), (V.size1(), N)))
+            return V[:, rep] + dV[:, rep] * tau_rep
+        return V[:, rep]
+
+    dyn_args = [Xkj, _at_points(Uk, duk)]
+    if has_aux:
+        dyn_args.append(_at_points(Yk, dyk))
+    dyn_args.append(pv_col)
+    if has_param:
+        dyn_args.append(ca.repmat(P, 1, nd))            # shared by every point
+    # MX: a single call node; SX: inlined per point (same as the legacy call)
+    dX_all, L_all = f_dyn.map(nd)(*dyn_args)
+
+    # collocation constraints + objective (per-interval linear assembly)
     gck = []
     J = 0
     dt_opt = []
@@ -234,19 +370,8 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
         Z = ca.horzcat(Xk[:, k], Xkj[:, cols])
         dPi = ca.mtimes(Z, C)
 
-        Ucol = Uk[:, k]
-        if OPT_uinter == "linear":
-            Ucol = Uk[:, k] + ca.kron(duk[:, k], ca.DM(tau.reshape(1, -1)))
-        args = [Xkj[:, cols], Ucol]
-        if has_aux:
-            Ycol = Yk[:, k]
-            if OPT_uinter == "linear":
-                Ycol = Yk[:, k] + ca.kron(dyk[:, k], ca.DM(tau.reshape(1, -1)))
-            args.append(Ycol)
-        args.append(pv_col[:, cols])
-        if has_param:
-            args.append(P)
-        dXkj, Qk = f_dyn(*args)
+        dXkj = dX_all[:, cols]
+        Qk = L_all[:, cols]
 
         Xk_end = ca.mtimes(Z, D)
         gck.append(dsk[k] * ca.reshape(dXkj, -1, 1) - ca.reshape(dPi, -1, 1))
@@ -260,18 +385,19 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
 
         dt_opt.append(ca.mtimes(Qk, B) * dsk[k])
 
-    # path constraints
+    # path constraints (one mapped call over the N+1 knots; a plain call with
+    # N+1 columns would unroll into N+1 call nodes on MX)
     hargs = [Xk, Uk]
     if has_aux:
         hargs.append(Yk)
     hargs.append(ca.DM(disc["pv_knot"]))
     if has_param:
-        hargs.append(P)
-    ghk = h_eq(*hargs)
+        hargs.append(ca.repmat(P, 1, N + 1))
+    ghk = h_eq.map(N + 1)(*hargs)
     ghk = ca.reshape(ghk, -1, 1)
 
     # rate-of-input constraints (in time): du/dt = du/ds * 1/sf
-    Sfk = f_sf(Xk, k_knot)
+    Sfk = f_sf.map(N + 1)(Xk, k_knot)
     Sfk = ca.reshape(Sfk, 1, -1)
     duk_t = duk / ca.repmat(Sfk[:, :N], nu, 1)
     gduk = ca.reshape(duk_t, -1, 1)
@@ -303,39 +429,135 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     ubw = np.vstack(ubw)
     w0 = np.vstack(w0)
 
+    # periodic lap: end state and end input equal the start, appended last to g
+    gper = [ca.vertcat(Xk[:, N] - Xk[:, 0], Uk[:, N] - Uk[:, 0])] if periodic else []
+    zper = [np.zeros((nx + nu, 1))] if periodic else []
+
     # assemble g and bounds
-    g = ca.vertcat(*gb, *gck, ghk, gduk)
+    g = ca.vertcat(*gb, *gck, ghk, gduk, *gper)
     lbg = np.vstack(lbg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_lb).reshape(-1, 1), (N + 1, 1))]
-                    + [np.tile(np.asarray(duk_lb).reshape(-1, 1), (N, 1))])
+                    + [np.tile(np.asarray(duk_lb).reshape(-1, 1), (N, 1))]
+                    + zper)
     ubg = np.vstack(ubg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_ub).reshape(-1, 1), (N + 1, 1))]
-                    + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))])
+                    + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))]
+                    + zper)
+
+    # per-point lateral band (userOpts n_bounds; n is state row 3 in both models): it replaces the
+    # model's +-4 m at the knots, at the collocation points and in the start / end box of n.
+    nb = disc.get("n_bounds")
+    if nb is not None:
+        lo, hi = (np.asarray(v, float) for v in nb)
+        knot = np.arange(N + 1) * (OPT_d + 1); col = np.delete(np.arange(knot[-1] + 1), knot)
+        sc = 1.0 / x_s[3]
+        iX = 3 + nx * np.arange(N + 1); iC = (nx + nu + ny) * (N + 1) + 3 + nx * np.arange(N * OPT_d)
+        lbw[iX, 0], lbw[iC, 0] = lo[knot] * sc, lo[col] * sc
+        ubw[iX, 0], ubw[iC, 0] = hi[knot] * sc, hi[col] * sc
+        e3 = np.broadcast_to(e0, (nx,))[3]
+        lbg[3, 0] = np.fmax(lo[0] * sc, Xi[3] / x_s[3] - e3); ubg[3, 0] = np.fmin(hi[0] * sc, Xi[3] / x_s[3] + e3)
+        lbg[nx + 3, 0] = np.fmax(lo[-1] * sc, Xf[3] / x_s[3] - OPT_e); ubg[nx + 3, 0] = np.fmin(hi[-1] * sc, Xf[3] / x_s[3] + OPT_e)
+    bad = np.flatnonzero(lbg[:2 * nx, 0] > ubg[:2 * nx, 0])
+    if bad.size:
+        raise ValueError(f"empty start/end box at g rows {bad.tolist()} (lower > upper): check vi, ni and n_bounds")
 
     nlp = {"f": J, "x": w, "g": g}
-    solver = _make_solver(ca, nlp, opts)
 
-    sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg)
+    # ---- structure record + optional primal/dual warm start ---------------
+    n_w, n_g = int(w.size1()), int(g.size1())
+    structure = dict(nx=int(nx), nu=int(nu), ny=int(ny), N=int(N), OPT_d=int(OPT_d),
+                     n_w=n_w, n_g=n_g, n_param=int(P.numel()) if has_param else 0,
+                     n_periodic=int(nx + nu) if periodic else 0)
+    solve_kw = {}
+    warm_info = dict(x0=False, lam_g0=False, lam_x0=False, ipopt=False, duals=False)
+    if warm:
+        import warnings
 
-    return dict(sol=sol, solver=solver, N=N, nx=nx, nu=nu, ny=ny,
-                Xk=Xk, Uk=Uk, Yk=Yk, Xkj=Xkj, dt_opt=dt_opt)
+        def _seed(key, n):
+            v = warm.get(key)
+            if v is None:
+                return None
+            v = np.asarray(v, dtype=float).reshape(-1, 1)
+            if v.shape[0] != n or not np.all(np.isfinite(v)):
+                warnings.warn(f"warm start: {key} ignored ({v.shape[0]} entries, NLP needs {n}"
+                              f"{'' if np.all(np.isfinite(v)) else ', non-finite values'})",
+                              RuntimeWarning, stacklevel=3)
+                return None
+            return v
+
+        x0_warm = _seed("x0", n_w)
+        if x0_warm is not None:
+            w0 = x0_warm
+            warm_info["x0"] = True
+            for key, n in (("lam_g0", n_g), ("lam_x0", n_w)):
+                lam = _seed(key, n)
+                if lam is not None:
+                    solve_kw[key] = lam
+                    warm_info[key] = True
+        elif warm.get("lam_g0") is not None or warm.get("lam_x0") is not None:
+            warnings.warn("warm start: dual seeds ignored without an accepted primal x0",
+                          RuntimeWarning, stacklevel=2)
+        if warm_info["lam_g0"] and warm.get("ipopt"):
+            opts = dict(opts)
+            opts["ipopt"] = {**opts.get("ipopt", {}), **dict(warm["ipopt"])}
+            warm_info["ipopt"] = True
+        ws_point = str(opts.get("ipopt", {}).get("warm_start_init_point", "no")).lower()
+        warm_info["duals"] = bool(warm_info["lam_g0"] and ws_point == "yes")
+        if warm_info["lam_g0"] and not warm_info["duals"]:
+            warnings.warn("warm start: duals passed but warm_start_init_point != 'yes', "
+                          "so IPOPT ignores them", RuntimeWarning, stacklevel=2)
+        print(f"[transcription] warm start: primal x0 {'yes' if warm_info['x0'] else 'no'}, "
+              f"duals {'yes' if warm_info['duals'] else 'no'}"
+              + (" (IPOPT warm-start options applied)" if warm_info["ipopt"] else ""))
+
+    t_asm = time.perf_counter() - t_enter
+    solver_info = {}
+    solver = _make_solver(ca, nlp, opts, info=solver_info)
+    t_build = time.perf_counter() - t_enter
+    print(f"[transcription] NLP build ({sym_type}, N={N}): {t_build:.2f} s "
+          f"(assembly {t_asm:.2f} s, nlpsol {t_build - t_asm:.2f} s)")
+
+    keep = {}                   # MLTP_KEEP_NLP=1 (validation gate 2): opt-in, the SX graph is large at N=465
+    if os.environ.get("MLTP_KEEP_NLP", "").strip().lower() in ("1", "true", "yes", "on"):
+        keep = dict(nlp_fg=ca.Function("nlp_fg", [w], [J, g]),
+                    bounds={k: v.reshape(-1) for k, v in dict(lbw=lbw, ubw=ubw, lbg=lbg, ubg=ubg, w0=w0).items()})
+
+    sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg, **solve_kw)
+
+    return dict(sol=sol, solver=solver, N=N, nx=nx, nu=nu, ny=ny, **keep,
+                Xk=Xk, Uk=Uk, Yk=Yk, Xkj=Xkj, dt_opt=dt_opt,
+                sym_type=sym_type, t_build=t_build,
+                w_opt=np.array(sol["x"]).reshape(-1),
+                lam_g=np.array(sol["lam_g"]).reshape(-1),
+                lam_x=np.array(sol["lam_x"]).reshape(-1),
+                n_w=n_w, n_g=n_g, structure=structure, warm_info=warm_info,
+                linear_solver=solver_info.get("linear_solver"))
 
 
-def _make_solver(ca, nlp, opts):
-    """Create the IPOPT solver. Forces the MUMPS linear solver (bundled with the
-    casadi wheel) and strips any HSL/MA57 request, so a solve never fails on a
-    missing HSL DLL regardless of what is in opts. (HSL is loaded by IPOPT at
-    solve time, not construction time, so it cannot be caught with a try/except
-    around solver construction -- the reliable fix is to not request it.)"""
+def _make_solver(ca, nlp, opts, info=None):
+    """Create the IPOPT solver with a configurable linear solver.
+
+    If an HSL solver (ma*) is requested, register the Coin-HSL DLL directory,
+    probe once that IPOPT can load it, and use it via the `hsllib` option; if
+    HSL is unavailable or fails to load, transparently fall back to MUMPS
+    (bundled in the casadi wheel) so a solve never crashes on a missing or
+    incompatible HSL DLL. The HSL directory is taken from a private top-level
+    `opts["_hsl_dir"]` hint (set by userOpts) resolved against COINHSL_DIR and
+    a seeded default; the hint is always stripped before reaching CasADi.
+    `info` (optional dict) receives the effective "linear_solver".
+    """
     import copy
+    from functions.hsl import apply_linear_solver, resolve_hsl_dir
+
     opts = copy.deepcopy(opts)
+    hsl_dir = resolve_hsl_dir(explicit=opts.pop("_hsl_dir", None))
     ip = opts.setdefault("ipopt", {})
-    if ip.get("linear_solver", "mumps").startswith("ma"):     # ma27/ma57/ma77/ma86/ma97
-        ip["linear_solver"] = "mumps"
-    ip.pop("hsllib", None)
+    linear_solver = ip.get("linear_solver", "mumps")
+    if str(linear_solver).startswith("ma"):
+        opts = apply_linear_solver(opts, linear_solver=linear_solver,
+                                   hsl_dir=hsl_dir)
+    if info is not None:
+        info["linear_solver"] = opts.get("ipopt", {}).get("linear_solver", "mumps")
     return ca.nlpsol("solver", "ipopt", nlp, opts)
-    # opts = {**opts, "jit": True, "compiler": "shell",
-    #     "jit_options": {"flags": ["-O3"], "compiler": "gcc"}}
-    # return ca.nlpsol("solver", "ipopt", nlp, opts)

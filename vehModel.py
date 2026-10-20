@@ -5,11 +5,17 @@ unsprung-mass and four tyre-deflection states, full Pacejka 5.2 Magic Formula
 (pure + combined slip, both axes, with camber), active aerodynamics, and the
 single-motor / ATD / four-motor (EM4) powertrain branches.
 
-The selected tyre coefficient set is read from ``ctx.mf`` (Copy B, per the user's
-confirmation), the DATA_AA aero polynomials from ``ctx.aero``, and the linear
-camber-gain coefficients from ``ctx.cg``. Hard-coded model switches in the MATLAB
-(``Steering='NA'``, ``CamberGain='Off'``, ``TyreModel='CombinedSlip'``) are exposed
-as arguments with the same defaults.
+The tyre set ``ctx.mf`` comes from vehParams' ``tyre_set`` (default "MF205"; legacy
+"CopyB" has pKy4=0); the model is tyre-set agnostic. The DATA_AA aero polynomials
+come from ``ctx.aero`` and the linear camber-gain coefficients from ``ctx.cg``.
+Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``,
+``TyreModel='CombinedSlip'``) are exposed as arguments. Steering and CamberGain default to None,
+which reads ``ctx.Steering`` / ``ctx.CamberGain`` (userOpts; "NA" / "Off" when unset);
+``m.TyreModel`` also selects MLTP.build_path_constraints' row set, as in MLTP.m.
+``ctx.physics`` (userOpts; "matlab" default) selects the equations: "matlab" keeps the inherited
+vehModel.m terms bit for bit, "corrected" applies the opt-in fixes of docs/laptime_sim_improvements.md
+section A (A1 mass bookkeeping, A2 suspension, A3 frame-consistent body equations, A4 aero load path,
+A5 EM4 motor speed, A6 toe indices).
 
 There are NO aux variables (ny = 0): the load transfers are produced by the
 suspension/tyre states, not by algebraic decision variables.
@@ -32,8 +38,40 @@ def _poly(coeffs, x, powers):
     return out
 
 
-def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
+def _mf_scale(v, f):
+    """Apply the MF 5.2 scaling factor f to v. Skip the multiplication when f is a plain number equal to
+    1.0, so the default graph stays the same. A symbolic f always multiplies."""
+    return v if isinstance(f, (int, float)) and f == 1.0 else v * f
+
+
+# physics="corrected" (A2): smooth bump and rebound stops on the strut travel xs [m, > 0 = compression]
+# replace MATLAB's hard cap, force zeroing and wheel-torque cutoff.
+# ponytail: fixed constants, promote to vp primaries when stop tuning matters
+BUMP_GAP, REBOUND_GAP, K_STOP, W_STOP = 0.075, 0.05, 1e6, 0.002
+
+
+# rolling_start (userOpts start_state='rolling'). Unknowns: the state rows zs, theta, phi,
+# zt_fl..zt_rr and vy, plus the last input (delta). Residual: the time derivatives of the rows
+# zsdot, thetadot, phidot, wu_fl..wu_rr, vy and r.
+ROLL_UNKNOWN = (9, 11, 13, 19, 20, 21, 22, 1)
+ROLL_RESIDUAL = (10, 12, 14, 15, 16, 17, 18, 1, 2)
+
+
+def _softplus(z):
+    """log(1 + exp(z)); z itself above 30, so exp cannot overflow."""
+    return ca.if_else(z > 30, z, ca.log1p(ca.exp(z)))
+
+
+def _stop_force(xs):
+    """Bump (xs > BUMP_GAP) minus rebound (xs < -REBOUND_GAP) stop force on the body [N]."""
+    return K_STOP * W_STOP * (_softplus((xs - BUMP_GAP) / W_STOP) - _softplus((-xs - REBOUND_GAP) / W_STOP))
+
+
+def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
+    phys = getattr(ctx, "physics", "matlab")    # "corrected": opt-in physics fixes (userOpts)
+    Steering = getattr(ctx, "Steering", "NA") if Steering is None else Steering
+    CamberGain = getattr(ctx, "CamberGain", "Off") if CamberGain is None else CamberGain
     aero = ctx.aero
     cg = ctx.cg
     OPT_e = ctx.OPT_e
@@ -84,7 +122,7 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     x_s = np.array([vx_s, vy_s, r_s, n_s, eps_s, Om_fl_s, Om_fr_s, Om_rl_s, Om_rr_s,
                     zs_s, zsdot_s, theta_s, thetadot_s, phi_s, phidot_s,
                     wu_fl_s, wu_fr_s, wu_rl_s, wu_rr_s, zt_fl_s, zt_fr_s, zt_rl_s, zt_rr_s])
-    x_lim = x_lim / x_s[:, None]
+    x_lim = x_lim * (1.0 / x_s[:, None])    # vehModel.m:130-138 multiplies by 1/x_s (lim / x_s is 1 ulp off)
     x_min, x_max = x_lim[:, 0], x_lim[:, 1]
 
     x = ca.vertcat(vx_n, vy_n, r_n, n_n, eps_n, Om_fl_n, Om_fr_n, Om_rl_n, Om_rr_n,
@@ -165,13 +203,22 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
                    (activeAeroFR_n, activeAeroFR_s, activeAeroFR_lim),
                    (activeAeroRW_n, activeAeroRW_s, activeAeroRW_lim),
                    (activeAeroTW_n, activeAeroTW_s, activeAeroTW_lim)]
-    u_list.append((delta_n, delta_max, delta_lim))
+    u_list.append((delta_n, np.pi / 8, delta_lim))  # pi/8 as vehModel.m runs it, not delta_max
 
     u = ca.vertcat(*[s for (s, _, _) in u_list])
     u_s = np.array([sc for (_, sc, _) in u_list], dtype=float)
     u_lim = np.vstack([lr for (_, _, lr) in u_list])
     u_min, u_max = u_lim[:, 0], u_lim[:, 1]
     nu = u.shape[0]
+
+    # rate-of-input limits: userOpts gives them per second in physical units (Nm/s,
+    # rad/s, deg/s, 1/s, order = ctx.input_keys = u); the NLP bounds the rate of the
+    # NORMALISED inputs, so divide by u_s as vehModel.m L377-379 does. Steering u_s is
+    # pi/8 as vehModel.m runs it (delta_s leaked from vehModel_initial.m L88) although
+    # delta = delta_max * delta_n: bound 0.1/(pi/8) = 0.2546 /s on delta_n, 0.1556 rad/s.
+    duk_ub = np.asarray(ctx.duk_ub, dtype=float).reshape(-1) / u_s
+    duk_lb = np.asarray(ctx.duk_lb, dtype=float).reshape(-1) / u_s
+    assert nu == duk_ub.size == duk_lb.size, "Rate limits (ctx.input_keys) do not match the inputs"
 
     # ===================== variable parameter ==============================
     kappa = SX.sym("kappa")
@@ -232,23 +279,37 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     xsrl_dot = wu_rl - (+vp.l_r * thetadot + (vp.t/2) * phidot + zsdot)
     xsrr_dot = wu_rr - (+vp.l_r * thetadot - (vp.t/2) * phidot + zsdot)
 
-    xs_fl = -(zs - vp.l_f * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
-    xs_fr = -(zs - vp.l_f * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
-    xs_rl = -(zs + vp.l_r * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
-    xs_rr = -(zs + vp.l_r * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
+    if phys == "corrected":
+        # A2: the strut runs from the body to the wheel, so its travel includes the tyre deflection
+        # (zt - xti), at small angles: xs_dot above is then the exact time derivative of xs. Smooth
+        # stops replace the hard cap and the force zeroing. A4: the aero downforce is no spring force
+        # (it acts on the body in dzsdot, dthetadot and dphidot below).
+        xs_fl = -(zs - vp.l_f * theta + (vp.t/2) * phi) - (zt_fl - vp.xti_fl)
+        xs_fr = -(zs - vp.l_f * theta - (vp.t/2) * phi) - (zt_fr - vp.xti_fr)
+        xs_rl = -(zs + vp.l_r * theta + (vp.t/2) * phi) - (zt_rl - vp.xti_rl)
+        xs_rr = -(zs + vp.l_r * theta - (vp.t/2) * phi) - (zt_rr - vp.xti_rr)
+        fzs_fl = vp.k_fl * (xs_fl + vp.xsi_fl) + vp.c_fl * xsfl_dot + _stop_force(xs_fl)
+        fzs_fr = vp.k_fr * (xs_fr + vp.xsi_fr) + vp.c_fr * xsfr_dot + _stop_force(xs_fr)
+        fzs_rl = vp.k_rl * (xs_rl + vp.xsi_rl) + vp.c_rl * xsrl_dot + _stop_force(xs_rl)
+        fzs_rr = vp.k_rr * (xs_rr + vp.xsi_rr) + vp.c_rr * xsrr_dot + _stop_force(xs_rr)
+    else:
+        xs_fl = -(zs - vp.l_f * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
+        xs_fr = -(zs - vp.l_f * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
+        xs_rl = -(zs + vp.l_r * ca.sin(theta) + (vp.t/2) * ca.sin(phi))
+        xs_rr = -(zs + vp.l_r * ca.sin(theta) - (vp.t/2) * ca.sin(phi))
 
-    def _cap(xs):
-        return ca.if_else(xs >= 0.075, 0.075, ca.if_else(xs <= -0.05, -0.05, xs))
-    xs_fl, xs_fr, xs_rl, xs_rr = _cap(xs_fl), _cap(xs_fr), _cap(xs_rl), _cap(xs_rr)
+        def _cap(xs):
+            return ca.if_else(xs >= 0.075, 0.075, ca.if_else(xs <= -0.05, -0.05, xs))
+        xs_fl, xs_fr, xs_rl, xs_rr = _cap(xs_fl), _cap(xs_fr), _cap(xs_rl), _cap(xs_rr)
 
-    fzs_fl = vp.k_fl * (xs_fl + vp.xsi_fl) + vp.c_fl * xsfl_dot + f_lift_fl
-    fzs_fr = vp.k_fr * (xs_fr + vp.xsi_fr) + vp.c_fr * xsfr_dot + f_lift_fr
-    fzs_rl = vp.k_rl * (xs_rl + vp.xsi_rl) + vp.c_rl * xsrl_dot + f_lift_rl
-    fzs_rr = vp.k_rr * (xs_rr + vp.xsi_rr) + vp.c_rr * xsrr_dot + f_lift_rr
-    fzs_fl = ca.if_else(xs_fl >= 0.075, 0, fzs_fl)
-    fzs_fr = ca.if_else(xs_fr >= 0.075, 0, fzs_fr)
-    fzs_rl = ca.if_else(xs_rl >= 0.075, 0, fzs_rl)
-    fzs_rr = ca.if_else(xs_rr >= 0.075, 0, fzs_rr)
+        fzs_fl = vp.k_fl * (xs_fl + vp.xsi_fl) + vp.c_fl * xsfl_dot + f_lift_fl
+        fzs_fr = vp.k_fr * (xs_fr + vp.xsi_fr) + vp.c_fr * xsfr_dot + f_lift_fr
+        fzs_rl = vp.k_rl * (xs_rl + vp.xsi_rl) + vp.c_rl * xsrl_dot + f_lift_rl
+        fzs_rr = vp.k_rr * (xs_rr + vp.xsi_rr) + vp.c_rr * xsrr_dot + f_lift_rr
+        fzs_fl = ca.if_else(xs_fl >= 0.075, 0, fzs_fl)
+        fzs_fr = ca.if_else(xs_fr >= 0.075, 0, fzs_fr)
+        fzs_rl = ca.if_else(xs_rl >= 0.075, 0, fzs_rl)
+        fzs_rr = ca.if_else(xs_rr >= 0.075, 0, fzs_rr)
 
     fzt_fl = zt_fl * vp.kt
     fzt_fr = zt_fr * vp.kt
@@ -257,18 +318,22 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     fz_fl, fz_fr, fz_rl, fz_rr = fzt_fl, fzt_fr, fzt_rl, fzt_rr
 
     # ===================== tyre slip & loads ==============================
+    # A6: MATLAB takes the Ackermann front wheels' toe from the rear axle and the toe of sa_rr from the
+    # front axle. "corrected" uses the toe of the axle each wheel sits on.
+    toe_ack, toe_rr = ((vp.toe_front_rad, vp.toe_rear_rad) if phys == "corrected"
+                       else (vp.toe_rear_rad, vp.toe_front_rad))
     if Steering == "NA":
         sa_fl = delta - ca.atan((vp.l_f*r + vy) / (vx - r*vp.t/2)) + vp.toe_front_rad
         sa_fr = delta - ca.atan((vp.l_f*r + vy) / (vx + r*vp.t/2)) - vp.toe_front_rad
     elif Steering == "Ackermann":
         delta_fl = ca.atan(vp.l_f / (vp.l_f / ca.tan(delta) - vp.t/2))
         delta_fr = ca.atan(vp.l_f / (vp.l_f / ca.tan(delta) + vp.t/2))
-        sa_fl = delta_fl - ca.atan((vp.l_f*r + vy) / (vx - r*vp.t/2)) + vp.toe_rear_rad
-        sa_fr = delta_fr - ca.atan((vp.l_f*r + vy) / (vx + r*vp.t/2)) - vp.toe_rear_rad
+        sa_fl = delta_fl - ca.atan((vp.l_f*r + vy) / (vx - r*vp.t/2)) + toe_ack
+        sa_fr = delta_fr - ca.atan((vp.l_f*r + vy) / (vx + r*vp.t/2)) - toe_ack
     else:
         raise ValueError("Steering must be 'NA' or 'Ackermann'")
     sa_rl = ca.atan((vp.l_r*r - vy) / (vx - r*vp.t/2)) + vp.toe_rear_rad
-    sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*vp.t/2)) - vp.toe_front_rad
+    sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*vp.t/2)) - toe_rr
 
     v_fl = ca.sqrt((vy + vp.l_f*r)**2 + (vx - r*vp.t/2)**2)
     v_fr = ca.sqrt((vy + vp.l_f*r)**2 + (vx + r*vp.t/2)**2)
@@ -320,10 +385,11 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
 
     # ===================== Pacejka 5.2: longitudinal (Fx) =================
     Cx = mf.pCx1
-    mu_fl_x = mf.pDx1 + mf.pDx2 * dfz_fl
-    mu_fr_x = mf.pDx1 + mf.pDx2 * dfz_fr
-    mu_rl_x = mf.pDx1 + mf.pDx2 * dfz_rl
-    mu_rr_x = mf.pDx1 + mf.pDx2 * dfz_rr
+    # MF 5.2 mu_x = (pDx1 + pDx2 dfz) lambda_mux. Kxk does not change, so Bx = Kxk/(Cx Dx) falls as Dx rises.
+    mu_fl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fl, mf.LMUX)
+    mu_fr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fr, mf.LMUX)
+    mu_rl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rl, mf.LMUX)
+    mu_rr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rr, mf.LMUX)
     Dx_fl = mu_fl_x * fz_fl_shift; Dx_fr = mu_fr_x * fz_fr_shift
     Dx_rl = mu_rl_x * fz_rl_shift; Dx_rr = mu_rr_x * fz_rr_shift
 
@@ -341,7 +407,8 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     Bx_fl = Kxk_fl / (Cx*Dx_fl + vp.eps_x); Bx_fr = Kxk_fr / (Cx*Dx_fr + vp.eps_x)
     Bx_rl = Kxk_rl / (Cx*Dx_rl + vp.eps_x); Bx_rr = Kxk_rr / (Cx*Dx_rr + vp.eps_x)
 
-    def _svx(fzs, dfz): return fzs * (mf.pVx1 + mf.pVx2*dfz)
+    # MF 5.2 SVx = Fz (pVx1 + pVx2 dfz) lambda_Vx lambda_mux. lambda_Vx is 1.
+    def _svx(fzs, dfz): return _mf_scale(fzs * (mf.pVx1 + mf.pVx2*dfz), mf.LMUX)
     Svx_fl = _svx(fz_fl_shift, dfz_fl); Svx_fr = _svx(fz_fr_shift, dfz_fr)
     Svx_rl = _svx(fz_rl_shift, dfz_rl); Svx_rr = _svx(fz_rr_shift, dfz_rr)
 
@@ -368,23 +435,26 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     Gxa_rr = _gxa(Bxa_rr, Exa_rr, aS_rr, Bxa_rr, Exa_rr)
 
     # ===================== Pacejka 5.2: lateral (Fy) ======================
-    mu_fl_y = (mf.pDy1 + mf.pDy2*dfz_fl) / (1 + mf.pDy3*dynamic_camber_fl**2)
-    mu_fr_y = (mf.pDy1 + mf.pDy2*dfz_fr) / (1 + mf.pDy3*dynamic_camber_fr**2)
-    mu_rl_y = (mf.pDy1 + mf.pDy2*dfz_rl) / (1 + mf.pDy3*dynamic_camber_rl**2)
-    mu_rr_y = (mf.pDy1 + mf.pDy2*dfz_rr) / (1 + mf.pDy3*dynamic_camber_rr**2)
+    # MF 5.2 mu_y = (pDy1 + pDy2 dfz) (camber term) lambda_muy. Kya does not change, so By = Kya/(Cy Dy) falls as Dy rises.
+    mu_fl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fl) / (1 + mf.pDy3*dynamic_camber_fl**2), mf.LMUY)
+    mu_fr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fr) / (1 + mf.pDy3*dynamic_camber_fr**2), mf.LMUY)
+    mu_rl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rl) / (1 + mf.pDy3*dynamic_camber_rl**2), mf.LMUY)
+    mu_rr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rr) / (1 + mf.pDy3*dynamic_camber_rr**2), mf.LMUY)
     Dy_fl = mu_fl_y * fz_fl_shift; Dy_fr = mu_fr_y * fz_fr_shift
     Dy_rl = mu_rl_y * fz_rl_shift; Dy_rr = mu_rr_y * fz_rr_shift
     Cy = mf.pCy1
 
-    def _svyg(fzs, dfz, gam): return fzs * (mf.pVy3 + mf.pVy4*dfz) * gam
+    # MF 5.2 SVy = Fz {(pVy1 + pVy2 dfz) lambda_Vy + (pVy3 + pVy4 dfz) gamma} lambda_muy. lambda_Vy is 1.
+    # The camber part Svy_gamma carries LMUY too. Shy subtracts Svy_gamma, so the camber shift still cancels at small slip.
+    def _svyg(fzs, dfz, gam): return _mf_scale(fzs * (mf.pVy3 + mf.pVy4*dfz) * gam, mf.LMUY)
     Svy_gamma_fl = _svyg(fz_fl_shift, dfz_fl, dynamic_camber_fl)
     Svy_gamma_fr = _svyg(fz_fr_shift, dfz_fr, dynamic_camber_fr)
     Svy_gamma_rl = _svyg(fz_rl_shift, dfz_rl, dynamic_camber_rl)
     Svy_gamma_rr = _svyg(fz_rr_shift, dfz_rr, dynamic_camber_rr)
-    Svy_fl = fz_fl_shift*(mf.pVy1 + mf.pVy2*dfz_fl) + Svy_gamma_fl
-    Svy_fr = fz_fr_shift*(mf.pVy1 + mf.pVy2*dfz_fr) + Svy_gamma_fr
-    Svy_rl = fz_rl_shift*(mf.pVy1 + mf.pVy2*dfz_rl) + Svy_gamma_rl
-    Svy_rr = fz_rr_shift*(mf.pVy1 + mf.pVy2*dfz_rr) + Svy_gamma_rr
+    Svy_fl = _mf_scale(fz_fl_shift*(mf.pVy1 + mf.pVy2*dfz_fl), mf.LMUY) + Svy_gamma_fl
+    Svy_fr = _mf_scale(fz_fr_shift*(mf.pVy1 + mf.pVy2*dfz_fr), mf.LMUY) + Svy_gamma_fr
+    Svy_rl = _mf_scale(fz_rl_shift*(mf.pVy1 + mf.pVy2*dfz_rl), mf.LMUY) + Svy_gamma_rl
+    Svy_rr = _mf_scale(fz_rr_shift*(mf.pVy1 + mf.pVy2*dfz_rr), mf.LMUY) + Svy_gamma_rr
 
     def _kya(fzs, gam):
         return mf.pKy1 * vp.Fz0 * ca.sin(mf.pKy4 * ca.atan(fzs / ((mf.pKy2 + mf.pKy5*gam**2)*vp.Fz0))) / (1 + mf.pKy3*gam**2)
@@ -494,34 +564,42 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
             T_fr = ATD_FR*T_motor*vp.gear + ATD_FR*T_brake*2
             T_rl = ATD_RL*T_motor*vp.gear + ATD_RL*T_brake*2
             T_rr = ATD_RR*T_motor*vp.gear + ATD_RR*T_brake*2
-        T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
-        T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
-        T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
-        T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
         P_motor = T_motor * Om_motor
         Om_motor_each = P_motor_each = None
     else:
-        Om_motor_fl = Om_fl/vp.gear; Om_motor_fr = Om_fr/vp.gear
-        Om_motor_rl = Om_rl/vp.gear; Om_motor_rr = Om_rr/vp.gear
+        if phys == "corrected":      # A5: the motor turns gear times faster than the wheel, as in the single-motor branch
+            Om_motor_fl = Om_fl*vp.gear; Om_motor_fr = Om_fr*vp.gear
+            Om_motor_rl = Om_rl*vp.gear; Om_motor_rr = Om_rr*vp.gear
+        else:                        # MATLAB divides by the gear: the per-motor power and rpm rows are gear^2 too loose
+            Om_motor_fl = Om_fl/vp.gear; Om_motor_fr = Om_fr/vp.gear
+            Om_motor_rl = Om_rl/vp.gear; Om_motor_rr = Om_rr/vp.gear
         T_fl = T_motor_fl*vp.gear + T_brake*vp.brkB
         T_fr = T_motor_fr*vp.gear + T_brake*vp.brkB
         T_rl = T_motor_rl*vp.gear + T_brake*(1 - vp.brkB)
         T_rr = T_motor_rr*vp.gear + T_brake*(1 - vp.brkB)
+        P_motor_fl = T_motor_fl*Om_motor_fl; P_motor_fr = T_motor_fr*Om_motor_fr
+        P_motor_rl = T_motor_rl*Om_motor_rl; P_motor_rr = T_motor_rr*Om_motor_rr
+        Om_motor = P_motor = None
+    if phys != "corrected":      # MATLAB: a strut at the bump gap cuts its wheel torque (A2: smooth stops instead)
         T_fl = ca.if_else(xs_fl >= 0.075, 0, T_fl)
         T_fr = ca.if_else(xs_fr >= 0.075, 0, T_fr)
         T_rl = ca.if_else(xs_rl >= 0.075, 0, T_rl)
         T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
-        P_motor_fl = T_motor_fl*Om_motor_fl; P_motor_fr = T_motor_fr*Om_motor_fr
-        P_motor_rl = T_motor_rl*Om_motor_rl; P_motor_rr = T_motor_rr*Om_motor_rr
-        Om_motor = P_motor = None
 
     # ===================== change of variable & derivatives ===============
     sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
 
-    dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.ms*vy*r
-           - vp.ms*thetadot*zsdot + vp.ms*vp.g*ca.sin(theta)) * sf / vp.ms
-    dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.ms*vx*r
-           - vp.ms*vp.g*ca.sin(phi)*ca.cos(theta)) * sf / vp.ms
+    if phys == "corrected":
+        # A1 + A3: the planar equations carry the total mass m (the unsprung masses move with the
+        # car) and no body-attitude terms: the tyre forces lie in the road plane, so gravity and
+        # the sprung-mass rates (thetadot*zsdot) do not enter.
+        dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.m*vy*r) * sf / vp.m
+        dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.m*vx*r) * sf / vp.m
+    else:
+        dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.ms*vy*r
+               - vp.ms*thetadot*zsdot + vp.ms*vp.g*ca.sin(theta)) * sf / vp.ms
+        dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.ms*vx*r
+               - vp.ms*vp.g*ca.sin(phi)*ca.cos(theta)) * sf / vp.ms
     dr = ((fyg_fl + fyg_fr)*vp.l_f - (fyg_rl + fyg_rr)*vp.l_r
           + (-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2)
           - (f_side_rl + f_side_rr)*vp.l_r + (f_side_fl + f_side_fr)*vp.l_f) * sf / vp.I_z
@@ -532,21 +610,42 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     dOm_rl = sf * (T_rl - fx_rl*vp.Rw_r) / vp.Jw
     dOm_rr = sf * (T_rr - fx_rr*vp.Rw_r) / vp.Jw
     dzs = zsdot * sf
-    dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
-              - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
+    if phys == "corrected":      # A3: gravity straight down, no body-frame rate terms
+        dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
+                  - vp.ms*vp.g) * sf / vp.ms
+    else:
+        dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
+                  - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
     dtheta = thetadot * sf
-    dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
-                 - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y
+    if phys == "corrected":      # A4: the downforce acts on the body: nose-down and left-side-down moments
+        dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r - (fzs_fl + fzs_fr)*vp.l_f
+                     + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r) * sf / vp.I_y
+    else:
+        dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
+                     - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y
     dphi = phidot * sf
-    dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t) * sf / vp.I_x
-    dwu_fl = (zt_fl*vp.kt - vp.mus*vp.g - fj_fl - fzs_fl) * sf / vp.mus
-    dwu_fr = (zt_fr*vp.kt - vp.mus*vp.g - fj_fr - fzs_fr) * sf / vp.mus
-    dwu_rl = (zt_rl*vp.kt - vp.mus*vp.g - fj_rl - fzs_rl) * sf / vp.mus
-    dwu_rr = (zt_rr*vp.kt - vp.mus*vp.g - fj_rr - fzs_rr) * sf / vp.mus
+    if phys == "corrected":
+        dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t
+                   - (f_lift_fl + f_lift_rl - f_lift_fr - f_lift_rr)*0.5*vp.t) * sf / vp.I_x
+    else:
+        dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t) * sf / vp.I_x
+    if phys == "corrected":      # A1: each corner carries its own unsprung mass (muf/2, mur/2)
+        mu_fl, mu_fr, mu_rl, mu_rr = vp.m_u_fl, vp.m_u_fr, vp.m_u_rl, vp.m_u_rr
+    else:                        # MATLAB: every corner subtracts the TOTAL unsprung mass
+        mu_fl = mu_fr = mu_rl = mu_rr = vp.mus
+    dwu_fl = (zt_fl*vp.kt - mu_fl*vp.g - fj_fl - fzs_fl) * sf / mu_fl
+    dwu_fr = (zt_fr*vp.kt - mu_fr*vp.g - fj_fr - fzs_fr) * sf / mu_fr
+    dwu_rl = (zt_rl*vp.kt - mu_rl*vp.g - fj_rl - fzs_rl) * sf / mu_rl
+    dwu_rr = (zt_rr*vp.kt - mu_rr*vp.g - fj_rr - fzs_rr) * sf / mu_rr
     dzt_fl = -wu_fl * sf; dzt_fr = -wu_fr * sf; dzt_rl = -wu_rl * sf; dzt_rr = -wu_rr * sf
 
     Lon_acc = dvx / sf
     Lat_acc = dvy / sf
+    # ax, ay: road-plane CG acceleration. It equals the accelerometer reading on a flat road,
+    # with no g*sin(theta/phi) pickup. Lon_acc, Lat_acc are d vx/dt and d vy/dt (body-velocity
+    # derivatives, vehModel.m:1044-1045). They stay for MATLAB parity. ax, ay are not in dx.
+    ax = Lon_acc - vy*r
+    ay = Lat_acc + vx*r
 
     dx = ca.vertcat(dvx, dvy, dr, dn, deps, dOm_fl, dOm_fr, dOm_rl, dOm_rr,
                     dzs, dzsdot, dtheta, dthetadot, dphi, dphidot,
@@ -559,6 +658,8 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     m.dx, m.sf = dx, sf
     m.x_s, m.u_s = x_s, u_s
     m.x_min, m.x_max, m.u_min, m.u_max = x_min, x_max, u_min, u_max
+    m.duk_lb, m.duk_ub = duk_lb, duk_ub          # normalised rate bounds for the NLP
+    m.TyreModel = TyreModel                      # MLTP.build_path_constraints follows it
     # raw signals
     m.vx, m.vy, m.r, m.n, m.eps = vx, vy, r, n, eps
     m.zs, m.theta, m.phi = zs, theta, phi
@@ -574,6 +675,11 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     m.dynamic_camber_fl, m.dynamic_camber_fr = dynamic_camber_fl, dynamic_camber_fr
     m.dynamic_camber_rl, m.dynamic_camber_rr = dynamic_camber_rl, dynamic_camber_rr
     m.CG_h, m.CG_r, m.CG_p = CG_h, CG_r, CG_p
+    m.f_roll = f_roll
+    # suspension signals as the dynamics use them (xs > 0 = compression, xsdot = its time rate)
+    m.xs_fl, m.xs_fr, m.xs_rl, m.xs_rr = xs_fl, xs_fr, xs_rl, xs_rr
+    m.xsdot_fl, m.xsdot_fr, m.xsdot_rl, m.xsdot_rr = xsfl_dot, xsfr_dot, xsrl_dot, xsrr_dot
+    m.fzs_fl, m.fzs_fr, m.fzs_rl, m.fzs_rr = fzs_fl, fzs_fr, fzs_rl, fzs_rr
     # aero
     m.f_drag, m.f_lift = f_drag, f_lift
     m.f_lift_fl, m.f_lift_fr, m.f_lift_rl, m.f_lift_rr = f_lift_fl, f_lift_fr, f_lift_rl, f_lift_rr
@@ -581,6 +687,7 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     # torques / powertrain
     m.T_fl, m.T_fr, m.T_rl, m.T_rr = T_fl, T_fr, T_rl, T_rr
     m.Lon_acc, m.Lat_acc = Lon_acc, Lat_acc
+    m.ax, m.ay = ax, ay
     if pt.EM4 == 0:
         m.T_motor, m.T_motor_n = T_motor, T_motor_n
         m.Om_motor, m.P_motor = Om_motor, P_motor
@@ -598,6 +705,59 @@ def vehModel(ctx, Steering="NA", CamberGain="Off", TyreModel="CombinedSlip"):
     return ctx
 
 
+def rolling_start(ctx, m, vx, tol=1e-9, max_iter=50):
+    """Straight-line coast equilibrium of the model at speed ``vx`` [m/s], aero included.
+    Returns (X, U).
+
+    X (nx,) is the physical state. Fixed: vx, the wheel speeds (vx / Rw), r = 0, the rates
+    zsdot = thetadot = phidot = wu = 0, kappa = 0. A least-squares Newton iteration solves
+    zs, theta, phi, zt_fl..zt_rr, vy and the steering input for zero time derivative of
+    ROLL_RESIDUAL. X[3] and X[4] (n, eps) are NaN: not set.
+    U (nu,) is the coast input in the physical u_s convention (U / m.u_s is the model input):
+    no torque, ATD 1/4 each, wings at the vp angles. Its last entry is the trimmed steering.
+
+    Raises RuntimeError when the iteration does not converge, or when the equilibrium lies
+    outside the state bounds. The matlab physics has hard caps on the strut travel (_cap in
+    vehModel) that can leave no equilibrium. Then this function raises, by design."""
+    vp = ctx.vp
+    x_s, u_s = np.asarray(m.x_s, float), np.asarray(m.u_s, float)
+    X = np.zeros(m.nx)
+    X[0] = vx
+    X[5:7], X[7:9] = vx / vp.Rw_f, vx / vp.Rw_r
+    X[19:23] = np.array([vp.Wfl0, vp.Wfr0, vp.Wrl0, vp.Wrr0]) / vp.kt
+    fw = iter((vp.alpha_FL, vp.alpha_FR))
+    wing = {"RW": vp.alpha_RW, "TW": vp.alpha_TW}
+    U = np.array([0.25 if k == "ATD" else next(fw) if k == "FW" else wing.get(k, 0.0)
+                  for k in (str(k).strip() for k in ctx.input_keys)])
+    U[-1] = 1e-6    # not 0: with Steering='Ackermann' d/d delta is NaN at delta = 0 (it divides by tan(delta))
+
+    F = ca.Function("F_roll", [m.x, m.u, m.pv], [m.dx, m.sf])      # one-off evaluation: no fn_opts
+    Xs, Us = ca.SX.sym("X", m.nx), ca.SX.sym("U", m.nu)
+    dx, sf = F(Xs / ca.DM(x_s), Us / ca.DM(u_s), 0)
+    res = (dx * ca.DM(x_s) / sf)[list(ROLL_RESIDUAL)]              # physical d/dt
+    unk = list(ROLL_UNKNOWN)
+    G = ca.Function("G_roll", [Xs, Us], [res, ca.jacobian(res, ca.vertcat(Xs[unk], Us[-1]))])
+    for it in range(max_iter + 1):
+        r, J = G(X, U)
+        r = np.array(r).reshape(-1)
+        err = float(np.abs(r).max())
+        if err < tol:
+            break
+        if it == max_iter or not np.isfinite(err):
+            raise RuntimeError(f"rolling_start: no equilibrium at vx = {vx} m/s (max residual {err:.2e})")
+        dz = np.linalg.lstsq(np.array(J), r, rcond=None)[0]        # CopyB (pKy4 = 0): singular lateral block
+        X[unk] -= dz[:-1]
+        U[-1] -= dz[-1]
+
+    X[3] = X[4] = np.nan
+    lo, hi = m.x_min * x_s, m.x_max * x_s
+    rows = np.flatnonzero((X < lo) | (X > hi))                     # NaN compares False: rows 3, 4 pass
+    if rows.size:
+        raise RuntimeError(f"rolling_start: equilibrium at vx = {vx} m/s outside the state bounds "
+                           f"at rows {rows.tolist()}")
+    return X, U
+
+
 def _linear_interp(ca, x, x_data, y_data):
     """Piecewise-linear interpolation as a CasADi expression (port of linear_interp.m)."""
     x_data = np.asarray(x_data, dtype=float).reshape(-1)
@@ -609,5 +769,5 @@ def _linear_interp(ca, x, x_data, y_data):
         y = ca.if_else(x < x_data[i], y,
                        ca.if_else(x <= x_data[i+1], y_data[i] + slope*(x - x_data[i]), y))
     slope = (y_data[-1] - y_data[-2]) / (x_data[-1] - x_data[-2])
-    y = ca.if_else(x > x_data[-1], y_data[-2] + slope*(x - x_data[-1]), y)
+    y = ca.if_else(x > x_data[-1], y_data[-2] + slope*(x - x_data[-2]), y)   # as linear_interp.m
     return y

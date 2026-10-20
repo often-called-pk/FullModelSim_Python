@@ -1,107 +1,154 @@
-"""vehParams.py - direct port of vehParams.m (FullModel_4EM_Suspension_FullTyre)
+"""vehParams.py - two-phase build of ctx.vp (+ ctx.mf / ctx.aero / ctx.cg).
 
-Builds the vehicle/tyre/suspension parameter namespace ``ctx.vp`` plus:
-  * ``ctx.mf``  : the Pacejka 5.2 Magic-Formula coefficients (used by vehModel.py)
-  * ``ctx.aero``: the DATA_AA aero-coefficient struct (polynomials + nominal coeffs)
-  * ``ctx.cg``  : the linear camber-gain coefficients
+Phase 1 builds a dict of primary (typed-in) inputs and merges any
+``vp_overrides`` into it; phase 2 computes every derived quantity from the
+merged primaries, so an override of any primary propagates correctly. With no
+overrides and ``tyre_set="CopyB"`` the result is byte-for-byte identical to the
+original hardcoded values (Rw overwritten to 0.355 with gear left on 0.3142857).
 
-TYRE SET: per user confirmation this uses **Copy B** of the MF_205_60R15_V91
-lateral block (Fz0 = 4905; pKy1 = -20.505; pEy1 = 0.15; pKy4 = 0; pKy5 = 0.002;
-pKy6 = -0.002; pVy1..4 = 0,0,0,0.08). All other parameters are common to both
-indexed copies.
-
-WHEEL RADIUS: Powertrain.py sets vp.Rw = 0.3142857 and derives vp.gear from it;
-this module then overwrites vp.Rw = vp.Rw_f = vp.Rw_r = 0.355 exactly as the
-MATLAB does. vp.gear is intentionally NOT recomputed (it stays based on 0.3142857).
+Tyre set: ``vehParams(ctx, tyre_set=...)`` selects the Pacejka coefficient set.
+"MF205" (default) is the MATLAB-run lateral set: the lateral values of the case
+vehParams.m actually selects ('MF_205_60R15_V91'). "CopyB" is the legacy
+shipped set with MATLAB 'Test'-case lateral coefficients (pKy4 = 0, i.e. zero
+cornering stiffness), kept for reproducing old results. ``vp_overrides`` are
+applied last, on top of either set.
+``ctx.mf_overrides``: sorted mf keys ``vp_overrides`` changed vs the base set ([] if none).
+``ctx.physics`` (set by userOpts, default "matlab"): "corrected" adds m_u_fl..rr and m_c_fl..rr,
+re-derives Wfl0..Wrr0, xsi_*, xti_*, lsi_* by the lever rule and c_* = 2 zeta sqrt(k m_c);
+"matlab" keeps the MATLAB values.
 """
-
 import os
 import warnings
 import numpy as np
-import scipy.io as sio
 from types import SimpleNamespace
 
 from functions.importfile import mat_to_namespace
 
 
-def vehParams(ctx, data_dir="Data"):
+def default_primaries():
+    """Primary (leaf) vehicle inputs and their default values."""
+    return {
+        # balance / aero inputs
+        "brkB": 0.6766, "Tdist": 0.7281, "ksD": 0.4620,
+        "alpha_FL": 10.0, "alpha_FR": 10.0, "alpha_RW": 8.0, "alpha_TW": 0.0,
+        # constants
+        "g": 9.81, "rho": 1.204,
+        # masses
+        "mb": 1820.0, "md": 75.0, "muf": 90.0, "mur": 100.0,
+        # dimensions
+        "A": 1.95, "t": 1.8, "l": 3.0, "wB": 0.5,
+        "hcg": 0.5, "huf": 0.2968771, "hur": 0.2968771, "hw": 1.28,
+        "hRCf": 0.07, "hRCr": 0.11, "hride": 0.117,
+        # inertias
+        "I_z": 1960.0, "I_y": 1600.0, "I_x": 1000.0,
+        # aero placeholders (overwritten by DATA_AA when present)
+        "Cd": 0.75, "Cl": 1.45,
+        # tyre
+        "Rw": 0.355, "Jw": 3.6, "f": 0.01, "kt": 300000.0,
+        "Fz0": 4905.0, "Fz0_shift": 1.0,
+        # suspension
+        "k_fl": 75000.0, "k_fr": 75000.0, "k_rl": 80000.0, "k_rr": 80000.0,
+        "zeta_fl": 0.7, "zeta_fr": 0.7, "zeta_rl": 0.7, "zeta_rr": 0.7,
+        # brakes
+        "Tbrake_max": 4000.0,
+        # camber / toe
+        "gamma_fl": 0.0, "gamma_rl": 0.0, "toe_front": 0.0, "toe_rear": 0.0,
+        # numerical epsilons
+        "eps_x": 1e-6, "eps_y": 1e-6, "eps_K": 1e-6,
+    }
+
+
+def _default_mf():
+    """Pacejka 5.2 coefficients, "CopyB" set (legacy; base for "MF205").
+
+    Longitudinal and combined-slip blocks equal the MATLAB case
+    'MF_205_60R15_V91'; the lateral block (pEy1, pKy1, pKy4, pKy5, pKy6, pVy1-4)
+    equals the MATLAB 'Test' case (vehParams.m lines 279-346), whose pKy4 = 0
+    makes the cornering stiffness identically zero in vehModel. See
+    ``_MF205_OVERRIDES`` / ``vehParams(tyre_set="MF205")``.
+    """
+    return SimpleNamespace(
+        pCx1=1.6055, pDx1=1.1703, pDx2=-0.081328, pDx3=0.0,
+        pEx1=0.53409, pEx2=-0.019956, pEx3=0.18089, pEx4=0.0,
+        pKx1=36.411, pKx2=0.12615, pKx3=0.51289,
+        pHx1=0.0, pHx2=0.0, pVx1=0.0, pVx2=0.0,
+        rBx1=18.456, rBx2=16.314, rBx3=0.0,
+        rCx1=1.091, rEx1=0.0, rEx2=0.0, rHx1=0.0058715,
+        pCy1=2.1322, pDy1=1.0283, pDy2=-0.16758, pDy3=-1.5821,
+        pEy1=0.15, pEy2=-1.8733, pEy3=0.0, pEy4=0.0, pEy5=0.0,
+        pKy1=-20.505, pKy2=2.0284, pKy3=0.89994, pKy4=0.0,
+        pKy5=0.002, pKy6=-0.002, pKy7=0.0,
+        pHy1=0.0031377, pHy2=0.00051596,
+        pVy1=0.0, pVy2=0.0, pVy3=0.0, pVy4=0.08,
+        rBy1=22.003, rBy2=-13.623, rBy3=-0.0093616, rBy4=0.0,
+        rCy1=0.98294, rEy1=0.0, rEy2=0.0,
+        rHy1=-9.1492e-11, rHy2=0.0,
+        rVy1=22.965, rVy2=0.37981, rVy3=1.8552,
+        rVy4=0.08767, rVy5=-8.8234e-11, rVy6=0.90374,
+        # MF 5.2 peak-grip scaling factors lambda_mux and lambda_muy. 1.0 leaves the set as it is.
+        # MATLAB has no counterpart. vehModel.py and functions/ggv.py apply them.
+        LMUX=1.0, LMUY=1.0,
+    )
+
+
+PRIMARY_KEYS = frozenset(default_primaries())
+MF_KEYS = frozenset(vars(_default_mf()))
+
+# ---- selectable tyre coefficient sets ---------------------------------------
+# "MF205" (default) = _default_mf() with the nine coefficients below replaced
+# by the values of the MATLAB case 'MF_205_60R15_V91' (vehParams.m lines
+# 176-193), i.e. the case that `tire = 'MF_205_60R15_V91'` (vehParams.m line
+# 141) actually selects. Every other coefficient already agrees with that case.
+# "CopyB" = _default_mf() unchanged (legacy shipped set, pKy4 = 0; kept for
+# reproducing old results). Comments give the Copy-B value.
+TYRE_SETS = ("CopyB", "MF205")
+
+_MF205_OVERRIDES = {
+    "pEy1": 0.33443,        # Copy B:  0.15
+    "pKy1": 20.505,         # Copy B: -20.505
+    "pKy4": 2.0,            # Copy B:  0.0  (zero cornering stiffness)
+    "pKy5": 0.0,            # Copy B:  0.002
+    "pKy6": 0.0,            # Copy B: -0.002
+    "pVy1": 0.026365,       # Copy B:  0.0
+    "pVy2": -0.0062119,     # Copy B:  0.0
+    "pVy3": -0.41389,       # Copy B:  0.0
+    "pVy4": -0.048038,      # Copy B:  0.08
+}
+
+
+def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
+    if tyre_set not in TYRE_SETS:
+        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
+
     if not hasattr(ctx, "vp") or ctx.vp is None:
         ctx.vp = SimpleNamespace()
     vp = ctx.vp
 
-    # ---- vehicle parameter inputs -----------------------------------------
-    vp.brkB = 0.6766          # fraction of total brake force to front wheels (-)
-    vp.Tdist = 0.7281         # fraction of total torque to rear wheels       (-)
-    vp.ksD = 0.4620           # fraction of total roll stiffness, rear axle   (-)
+    overrides = dict(vp_overrides or {})
+    unknown = set(overrides) - PRIMARY_KEYS - MF_KEYS
+    if unknown:
+        raise ValueError(f"Unknown vehParams override keys: {sorted(unknown)}")
+    mf_over = {k: overrides.pop(k) for k in list(overrides) if k in MF_KEYS}
 
-    # ---- aerodynamic input ------------------------------------------------
-    vp.alpha_FL = 10.0        # left  front wing AoA  [0 10]  (deg)
-    vp.alpha_FR = vp.alpha_FL  # right front wing AoA  [0 10]  (deg)
-    vp.alpha_RW = 8.0         # rear wing AoA         [0 30]  (deg)
-    vp.alpha_TW = 0.0         # rear wing tilt        [-12 12](deg)
+    # ---- phase 1: primaries (+ overrides) ---------------------------------
+    p = default_primaries()
+    p.update(overrides)
+    for k, v in p.items():
+        setattr(vp, k, v)
 
-    # ---- constants --------------------------------------------------------
-    vp.g = 9.81               # gravitational acceleration (m/s^2)
-    vp.rho = 1.204            # air density                (kg/m^3)
+    # ---- phase 2: derived quantities --------------------------------------
+    vp.ms = vp.mb + vp.md
+    vp.mus = vp.muf + vp.mur
+    vp.m = vp.ms + vp.muf + vp.mur
 
-    # ---- masses -----------------------------------------------------------
-    vp.mb = 1820.0            # sprung mass            (kg)
-    vp.md = 75.0              # driver mass            (kg)
-    vp.ms = vp.mb + vp.md     # total sprung mass      (kg)
-    vp.muf = 90.0             # unsprung mass front    (kg)
-    vp.mur = 100.0            # unsprung mass rear     (kg)
-    vp.mus = vp.muf + vp.mur  # total unsprung mass    (kg)
-    vp.m = vp.ms + vp.muf + vp.mur   # total mass      (kg)
+    vp.l_f = vp.l * (1 - vp.wB)
+    vp.l_r = vp.l * vp.wB
 
-    # ---- dimensions -------------------------------------------------------
-    vp.A = 1.95               # reference area (m^2)
-    vp.t = 1.8                # track width    (m)
-    vp.l = 3.0                # wheelbase      (m)
-    vp.wB = 0.5               # COG distribution front (-)
-    vp.l_f = vp.l * (1 - vp.wB)   # COG -> front axle (m)
-    vp.l_r = vp.l * vp.wB         # COG -> rear  axle (m)
+    vp.hRC = (vp.l_f * vp.hRCr + vp.l_r * vp.hRCf) / vp.l
+    vp.d = vp.hcg - vp.hRC
 
-    vp.hcg = 0.5              # COG height (m)
-    vp.huf = 0.2968771        # height COG unsprung front (m)
-    vp.hur = 0.2968771        # height COG unsprung rear  (m)
-    vp.hw = 1.28              # rear wing height (m)
-    vp.hRCf = 0.07            # roll centre height front (m)
-    vp.hRCr = 0.11            # roll centre height rear  (m)
-    vp.hRC = (vp.l_f * vp.hRCr + vp.l_r * vp.hRCf) / vp.l   # RC axis height at COG (m)
-    vp.d = vp.hcg - vp.hRC    # COG-to-roll-axis distance (m)
-    vp.hride = 0.117          # ride height (m)
-
-    # ---- inertias ---------------------------------------------------------
-    vp.I_z = 1960.0           # yaw   (kg*m^2)
-    vp.I_y = 1600.0           # pitch (kg*m^2)
-    vp.I_x = 1000.0           # roll  (kg*m^2)
-
-    # placeholders (overwritten below by DATA_AA)
-    vp.Cd = 0.75
-    vp.Cl = 1.45
-
-    # ---- tyre parameters --------------------------------------------------
-    # NOTE: overwrites Powertrain's vp.Rw = 0.3142857 (see module docstring).
-    vp.Rw = 0.355
-    vp.Rw_r = 0.355
-    vp.Rw_f = 0.355
-    vp.Jw = 0.9 * 2 * 2       # = 3.6  (kg*m^2)
-    vp.f = 0.01               # rolling resistance coefficient (-)
-    vp.kt = 300000.0          # tyre vertical stiffness (N/m)
-
-    vp.Fz0 = 4905.0           # nominal vertical wheel load (N)   [Copy B]
-    vp.Fz0_shift = 1.0        # nominal-load shift (optimised in TyreOptim)
-
-    # ---- suspension -------------------------------------------------------
-    vp.k_fl = 75000.0
-    vp.k_fr = 75000.0
-    vp.k_rl = 80000.0
-    vp.k_rr = 80000.0
-
-    vp.zeta_fl = 0.7
-    vp.zeta_fr = 0.7
-    vp.zeta_rl = 0.7
-    vp.zeta_rr = 0.7
+    vp.Rw_r = vp.Rw
+    vp.Rw_f = vp.Rw
 
     vp.m_eff_f = vp.m * (1 - vp.wB)
     vp.m_eff_r = vp.m * vp.wB
@@ -111,7 +158,6 @@ def vehParams(ctx, data_dir="Data"):
     vp.c_rl = vp.zeta_rl * 2 * np.sqrt(vp.m_eff_r / 2) * vp.k_rl
     vp.c_rr = vp.zeta_rr * 2 * np.sqrt(vp.m_eff_r / 2) * vp.k_rr
 
-    # static wheel loads
     vp.Wfl0 = 0.5 * vp.g * (vp.muf + vp.wB * vp.ms)
     vp.Wfr0 = 0.5 * vp.g * (vp.muf + vp.wB * vp.ms)
     vp.Wrl0 = 0.5 * vp.g * (vp.mur + (1 - vp.wB) * vp.ms)
@@ -132,12 +178,28 @@ def vehParams(ctx, data_dir="Data"):
     vp.lsi_rl = vp.hcg - (vp.Rw - vp.xti_rl)
     vp.lsi_rr = vp.hcg - (vp.Rw - vp.xti_rr)
 
-    # ---- brakes -----------------------------------------------------------
-    vp.Tbrake_max = 4e3       # max braking torque (Nm)
+    if getattr(ctx, "physics", "matlab") == "corrected":
+        # A1, physics='corrected' only (the lines above stay as MATLAB has them): per-corner unsprung
+        # mass m_u_i, and static corner load / spring preload by the lever rule (the front axle
+        # carries ms*l_r/l, MATLAB's xsi uses l_f); the deflections follow.
+        # A2: sprung corner mass m_c_i, and the damper rate c_i = 2 zeta sqrt(k m_c) (MATLAB has
+        # zeta 2 sqrt(m_eff/2) k, stiffness outside the root).
+        for c in ("fl", "fr", "rl", "rr"):
+            m_axle, share = (vp.muf, vp.l_r / vp.l) if c[0] == "f" else (vp.mur, vp.l_f / vp.l)
+            W0 = vp.g * (m_axle / 2 + vp.ms * share / 2)
+            m_c = vp.ms * share / 2
+            setattr(vp, f"m_u_{c}", m_axle / 2)
+            setattr(vp, f"m_c_{c}", m_c)
+            setattr(vp, f"c_{c}", 2 * getattr(vp, f"zeta_{c}") * np.sqrt(getattr(vp, f"k_{c}") * m_c))
+            setattr(vp, f"W{c}0", W0)
+            setattr(vp, f"xsi_{c}", vp.g * vp.ms * share / (2 * getattr(vp, f"k_{c}")))
+            setattr(vp, f"xti_{c}", W0 / vp.kt)
+            setattr(vp, f"lsi_{c}", vp.hcg - (vp.Rw - W0 / vp.kt))
 
-    # ---- aerodynamics (DATA_AA) ------------------------------------------
+    # ---- aerodynamics (DATA_AA overwrites Cd/Cl when present) -------------
     aa_path = os.path.join(data_dir, "DATA_AA.mat")
     if os.path.exists(aa_path):
+        import scipy.io as sio
         raw = sio.loadmat(aa_path, squeeze_me=True, struct_as_record=False)
         ctx.aero = mat_to_namespace(raw["aero"])
         a = ctx.aero
@@ -148,39 +210,23 @@ def vehParams(ctx, data_dir="Data"):
         vp.Cd0 = float(a.veh.Cd0)
         vp.Cs0_front = float(a.veh.Cs0_front)
         vp.Cs0_rear = float(a.veh.Cs0_rear)
-        vp.Cl = vp.Cl0_front + vp.Cl0_rear     # total lift (no actuation)
-        vp.Cd = vp.Cd0                          # total drag (no actuation)
+        vp.Cl = vp.Cl0_front + vp.Cl0_rear
+        vp.Cd = vp.Cd0
     else:
         ctx.aero = None
         warnings.warn(
             f"DATA_AA.mat not found at '{aa_path}'. Aerodynamic coefficients are "
             "unset; place DATA_AA.mat in the Data/ folder before a real run.")
 
-    # ---- Pacejka 5.2 Magic-Formula coefficients (ctx.mf) ------------------
-    # MF_205_60R15_V91, lateral block = Copy B (user-confirmed).
-    ctx.mf = SimpleNamespace(
-        # Longitudinal (Fx)
-        pCx1=1.6055, pDx1=1.1703, pDx2=-0.081328, pDx3=0.0,
-        pEx1=0.53409, pEx2=-0.019956, pEx3=0.18089, pEx4=0.0,
-        pKx1=36.411, pKx2=0.12615, pKx3=0.51289,
-        pHx1=0.0, pHx2=0.0, pVx1=0.0, pVx2=0.0,
-        # Longitudinal combined slip
-        rBx1=18.456, rBx2=16.314, rBx3=0.0,
-        rCx1=1.091, rEx1=0.0, rEx2=0.0, rHx1=0.0058715,
-        # Lateral (Fy)  -- Copy B
-        pCy1=2.1322, pDy1=1.0283, pDy2=-0.16758, pDy3=-1.5821,
-        pEy1=0.15, pEy2=-1.8733, pEy3=0.0, pEy4=0.0, pEy5=0.0,
-        pKy1=-20.505, pKy2=2.0284, pKy3=0.89994, pKy4=0.0,
-        pKy5=0.002, pKy6=-0.002, pKy7=0.0,
-        pHy1=0.0031377, pHy2=0.00051596,
-        pVy1=0.0, pVy2=0.0, pVy3=0.0, pVy4=0.08,
-        # Lateral combined slip
-        rBy1=22.003, rBy2=-13.623, rBy3=-0.0093616, rBy4=0.0,
-        rCy1=0.98294, rEy1=0.0, rEy2=0.0,
-        rHy1=-9.1492e-11, rHy2=0.0,
-        rVy1=22.965, rVy2=0.37981, rVy3=1.8552,
-        rVy4=0.08767, rVy5=-8.8234e-11, rVy6=0.90374,
-    )
+    # ---- Pacejka 5.2 coefficients: tyre set, then mf overrides on top ------
+    ctx.mf = _default_mf()
+    if tyre_set == "MF205":
+        for k, v in _MF205_OVERRIDES.items():
+            setattr(ctx.mf, k, v)
+    ctx.mf_overrides = sorted(k for k, v in mf_over.items() if v != getattr(ctx.mf, k))
+    for k, v in mf_over.items():
+        setattr(ctx.mf, k, v)
+    ctx.tyre_set = tyre_set
 
     # ---- simplified Pacejka used by the 7-state init model ----------------
     vp.tyre = SimpleNamespace(
@@ -189,15 +235,9 @@ def vehParams(ctx, data_dir="Data"):
         by=6.0, cy=2.5, ey=0.5,
     )
 
-    vp.eps_x = 1e-6
-    vp.eps_y = 1e-6
-    vp.eps_K = 1e-6
-
     deg2rad = np.pi / 180.0
 
-    # ---- camber (deg; positive = camber-in) -------------------------------
-    vp.gamma_fl = 0.0
-    vp.gamma_rl = 0.0
+    # ---- camber (mirrored across the axle) --------------------------------
     vp.gamma_fr = -vp.gamma_fl
     vp.gamma_rr = -vp.gamma_rl
     vp.gamma_fl_rad = vp.gamma_fl * deg2rad
@@ -205,28 +245,25 @@ def vehParams(ctx, data_dir="Data"):
     vp.gamma_rl_rad = vp.gamma_rl * deg2rad
     vp.gamma_rr_rad = vp.gamma_rr * deg2rad
 
-    # ---- toe (deg; negative = toe-in) -------------------------------------
-    vp.toe_front = 0.0
-    vp.toe_rear = 0.0
+    # ---- toe --------------------------------------------------------------
     vp.toe_front_rad = vp.toe_front * deg2rad
     vp.toe_rear_rad = vp.toe_rear * deg2rad
 
     # ---- camber-gain coefficients (linear option) -------------------------
     ctx.cg = SimpleNamespace(
-        CG_h_deg_per_mm_linear=-0.03,    # [deg/mm] heave
-        CG_r_deg_per_deg_linear=0.1,     # [deg/deg] roll
-        CG_p_deg_per_deg_linear=0.05,    # [deg/deg] pitch
+        CG_h_deg_per_mm_linear=-0.03,
+        CG_r_deg_per_deg_linear=0.1,
+        CG_p_deg_per_deg_linear=0.05,
     )
 
-    # camber-gain tables (used only when CamberGain='Table' in vehModel)
     vp.CG_h_deg_per_mm_table = np.array([
         -0.12, 0.038, -0.08, 0.027, -0.04, 0.012, 0.00, 0.000,
         0.02, -0.006, 0.05, -0.015, 0.08, -0.025, 0.10, -0.032])
     vp.CG_r_deg_per_deg_table = np.array([
         -0.105, -0.8, -0.070, -0.75, -0.035, -0.7, 0.000, -0.65,
         0.035, -0.6, 0.070, -0.55, 0.105, -0.5])
-    # vp.CG_p_deg_per_deg_table: not captured from source; only needed for the
-    # 'Table' camber-gain option (default in vehModel is 'Off').
-    vp.CG_p_deg_per_deg_table = None
+    vp.CG_p_deg_per_deg_table = np.array([
+        -0.052, 0.4, -0.035, 0.35, -0.017, 0.3, 0.000, 0.25,
+        0.017, 0.2, 0.035, 0.15, 0.052, 0.1])
 
     return ctx

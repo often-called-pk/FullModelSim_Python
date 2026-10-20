@@ -179,3 +179,26 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# --- windows-app additions ---
+# SDD scratch (task briefs, reports, review packages, progress ledger)
+.superpowers/
+
+# packaging sources are hand-written and MUST be committed, despite the
+# generic `build/` and `*.spec` ignores above. Re-include the build/ dir but
+# keep ignoring its generated contents (e.g. PyInstaller's build/<name>/ and
+# the _pyi_build.log), then re-include only the hand-written source files.
+!build/
+build/*
+!build/windows-app.spec
+!build/README.md
+!build/rthook_casadi.py
+!build/version_info.txt
+!build/app.ico
+
+# setup_sweep output (Results/sweeps/<name>/: plan, samples, rows, hub, reports). Results/ itself is
+# tracked for the baseline solutions, so only the default sweep folder is ignored.
+Results/sweeps/
+
+# validation run matrix (docs/validation_matlab_vs_python.md): result .mat/.json/.log and the reference bundles
+Results/validation/

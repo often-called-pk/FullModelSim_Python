@@ -291,7 +291,8 @@ def generate_gg_plots(data=None, outdir=".", *, tyre=None, vehicle=None,
 #   `data` is a SimpleNamespace; `data.vehicle` is a dict of flat (N+1,) arrays.
 #     per-tyre forces : fx_<w> / fy_<w> / fz_<w>   (w in fl,fr,rl,rr)  [present]
 #     per-tyre mu     : mu_<w>_x / mu_<w>_y        [ADD to veh_syms in MLTP.py]
-#     vehicle accel   : Lon_acc / Lat_acc in m/s^2                     [present]
+#     vehicle accel   : ax / ay in m/s^2 via plotSDI.accel_channels (road-plane CG
+#                       acceleration; files saved before E1: Lon_acc / Lat_acc + x_opt)  [present]
 #     vx at knots     : data.x_opt[0, :]   |   s at knots: from data.s_full
 #   Inside the pipeline these are called by generate_gg_plots(data, outdir).
 # ---------------------------------------------------------------------------
@@ -345,10 +346,14 @@ def build_series_from_solution(data):
 
 
 def vehicle_gg_from_solution(data):
-    """Vehicle g-g in g from Lon_acc / Lat_acc (m/s^2). Speed (vx at knots) and s
-    are optional, used for colour and hover."""
-    v = _vehicle(data)
-    out = {"ax_g": _get(v, "Lon_acc") / _G, "ay_g": _get(v, "Lat_acc") / _G}
+    """Vehicle g-g in g from the road-plane CG acceleration ax / ay (m/s^2, see
+    plotSDI.accel_channels). Speed (vx at knots) and s are optional, used for colour
+    and hover. Raises ValueError when data holds no acceleration channel."""
+    from plotSDI import accel_channels
+    ax, ay = accel_channels(data)
+    if ax is None:
+        raise ValueError("gg_plots: no ax / ay (or Lon_acc / Lat_acc with x_opt) on `data`")
+    out = {"ax_g": ax / _G, "ay_g": ay / _G}
     n = out["ax_g"].size
     x_opt = _field(data, "x_opt")
     if x_opt is not None:
@@ -358,8 +363,12 @@ def vehicle_gg_from_solution(data):
             pass
     s_full = _field(data, "s_full")
     if s_full is not None:
+        from functions.mesh import solution_knots
         sf = np.asarray(s_full, float).reshape(-1)
-        out["s"] = np.linspace(sf[0], sf[-1], n)
+        s_knot = solution_knots(data, n)
+        if s_knot is None:
+            s_knot = np.linspace(sf[0], sf[-1], n)
+        out["s"] = s_knot
     return out
 
 

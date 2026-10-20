@@ -8,6 +8,15 @@ for the full model. Pipeline:
 
 The optimal solution is written to Results/init_<circuit>.mat as a struct
 ``data.init`` that MLTP.py reloads (via importfile) to seed the 23-state solve.
+A start_state other than 'matlab' (userOpts) adds _startRolling or _startPeriodic to the
+name, and an n_bounds band adds _hw<W> or _nbCustom after it. data.init.start_state and
+data.init.Xi record the start box.
+
+``seed`` picks the rung below this one (functions/ladder.py): 'const' (default, the
+constant guesses of MLTP_initial.m: vx = vi, T_drive 0.85 Tmax, zero steer) or 'qss'
+(ladder.seed_m7 from the QSS speed profile ladder.qss_profile; also sets IPOPT's
+ma57_pre_alloc to ladder.MA57_PRE_ALLOC unless given). ctx.elapsed / ctx.solve_stats
+and data.init (seed, ipopt_iters, return_status) record the solve.
 """
 
 import os
@@ -17,7 +26,10 @@ import scipy.io as sio
 
 import casadi as ca
 
+from functions.casadi_opts import fn_opts
 from functions.context import Ctx
+from functions.importfile import result_stem
+from functions.ladder import SEEDS, MA57_PRE_ALLOC, qss_profile, seed_m7
 from userOpts import userOpts
 from vehModel_initial import vehModel_initial
 from functions.transcription import (discretise, build_and_solve_nlp,
@@ -34,7 +46,9 @@ def _ns_to_dict(track):
 
 
 def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
-                 results_dir="Results", **useropts_kwargs):
+                 results_dir="Results", seed="const", **useropts_kwargs):
+    if seed not in SEEDS:
+        raise ValueError(f"seed must be one of {SEEDS}, got {seed!r}")
     t0 = time.time()
     elapsed = {}
 
@@ -49,8 +63,8 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     # ---- OCP: dynamics + objective ---------------------------------------
     L = m.sf                                   # objective integrand (lap time)
     f_dyn = ca.Function("f_dyn", [m.x, m.u, m.y, m.pv], [m.dx, L],
-                        ["x", "u", "y", "pv"], ["dx", "L"])
-    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"])
+                        ["x", "u", "y", "pv"], ["dx", "L"], fn_opts(ctx))
+    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
 
     # ---- OCP: path constraints (nh = 6) ----------------------------------
     BrTh = m.Tdrive_n * m.Tbrake_n
@@ -67,31 +81,44 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     h_lb = np.array([0.0, 0.0, -np.inf, -np.inf, -OPT_e, 0.0])
     h_ub = np.array([np.inf, np.inf, 0.0, 0.0, OPT_e, np.inf])
     assert len(hnames) == h.shape[0], "Number of path constraints not consistent"
-    h_eq = ca.Function("h_eq", [m.x, m.u, m.y, m.pv], [h], ["x", "u", "y", "pv"], ["h"])
+    h_eq = ca.Function("h_eq", [m.x, m.u, m.y, m.pv], [h], ["x", "u", "y", "pv"], ["h"],
+                       fn_opts(ctx))
 
     # ---- discretisation ---------------------------------------------------
-    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d)
+    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,
+                      mesh=getattr(ctx, "mesh", "uniform"),
+                      mesh_opts=getattr(ctx, "mesh_opts", None))
     N = disc["N"]
     elapsed["setup"] = time.time() - t0
 
-    # ---- initial guesses (constant) --------------------------------------
-    vx_0 = vi * np.ones(N + 1)
-    vy_0 = OPT_e * np.ones(N + 1)
-    r_0 = OPT_e * np.ones(N + 1)
-    n_0 = OPT_e * np.ones(N + 1)
-    eps_0 = np.zeros(N + 1)
-    Om_f_0 = vx_0 / vp.Rw
-    Om_r_0 = vx_0 / vp.Rw
-    Tdrive_0 = 0.85 * pt.Tmax * np.ones(N + 1)
-    Tbrake_0 = np.zeros(N + 1)
-    delta_0 = np.zeros(N + 1)
-    ltx_0 = np.zeros((m.ny, N + 1))
+    t_q = time.time()
+    if seed == "qss":
+        # ---- initial guesses from the QSS speed profile (ladder rung 0) ---
+        prof = qss_profile(ctx)
+        guesses = seed_m7(ctx, m, disc, prof)
+        ctx.qss_profile = prof
+        ctx.opts["ipopt"].setdefault("ma57_pre_alloc", MA57_PRE_ALLOC)
+        elapsed["qss"] = time.time() - t_q
+    else:
+        # ---- initial guesses (constant) ----------------------------------
+        vx_0 = vi * np.ones(N + 1)
+        vy_0 = OPT_e * np.ones(N + 1)
+        r_0 = OPT_e * np.ones(N + 1)
+        n_0 = OPT_e * np.ones(N + 1)
+        eps_0 = np.zeros(N + 1)
+        Om_f_0 = vx_0 / vp.Rw
+        Om_r_0 = vx_0 / vp.Rw
+        Tdrive_0 = 0.85 * pt.Tmax * np.ones(N + 1)
+        Tbrake_0 = np.zeros(N + 1)
+        delta_0 = np.zeros(N + 1)
+        ltx_0 = np.zeros((m.ny, N + 1))
 
-    x0 = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, Om_f_0, Om_r_0]) / m.x_s[:, None]
-    u0 = np.vstack([Tdrive_0, Tbrake_0, delta_0]) / m.u_s[:, None]
-    y0 = ltx_0 / m.y_s[:, None]
-    xc0 = np.kron(x0[:, :-1], np.ones((1, ctx.OPT_d)))     # nx x (N*d)
-    guesses = {"x0": x0, "u0": u0, "y0": y0, "xc0": xc0}
+        x0 = np.vstack([vx_0, vy_0, r_0, n_0, eps_0, Om_f_0, Om_r_0]) / m.x_s[:, None]
+        u0 = np.vstack([Tdrive_0, Tbrake_0, delta_0]) / m.u_s[:, None]
+        y0 = ltx_0 / m.y_s[:, None]
+        xc0 = np.kron(x0[:, :-1], np.ones((1, ctx.OPT_d)))     # nx x (N*d)
+        guesses = {"x0": x0, "u0": u0, "y0": y0, "xc0": xc0}
+        elapsed["qss"] = 0.0
 
     reg = {"ru": ctx.ru_init.reshape(-1),
            "rdu": ctx.rdu_init.reshape(-1),
@@ -103,9 +130,14 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     res = build_and_solve_nlp(
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
         m.duk_lb_init, m.duk_ub_init, ctx.Xi_init, ctx.Xf_init,
-        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts)
+        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts,
+        periodic=ctx.periodic)          # no Xi_tol: the 7 states keep the OPT_e start box
     sol = res["sol"]
-    elapsed["solve"] = time.time() - t0 - elapsed["setup"]
+    elapsed["solve"] = time.time() - t0 - elapsed["setup"] - elapsed["qss"]
+    ctx.solve_stats = res["solver"].stats()
+    elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
+    elapsed["return_status"] = str(ctx.solve_stats.get("return_status", "unknown"))
+    elapsed["seed"] = seed
 
     # ---- postprocess: collect + reconstruct ------------------------------
     w_opt = np.array(sol["x"]).reshape(-1)
@@ -125,7 +157,7 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         "f_veh", [m.x, m.u, m.y, m.pv],
         [m.f_drag, m.f_lift, m.fx_f, m.fy_f, m.fz_f, m.fx_r, m.fy_r, m.fz_r,
          m.sa_f, m.sa_r, m.sx_f, m.sx_r, m.T_f, m.T_r, m.Om_motor, m.P_motor,
-         m.mu_f, m.mu_r])
+         m.mu_f, m.mu_r], fn_opts(ctx))
     vv = f_veh(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None],
                y_opt / m.y_s[:, None], disc["pv_knot"])
     vlabels = ["f_drag", "f_lift", "fx_f", "fy_f", "fz_f", "fx_r", "fy_r", "fz_r",
@@ -146,19 +178,33 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         "t_opt": t_opt, "lap_time": float(t_opt[-1]),
         "track": _ns_to_dict(track), "vehicle": vehicle, "constraints": constraints,
         "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d, "circuit": circuit,
+        "tyre_set": getattr(ctx, "tyre_set", "MF205"),
+        "mesh": getattr(ctx, "mesh", "uniform"),
+        "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
+        "start_state": ctx.start_state, "Xi": np.array(ctx.Xi_init, float),   # 7-state start box (NaN = free)
+        # how this init was solved (metadata: the rung below it, IPOPT outcome)
+        "seed": seed,
+        "ipopt_iters": elapsed["ipopt_iters"],
+        "return_status": elapsed["return_status"],
     }
     from types import SimpleNamespace
     ctx.data = SimpleNamespace(init=SimpleNamespace(**init))
 
     if save:
         os.makedirs(results_dir, exist_ok=True)
-        save_path = os.path.join(results_dir, f"init_{circuit}.mat")
+        suffix = result_stem(circuit, "x", getattr(ctx, "tyre_set", "MF205"),
+                             getattr(ctx, "mesh_requested", "auto"),
+                             getattr(ctx, "physics", "matlab"), ctx.start_state,
+                             n_tag=ctx.n_tag)[len(circuit) + 2:]
+        save_path = os.path.join(results_dir, f"init_{circuit}{suffix}.mat")
         sio.savemat(save_path, {"data": {"init": init}}, do_compression=True)
         print(f"Saved warm start -> {save_path}")
 
     print(f"[MLTP_initial] circuit={circuit}  N={N}  "
           f"lap time = {t_opt[-1]:.3f} s  "
-          f"(setup {elapsed['setup']:.1f}s, solve {elapsed['solve']:.1f}s)")
+          f"(setup {elapsed['setup']:.1f}s, solve {elapsed['solve']:.1f}s)"
+          + (f"  seed=qss (profile + seed {elapsed['qss']:.2f}s)" if seed == "qss" else ""))
+    ctx.elapsed = elapsed
     return ctx
 
 

@@ -11,36 +11,83 @@ stiffness fraction ``ksD`` is intentionally excluded: in the 23-state model the
 lumped roll-stiffness block is inactive, so it has no effect on the dynamics.)
 
 The shared solve core ``optimise_design`` is reused by MLTP_TyreOptim.py.
+
+Warm start: besides the 7-state init (solved here, or an init file / MLTP_initial
+ctx), ``warm_start`` takes a full 23-state result (a result .mat with data.nlp, or
+the ctx / ctx.data of an MLTP() call). If its NLP is this one without the appended
+parameter block, the solve starts from its primal AND dual solution with the
+parameters at their current vp values (see optimise_design).
 """
 
 import os
+import time
+import warnings
 import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
 
 import casadi as ca
 
+from functions.casadi_opts import fn_opts
 from functions.context import Ctx
-from functions.importfile import importfile
+from functions.importfile import load_solution, result_stem
+from functions.mesh import solution_knots, mesh_opts_record
+from functions.warmstart import (nlp_record, get_field, is_full_result, nlp_structure,
+                                 plan_design_warm_start)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       compute_time, reconstruct_track)
 from userOpts import userOpts
 from vehModel import vehModel
-from MLTP import build_path_constraints, warmstart_guesses
+from MLTP import build_path_constraints, warmstart_guesses, warmstart_guesses_full
 from MLTP_initial import MLTP_initial
 
 
 def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
                     warm_start=None, AeroConfig="Static", ATD="On",
                     Electric_4Motors="Off", save=True, results_dir="Results",
-                    **useropts_kwargs):
+                    warm_start_duals=True, Fz0_follows_shift=False, **useropts_kwargs):
     """Solve the MLTP with the given design parameters promoted to decision
     variables. ``param_specs`` is a list of (vp_field_name, lower, upper).
-    Returns ctx with ctx.data (including ctx.data.optimal_params)."""
+    Returns ctx with ctx.data (including ctx.data.optimal_params) and
+    ctx.elapsed (init / solve seconds, ipopt_iters, warm_start mode, duals).
+
+    ``warm_start`` (the mode is printed, kept in ctx.elapsed["warm_start"] and
+    saved in data["nlp"]["warm_start"], as in MLTP):
+      None            solve the 7-state init first and interpolate it ('cold')
+      7-state init    an init .mat (data.init) or an MLTP_initial ctx / data
+                      ('init7'), interpolated by arc length as before
+      full result     a 23-state result .mat (data.nlp) or the ctx / ctx.data
+                      of an MLTP() call. If its NLP is this one without the
+                      appended P block (same N, OPT_d, nx, nu, ny, path rows,
+                      input_keys, collocation grid; setup values may differ),
+                      the solve starts from [w_opt; P0], P0 = the current vp
+                      values of the promoted fields, with its multipliers
+                      (lam_g as saved, lam_x with zero bound multipliers for P)
+                      under IPOPT's warm-start recipe ('full+duals';
+                      warm_start_duals=False seeds the primal only,
+                      'full-primal'). Another structure (N, mesh, config, or a
+                      co-optimisation result with its own P block) is
+                      interpolated by arc length, primal only ('full-interp').
+                      A result solved with another tyre set is ignored and the
+                      7-state init is solved instead ('cold').
+
+    ``start_state`` (a userOpts kwarg) works as in MLTP, except that 'rolling' raises
+    ValueError: its start equilibrium depends on the design parameters. data.start_state and
+    data.Xi record the start box. ``n_bounds`` (a userOpts kwarg) works as in MLTP: the result
+    saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag.
+
+    ``Fz0_follows_shift=True`` (only MLTP_TyreOptim passes it) multiplies vp.Fz0 by Fz0_shift
+    before it builds the model, as MLTP_TyreOptim.m:128 does. MLTP_paramOptim and the setup_sweep
+    finish keep Fz0 fixed, as MLTP.m and MLTP_paramOptim.m do."""
+    t0 = time.time()
+    elapsed = {}
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
+    if ctx.start_state == "rolling":
+        raise ValueError("optimise_design: start_state='rolling' is not supported, the start "
+                         "equilibrium depends on the design parameters; use 'matlab' or 'periodic'")
     vp, pt = ctx.vp, ctx.pt
 
     # ---- promote design parameters: replace vp floats with SX symbols -----
@@ -53,38 +100,108 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         p_x0.append(x0_val); p_names.append(field)
     P = ca.vertcat(*P_syms)
     nP = len(p_names)
+    if Fz0_follows_shift:       # MLTP_TyreOptim.m:128: vp.Fz0 = 4905*vp.Fz0_shift before vehModel
+        vp.Fz0 = vp.Fz0 * vp.Fz0_shift
 
-    # ---- warm start -------------------------------------------------------
-    if warm_start is None:
+    def _init7():
+        """The 7-state init solve (warm_start=None, or a refused full result)."""
         ctx_init = MLTP_initial(circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
-                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False)
-        init = ctx_init.data.init
+                                ATD=ATD, Electric_4Motors=Electric_4Motors, save=False,
+                                **useropts_kwargs)
+        return ctx_init.data.init
+
+    # ---- warm start: data.init (7-state) or a previous full result -------
+    src_full = None                     # previous 23-state result, if given
+    if warm_start is None:
+        ws_mode = "cold"
+        init = _init7()
     else:
-        init = importfile(warm_start)["data"].init
-    init_x = np.asarray(init.x_opt, dtype=float)
-    init_u = np.asarray(init.u_opt, dtype=float)
+        if isinstance(warm_start, (str, os.PathLike)):
+            src = init = load_solution(os.fspath(warm_start))   # data, or data.init
+        else:
+            src = get_field(warm_start, "data", warm_start)
+            init = get_field(src, "init", src)
+        if is_full_result(src):         # data.x_opt with 23 rows (MLTP result)
+            ws_mode, src_full, init = "full", src, None
+        else:
+            ws_mode = "init7"
+            x_in = get_field(init, "x_opt")
+            if np.ndim(x_in) != 2 or np.shape(x_in)[0] != 7:
+                raise ValueError("optimise_design needs a 7-state init (an init file or an "
+                                 "MLTP_initial ctx: init.x_opt with 7 rows) or a full 23-state "
+                                 "result (a result file or an MLTP ctx: data.x_opt with 23 rows)")
+    elapsed["init"] = time.time() - t0
 
     # ---- full model (symbolic in the promoted parameters) -----------------
     vehModel(ctx)
     m = ctx.m23
+    n_per = (m.nx + m.nu) if ctx.periodic else 0
 
     L = m.sf
-    f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv, P], [m.dx, L], ["x", "u", "pv", "P"], ["dx", "L"])
-    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"])
+    f_dyn = ca.Function("f_dyn", [m.x, m.u, m.pv, P], [m.dx, L], ["x", "u", "pv", "P"], ["dx", "L"],
+                        fn_opts(ctx))
+    f_sf = ca.Function("sf", [m.x, m.kappa], [m.sf], ["x", "kappa"], ["sf"], fn_opts(ctx))
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
-    h_eq = ca.Function("h_eq", [m.x, m.u, m.pv, P], [h], ["x", "u", "pv", "P"], ["h"])
+    h_eq = ca.Function("h_eq", [m.x, m.u, m.pv, P], [h], ["x", "u", "pv", "P"], ["h"],
+                       fn_opts(ctx))
 
-    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d)
+    disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,
+                      mesh=getattr(ctx, "mesh", "uniform"),
+                      mesh_opts=getattr(ctx, "mesh_opts", None))
     N = disc["N"]
-    guesses = warmstart_guesses(ctx, m, init_x, init_u, N)
+    nh = len(hnames)
+
+    # ---- warm-start guesses ----------------------------------------------
+    warm = None                         # primal/dual seeds from a full result
+    if src_full is not None:
+        # the source must be this NLP minus the P block; the saved vectors are
+        # then extended by P0 = the current vp values (bound multipliers 0)
+        expected = dict(nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, nh, n_param=nP,
+                                      n_periodic=n_per),
+                        input_keys=list(ctx.input_keys), s_full=disc["s_full"],
+                        x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
+                        start_state=ctx.start_state)
+        warm, ws_mode, note = plan_design_warm_start(
+            src_full, expected, p_x0, use_duals=warm_start_duals,
+            ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
+        if ws_mode == "cold":
+            print(f"[{tag}] warm start ignored: {note}; running the 7-state init")
+            src_full = None
+            t_init = time.time()
+            init = _init7()
+            elapsed["init"] += time.time() - t_init
+        else:
+            print(f"[{tag}] warm start from a full result: {note} -> {ws_mode}")
+            guesses = warmstart_guesses_full(ctx, m, src_full, disc)
+    if src_full is None:
+        # init interpolated by arc length (its grid may differ, e.g. a loaded
+        # init file solved with other options)
+        init_x = np.asarray(get_field(init, "x_opt"), dtype=float)
+        init_u = np.asarray(get_field(init, "u_opt"), dtype=float)
+        guesses = warmstart_guesses(ctx, m, init_x, init_u, disc["s_knot"],
+                                    solution_knots(init, init_x.shape[1]))
     reg = {"ru": ctx.ru.reshape(-1), "rdu": ctx.rdu.reshape(-1), "rdu2": ctx.rdu2.reshape(-1)}
 
     param = {"sym": P, "lb": np.array(p_lb), "ub": np.array(p_ub), "x0": np.array(p_x0)}
     res = build_and_solve_nlp(
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
-        ctx.duk_lb, ctx.duk_ub, ctx.Xi, ctx.Xf,
-        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, param=param)
+        m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,     # rate bounds / u_s (normalised)
+        ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, param=param, warm=warm,
+        Xi_tol=ctx.Xi_tol, periodic=ctx.periodic)
     sol = res["sol"]
+    ctx.solve_stats = res["solver"].stats()
+    elapsed["solve"] = time.time() - t0 - elapsed["init"]
+    winfo = res["warm_info"]
+    if warm is not None:                # what the transcription actually used
+        ws_mode = ("full+duals" if winfo["duals"] else
+                   "full-primal" if winfo["x0"] else "full-interp")
+    elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
+    elapsed["warm_start"] = ws_mode
+    elapsed["duals"] = bool(winfo["duals"])
+    if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, nh, n_param=nP,
+                                         n_periodic=n_per):
+        warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
+                      f"transcription ({res['structure']}): dual re-injection is unreliable")
 
     # ---- collect + reconstruct -------------------------------------------
     w_opt = np.array(sol["x"]).reshape(-1)
@@ -104,25 +221,49 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         "track": {k: v for k, v in track.items()}, "input_keys": list(ctx.input_keys),
         "optimal_params": optimal_params, "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d,
         "circuit": circuit, "AeroConfig": AeroConfig, "ATD": ctx.ATD, "EM4": ctx.Electric_4Motors,
+        "mesh": getattr(ctx, "mesh", "uniform"),
+        "mesh_requested": getattr(ctx, "mesh_requested", "auto"),
+        "mesh_opts": mesh_opts_record(getattr(ctx, "mesh_opts", None)),
+        "tyre_set": getattr(ctx, "tyre_set", "MF205"),
+        "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
+        "physics": getattr(ctx, "physics", "matlab"),
+        "start_state": ctx.start_state, "Xi": np.array(ctx.Xi, float),   # start box (NaN = free)
+        # primal + dual NLP solution (w ends with the nP design parameters, so
+        # structure.n_param = nP: a later solve re-injects it only by
+        # interpolation) and the warm-start mode this solve used
+        "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
+    if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
+        data["n_tag"] = ctx.n_tag
     ctx.data = SimpleNamespace(**data)
 
     if save:
         os.makedirs(results_dir, exist_ok=True)
-        out_path = os.path.join(results_dir, f"{circuit}_{tag}.mat")
+        out_path = os.path.join(results_dir, result_stem(
+            circuit, tag, getattr(ctx, "tyre_set", "MF205"),
+            getattr(ctx, "mesh_requested", "auto"),
+            getattr(ctx, "physics", "matlab"), ctx.start_state,
+            n_tag=ctx.n_tag) + ".mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         print(f"Saved -> {out_path}")
 
     summary = ", ".join(f"{k}={v:.4f}" for k, v in optimal_params.items())
-    print(f"[{tag}] circuit={circuit}  N={N}  lap time = {t_opt[-1]:.3f} s   optimal: {summary}")
+    print(f"[{tag}] circuit={circuit}  N={N}  lap time = {t_opt[-1]:.3f} s  "
+          f"(init {elapsed['init']:.1f}s, solve {elapsed['solve']:.1f}s)  "
+          f"IPOPT iters={elapsed['ipopt_iters']} [{ctx.solve_stats.get('return_status', '?')}]  "
+          f"warm start={ws_mode}  duals={'yes' if elapsed['duals'] else 'no'}   optimal: {summary}")
+    ctx.elapsed = elapsed
     return ctx
 
 
 def MLTP_paramOptim(circuit="Sturn", vi=60.0, ni=np.nan, params=None,
                     AeroConfig="Static", ATD="On", Electric_4Motors="Off",
-                    warm_start=None, save=True, results_dir="Results", **useropts_kwargs):
+                    warm_start=None, save=True, results_dir="Results",
+                    warm_start_duals=True, **useropts_kwargs):
     """Co-optimise design parameters with the lap. ``params`` overrides the
-    default (field, lower, upper) list."""
+    default (field, lower, upper) list. ``warm_start`` / ``warm_start_duals``:
+    see optimise_design (a 7-state init, or a full MLTP result whose primal and
+    dual solution is re-injected with the parameters at their vp values)."""
     if params is None:
         params = [
             ("brkB", 0.0, 1.0),        # brake balance (front fraction)
@@ -135,7 +276,8 @@ def MLTP_paramOptim(circuit="Sturn", vi=60.0, ni=np.nan, params=None,
     return optimise_design(params, "paramOptim", circuit=circuit, vi=vi, ni=ni,
                            warm_start=warm_start, AeroConfig=AeroConfig, ATD=ATD,
                            Electric_4Motors=Electric_4Motors, save=save,
-                           results_dir=results_dir, **useropts_kwargs)
+                           results_dir=results_dir, warm_start_duals=warm_start_duals,
+                           **useropts_kwargs)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ Inspector. Plotly has no SDI equivalent, so this module reproduces the same
   * racing line coloured by velocity (with track boundaries + centreline)
   * speed & longitudinal/lateral acceleration vs distance
   * per-wheel tyre forces (fx, fy, fz)
-  * friction-circle usage (rho_lim path constraints)
+  * friction-circle usage (rho_lim rows with PureSlip, else from the tyre forces)
   * suspension: heave / pitch / roll
   * powertrain: wheel torques, motor power & speed, cumulative energy
   * control inputs
@@ -66,9 +66,13 @@ def _resolve_data(source):
 
 
 def _knot_grid(data):
+    from functions.mesh import solution_knots
     s_full = _arr(_get(data, "s_full"))
     N = int(_get(data, "N", (s_full.size - 1) // (int(_get(data, "OPT_d", 3)) + 1)))
-    return np.linspace(s_full[0], s_full[-1], N + 1), s_full
+    s_knot = solution_knots(data, N + 1)
+    if s_knot is None:
+        s_knot = np.linspace(s_full[0], s_full[-1], N + 1)
+    return s_knot, s_full
 
 
 # --------------------------------------------------------------------------- 
@@ -111,28 +115,39 @@ def plot_racing_line(data):
         fig.add_trace(go.Scatter(x=xopt, y=yopt, mode="lines",
                                  line=dict(color="#e24b4a", width=2), name="racing line"))
     lap = _get(data, "lap_time")
-    title = "Racing line" + (f"  —  lap time {float(lap):.3f} s" if lap is not None else "")
+    title = "Racing line" + (f" ,  lap time {float(lap):.3f} s" if lap is not None else "")
     fig.update_layout(title=title, xaxis_title="x [m]", yaxis_title="y [m]",
                       template="plotly_white")
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     return fig
 
 
+def accel_channels(data):
+    """(ax, ay) at the knots [m/s^2]: the road-plane CG acceleration.
+    Reads data.vehicle ax and ay when both exist. A result saved before E1 has only Lon_acc and
+    Lat_acc (d vx/dt, d vy/dt), so ax = Lon_acc - vy*r and ay = Lat_acc + vx*r from x_opt.
+    Returns (None, None) when neither source exists."""
+    veh = _as_dict(_get(data, "vehicle"))
+    if "ax" in veh and "ay" in veh:
+        return _arr(veh["ax"]), _arr(veh["ay"])
+    x = _get(data, "x_opt")
+    if "Lon_acc" in veh and "Lat_acc" in veh and x is not None:
+        x = np.asarray(x, dtype=float)
+        return _arr(veh["Lon_acc"]) - x[1]*x[2], _arr(veh["Lat_acc"]) + x[0]*x[2]
+    return None, None
+
+
 def plot_speed(data):
     s_knot, s_full = _knot_grid(data)
-    veh = _as_dict(_get(data, "vehicle"))
     x_full = _get(data, "x_full")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         subplot_titles=("Speed", "Acceleration"))
     if x_full is not None:
         fig.add_trace(go.Scatter(x=s_full, y=np.asarray(x_full, float)[0, :],
                                  name="vx", line=dict(color="#378ADD")), row=1, col=1)
-    if "Lon_acc" in veh:
-        fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh["Lon_acc"]), name="long. acc"),
-                      row=2, col=1)
-    if "Lat_acc" in veh:
-        fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh["Lat_acc"]), name="lat. acc"),
-                      row=2, col=1)
+    for name, a in zip(("ax", "ay"), accel_channels(data)):
+        if a is not None:
+            fig.add_trace(go.Scatter(x=s_knot, y=a, name=name), row=2, col=1)
     fig.update_xaxes(title_text="s [m]", row=2, col=1)
     fig.update_yaxes(title_text="v [m/s]", row=1, col=1)
     fig.update_yaxes(title_text="a [m/s²]", row=2, col=1)
@@ -157,17 +172,33 @@ def plot_tyre_forces(data):
     return fig
 
 
+def friction_usage(data):
+    """Per-tyre friction-circle usage rho = sqrt((fx/(mu_x*fz))^2 + (fy/(mu_y*fz))^2)
+    at the knots, {name: array}. The rho_lim_* path-constraint rows when the solve
+    had them (TyreModel='PureSlip'); otherwise (CombinedSlip, no such rows) the same
+    formula on the saved data.vehicle tyre channels, named rho_fl..rr."""
+    con = _as_dict(_get(data, "constraints"))
+    out = {k: _arr(v) for k, v in con.items() if k.startswith("rho_lim")}
+    if out:
+        return out
+    veh = _as_dict(_get(data, "vehicle"))
+    for w in ("fl", "fr", "rl", "rr"):
+        keys = (f"fx_{w}", f"fy_{w}", f"fz_{w}", f"mu_{w}_x", f"mu_{w}_y")
+        if all(k in veh for k in keys):
+            fx, fy, fz, mux, muy = (_arr(veh[k]) for k in keys)
+            out[f"rho_{w}"] = np.sqrt((fx / (mux * fz))**2 + (fy / (muy * fz))**2)
+    return out
+
+
 def plot_friction(data):
     s_knot, _ = _knot_grid(data)
-    con = _as_dict(_get(data, "constraints"))
     fig = go.Figure()
-    for key in con:
-        if key.startswith("rho_lim"):
-            fig.add_trace(go.Scatter(x=s_knot, y=_arr(con[key]), name=key))
+    for key, rho in friction_usage(data).items():
+        fig.add_trace(go.Scatter(x=s_knot, y=rho, name=key))
     fig.add_hline(y=1.0, line=dict(color="#e24b4a", dash="dash"),
                   annotation_text="grip limit")
     fig.update_layout(template="plotly_white", title="Friction-circle usage",
-                      xaxis_title="s [m]", yaxis_title="rho (≤ 1)")
+                      xaxis_title="s [m]", yaxis_title="friction usage rho (1 = friction ellipse)")
     return fig
 
 
@@ -201,9 +232,9 @@ def plot_powertrain(data):
     # speed
     for key in [k for k in veh if k.startswith("Om_motor")]:
         fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh[key]), name=key), row=2, col=1)
-    # energy
+    # energy (stored in Wh)
     if "E_motor" in veh:
-        fig.add_trace(go.Scatter(x=t_opt, y=_arr(veh["E_motor"]), name="E_motor"),
+        fig.add_trace(go.Scatter(x=t_opt, y=_arr(veh["E_motor"]) * 1e-3, name="E_motor"),
                       row=2, col=2)
         fig.update_xaxes(title_text="t [s]", row=2, col=2)
     fig.update_layout(template="plotly_white", title="Powertrain")
@@ -231,11 +262,16 @@ def plot_inputs(data):
 # Top-level: build, save, return all figures
 # --------------------------------------------------------------------------- 
 def plotSDI(source, save_dir="Plots", show=False):
+    from functions.importfile import result_stem
     data = _resolve_data(source)
 
     circuit = str(_get(data, "circuit", "track"))
     cfg = f"{_get(data, 'AeroConfig', 'cfg')}_ATD{_get(data, 'ATD', '')}_EM4{_get(data, 'EM4', '')}"
-    out_dir = os.path.join(save_dir, circuit, cfg)
+    stem = result_stem(circuit, cfg, _get(data, "tyre_set", "MF205"),
+                       _get(data, "mesh_requested", "auto"), _get(data, "physics", "matlab"),
+                       _get(data, "start_state", "matlab"),
+                       n_tag=str(_get(data, "n_tag", "") or ""))
+    out_dir = os.path.join(save_dir, circuit, stem[len(circuit) + 1:])
     os.makedirs(out_dir, exist_ok=True)
 
     figs = {
