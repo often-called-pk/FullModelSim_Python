@@ -46,7 +46,7 @@
 
 - [ ] **Step 1 (Haiku): tests** (`tests/test_mf_scaling.py`, casadi + DATA_AA SKIP guard for model sections):
   1. Defaults: MF205 and CopyB sets give `mf.LMUX == mf.LMUY == 1.0`; `vp_overrides={"LMUX": 0.9, "LMUY": 1.1}` lands in `ctx.mf`; an unknown key still raises.
-  2. Full model at LMUX = 0.9, LMUY = 0.8 vs default, at 3 states (wheel slip -6..+8%, slip angles up to 0.15 rad, camber nonzero, both physics): `mu_*_x` ratio 0.9 and `mu_*_y` ratio 0.8 (rel err <= 1e-12); the vertical shifts scale the same way; `Kxk`, `Kya` equal (rel <= 1e-12); `fx`, `fy` at small slip (|kappa|, |alpha| <= 1e-4) equal within 1e-6 relative.
+  2. Full model at LMUX = 0.9, LMUY = 0.8 vs default, at 3 states (wheel slip -6..+8%, slip angles up to 0.15 rad, camber nonzero, both physics): `mu_*_x` ratio 0.9 and `mu_*_y` ratio 0.8 (rel err <= 1e-12); the vertical shifts scale the same way; `Kxk`, `Kya` equal (rel <= 1e-12); the slopes dfx/dkappa and dfy/dalpha at zero slip (central difference, step 1e-6) equal within 1e-6 relative. The force at zero slip itself moves by design, because the vertical shift scales with the factor.
   3. QSS: `peak_mu_x` / `peak_mu_y` scale by the factor; `MLTP_screen(circuit="Sturn", save=False, vp_overrides={"LMUX": 0.95, "LMUY": 0.95})` lap > default lap; with both at 1.0 the lap equals the default exactly.
   4. 7-state model: `vehModel_initial` builds with LMUX = 0.9 and matches the default build (factors unused there).
   5. Parity export: `validation.py_export.params("Sturn", 30)` has no LMUX / LMUY at default; with `vp_overrides={"LMUY": 0.9}` it contains `mf.LMUY` (call shape: read the module).
