@@ -26,7 +26,7 @@
 - Ruling: skip each factor when it is exactly the float 1.0 (Python branch), so default SX graphs stay byte-identical. A symbolic value (promotion) always multiplies.
 - Ruling: `validation/py_export.params` leaves out LMUX and LMUY while both are 1.0 (identity, no MATLAB counterpart), one comment line. Any other value is exported, so the gate flags it.
 - Ruling: registry rows in the tyre group with lo 0.5, hi 1.5, step 0.01, so the GUI parameter table lists them like the other MF coefficients. Cost if wrong: two extra rows in that table.
-- Skipped: LKX, LKY, LFZO, Cd / Cl scales (report Table 5: not identifiable from the core data), add when GPS / IMU data exist. QSS inversion tool (stint median lap time -> grip scale), add when the first session data exist. Promotion of LMUX / LMUY in `optimise_design`, add when a co-optimisation needs it.
+- Skipped: LKX, LKY, LFZO, Cd / Cl scales (report Table 5: not identifiable from the core data). Add each when the data of its Table 5 row ("Better verdict needs") exist. Never fit LFZO from lap times. QSS inversion tool (stint median lap time -> grip scale), add when the first session data exist. Promotion of LMUX / LMUY in `optimise_design`, add when a co-optimisation needs it.
 
 ## Review focus
 1. Default bytes: snapshot "none"; both tyre sets default to 1.0.

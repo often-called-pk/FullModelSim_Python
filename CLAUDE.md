@@ -111,7 +111,7 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_track_width.py`: `userOpts(n_bounds=...)` forms + errors, `n_tag` stems, bounds at knots + collocation points (23- and 7-state), `n_bounds=4.0` == default, empty-start-box and corner-radius ValueErrors, `reconstruct_track` edges, full+duals warm start with a band, narrow-band continuity, periodic Spa arrays, `MLTP_screen` stem
 - `test_sensitivity.py`: `functions/sensitivity.py`: `nlp_index` rows of w and g, `limit_prices` (W start-row rule, torque, brake, power, start speed), `lateral_prices`, `costates`, prices of the stored results, KKT check on the rebuilt Sturn NLP, oracle (rebuilt Lagrangian differences == prices)
 - `test_tyreoptim_fz0.py`: C6: TyreOptim model at `Fz0_shift = S` == plain model with `Fz0 = 4905*S` (both physics), the coupling at S = 0.5, S = 1 exact, no coupling in `MLTP_paramOptim`
-- `test_mf_scaling.py`: C6 part 2: `mf.LMUX` / `mf.LMUY` defaults (1.0, both tyre sets), overrides, unknown key raises. Full model at 0.9 / 0.8 (both physics, camber on, no solve): `mu_*` and the vertical shifts scale. The zero-slip slopes do not change (pHy1 = pHy2 = 0). QSS peaks and lap (1.0 = default lap). 7-state build unchanged. Parity export drops both at 1.0. Kxk / Kya stay local in `vehModel`, so that check SKIPs. Sections 2-5 need casadi + `Data/DATA_AA.mat`
+- `test_mf_scaling.py`: C6 part 2: `mf.LMUX` / `mf.LMUY` defaults (1.0, both tyre sets), overrides, unknown key raises. Full model at 0.9 / 0.8 (both physics, camber on, no solve): `mu_*`, the peak forces and the vertical shifts scale. The zero-slip slopes do not change (pHy1 = pHy2 = 0). With camber off and pVy1 = pVy2 = 0, the fy zero crossing (alpha = -SHy) does not move, and Svyk scales. QSS peaks and lap (1.0 = default lap). 7-state build unchanged. Parity export drops both only while both are 1.0 (checked for each factor). Sections 2-5 need casadi + `Data/DATA_AA.mat`
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -437,19 +437,27 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `vp_overrides={"LMUX": x, "LMUY": y}` puts them in `ctx.mf`. `vehModel.py` places them as MF 5.2 does (PAC2002
   manual, eqs 20-23, 28, 34-35, 41, 74-75). LMUX scales mu_x and SVx. LMUY scales mu_y and SVy, camber part
   `Svy_gamma` included. Kxk and Kya do not change, so `Bx = Kxk/(Cx*Dx)` and `By = Kya/(Cy*Dy)` keep the slip
-  stiffness. LVX and LVY are not added (= 1). SHy does not scale. `_mf_scale` skips a plain 1.0, so the default SX
-  graph stays byte-identical (NLP snapshot: none). A symbolic factor always multiplies. The QSS scales `peak_mu_x` /
-  `peak_mu_y` (`functions/ggv.py`). The 7-state model (`vp.tyre`) ignores both, so its init seeds a cold solve at
-  grip 1. `validation/py_export.params` drops both while both are 1.0 (no MATLAB counterpart). Any other value goes
-  into the export, and gate 1 flags it. `Fz0_shift` and the TyreOptim Fz0 coupling do not change. GUI: two Setup
-  rows in "Tyre & Wheel". Sanity run 2026-10-20 (Linux, MUMPS): Sturn at LMUX = LMUY = 0.95, full+duals from the
+  stiffness. LVX and LVY are not added (= 1). The pHy part of SHy does not scale. Its camber part follows
+  `Svy_gamma` (MF 6.1 form), so the camber thrust at small slip does not change. `_mf_scale` skips a plain 1.0, so
+  the default SX graph stays byte-identical (NLP snapshot: none). A symbolic factor always multiplies. The QSS
+  scales `peak_mu_x` / `peak_mu_y` (`functions/ggv.py`). The 7-state model (`vp.tyre`) ignores both, so its init
+  seeds a cold solve at grip 1. `validation/py_export.params` drops both while both are 1.0 (no MATLAB
+  counterpart). Any other value goes into the export, and gate 1 flags it. `Fz0_shift` and the TyreOptim Fz0
+  coupling do not change. GUI: two Setup rows in "Tyre & Wheel". `result_stem` has no override tag, and
+  `data.mf_overrides` keeps the key names only. So a factor run with `save=True` (the default of `MLTP` and
+  `MLTP_screen`) overwrites the stored default result, for example `Results/Sturn_Static_ATDOn_EM4Off.mat`. Until
+  E2 of `docs/laptime_sim_improvements.md` gives unique stems, run factor solves with `save=False` or with their
+  own `results_dir`. Sanity run 2026-10-20 (Linux, MUMPS): Sturn at LMUX = LMUY = 0.95, full+duals from the
   stored Sturn result. It took 20 iterations (Solve_Succeeded) to 18.24010 s, +0.22377 s (+1.24%) against
   18.01633 s, in 3.5 s wall (2.2 s NLP build). The QSS gives 18.74393 s at 1.0 (= default) and 18.98036 s at 0.95
   (+1.26%). Track method for the values (candidate verdicts, no human review): `docs/tyre_scaling_track_method.md`.
   Its Table 5 links LMUX and LMUY to one value, set from data in the QSS only, after four gates. The full model
   keeps 1 until study B2 gives the full-model elasticity. Skipped: LKX, LKY, LFZO and the Cd / Cl scales, because,
-  per the report, lap times, tyre temperature and pressure cannot identify them. Add them when GPS / IMU data
-  exist. Skipped: a QSS inversion (stint median lap -> grip scale), add when session data exist. Skipped: promotion
+  per the report, lap times, tyre temperature and pressure cannot identify them. Report Table 5 gives the data
+  that each one needs. LKX needs steer, motor speeds, IMU data and hard runs. LKY needs steer, wheel speeds, IMU
+  data and a side-slip sensor. LFZO needs a source for a temperature or pressure effect. Never fit LFZO from lap
+  times. For the Cd and Cl scales, coast-down runs (Cd) and ride-height or GPS data (Cl) give leads only.
+  Skipped: a QSS inversion (stint median lap -> grip scale), add when session data exist. Skipped: promotion
   in `optimise_design`, add when a co-optimisation needs it.
 - **Solver facts (measured on Sturn/BCN with ma57).** MA57 factorisation dominates wall time (~90%) and
   NLP function evaluation is only ~10%, so per-evaluation tweaks (CSE, JIT, `f_dyn.map`, tyre tabulation) gain
