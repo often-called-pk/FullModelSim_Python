@@ -41,8 +41,11 @@ def default_primaries():
         "hRCf": 0.07, "hRCr": 0.11, "hride": 0.117,
         # inertias
         "I_z": 1960.0, "I_y": 1600.0, "I_x": 1000.0,
-        # aero placeholders (overwritten by DATA_AA when present)
+        # Cd, Cl: MATLAB placeholders. DATA_AA.mat overwrites them, so an override acts only without that file,
+        # and then only in the 7-state model. The 23-state model and the QSS read Cd0, Cl0_* and the wing fits.
         "Cd": 0.75, "Cl": 1.45,
+        # E3: scale on the whole drag and on the whole downforce of the 23-state model and the QSS (1.0 = DATA_AA as is)
+        "Cd_scale": 1.0, "Cl_scale": 1.0,
         # tyre
         "Rw": 0.355, "Jw": 3.6, "f": 0.01, "kt": 300000.0,
         "Fz0": 4905.0, "Fz0_shift": 1.0,

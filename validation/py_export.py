@@ -120,6 +120,9 @@ def params(circuit, opt_ds, mesh="uniform"):
     if all(getattr(ctx.mf, k) == 1.0 for k in MF_SCALES):
         for k in MF_SCALES:
             del out["mf"][k]
+    # MATLAB has no Cd_scale or Cl_scale either: leave both out at 1.0, export both when one of them is not 1.0.
+    if ctx.vp.Cd_scale == ctx.vp.Cl_scale == 1.0:
+        del out["vp"]["Cd_scale"], out["vp"]["Cl_scale"]
     out.update(
         circuit=ctx.circuit, tire=TIRE[ctx.tyre_set], N=N,
         n_w=(m.nx + m.nu) * (N + 1) + m.nx * N * d,

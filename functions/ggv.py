@@ -16,7 +16,8 @@ numpy-only at runtime: this module never imports casadi.
 Modelling choices (mirroring vehModel.py / MLTP.build_path_constraints)
 -----------------------------------------------------------------------
 Aero      Cl_front/rear/left/right and Cd are built from ctx.aero exactly as in
-          vehModel.py (same polynomials, wing angles in degrees). F_lift =
+          vehModel.py (same polynomials, wing angles in degrees, same E3 scales
+          vp.Cl_scale on all four Cl and vp.Cd_scale on Cd, default 1). F_lift =
           -0.5*rho*A*Cl*v^2 (positive = downforce), F_drag = 0.5*rho*A*Cd*v^2.
           Active aero (vp.ActAero > 0) is treated as STATIC at the nominal
           angles vp.alpha_FL/FR/RW/TW. The aero side force (Cs) is ignored
@@ -211,9 +212,11 @@ def aero_coefficients(vp, aero):
     Cl_rear = vp.Cl0_rear + FW_L_Cl_rear + FW_R_Cl_rear + RW_Cl_rear + TW_Cl_rear
     Cl_left = vp.Cl0_left + FW_L_Cl_left + RW_Cl_side + TW_Cl_left
     Cl_right = vp.Cl0_right + FW_R_Cl_right + RW_Cl_side + TW_Cl_right
+    # E3: the scales of vehModel.py (x * 1.0 is exact, so the default stays bit for bit)
+    Cl_front, Cl_rear, Cl_left, Cl_right = (c * vp.Cl_scale for c in (Cl_front, Cl_rear, Cl_left, Cl_right))
     Cl = Cl_front + Cl_rear
     return dict(Cl_front=Cl_front, Cl_rear=Cl_rear, Cl_left=Cl_left, Cl_right=Cl_right,
-                Cl=Cl, Cd=vp.Cd0 + RW_Cd,
+                Cl=Cl, Cd=(vp.Cd0 + RW_Cd) * vp.Cd_scale,
                 Cl_fl=Cl_front * (Cl_left / Cl), Cl_fr=Cl_front * (Cl_right / Cl),
                 Cl_rl=Cl_rear * (Cl_left / Cl), Cl_rr=Cl_rear * (Cl_right / Cl),
                 Cs_front=vp.Cs0_front, Cs_rear=vp.Cs0_rear + TW_Cs_rear)

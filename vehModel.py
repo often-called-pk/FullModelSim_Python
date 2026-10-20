@@ -248,7 +248,10 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     Cl_rear = vp.Cl0_rear + FW_L_Cl_rear + FW_R_Cl_rear + RW_Cl_rear + TW_Cl_rear
     Cl_left = vp.Cl0_left + FW_L_Cl_left + RW_Cl_left + TW_Cl_left
     Cl_right = vp.Cl0_right + FW_R_Cl_right + RW_Cl_right + TW_Cl_right
-    Cd = vp.Cd0 + RW_Cd
+    # E3: Cl_scale scales all four Cl (front and rear alone would cancel in Cl_fl..Cl_rr). Cd_scale scales the whole Cd.
+    # _mf_scale skips a plain 1.0.
+    Cl_front, Cl_rear, Cl_left, Cl_right = (_mf_scale(c, vp.Cl_scale) for c in (Cl_front, Cl_rear, Cl_left, Cl_right))
+    Cd = _mf_scale(vp.Cd0 + RW_Cd, vp.Cd_scale)
     Cs_front = vp.Cs0_front
     Cs_rear = vp.Cs0_rear + TW_Cs_rear
 

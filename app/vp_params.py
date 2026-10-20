@@ -59,7 +59,7 @@ PARAM_GROUPS = [
     ("Suspension damping", ["zeta_fl", "zeta_fr", "zeta_rl", "zeta_rr"]),
     ("Brakes", ["Tbrake_max"]),
     ("Camber & Toe", ["gamma_fl", "gamma_rl", "toe_front", "toe_rear"]),
-    ("Aero & Environment", ["rho", "g", "Cd", "Cl"]),
+    ("Aero & Environment", ["rho", "g", "Cd", "Cl", "Cd_scale", "Cl_scale"]),
     ("Numerical", ["eps_x", "eps_y", "eps_K"]),
     ("Pacejka 5.2, longitudinal", _PACEJKA_LONG),
     ("Pacejka 5.2, lateral", _PACEJKA_LAT),
@@ -128,8 +128,10 @@ META = {
     # Aero & Environment
     "rho": ParamMeta("Air density", "kg/m^3", "Ambient air density", 0.5, 2.0, 0.001, 4),
     "g": ParamMeta("Gravity", "m/s^2", "Gravitational acceleration", 0.0, 20.0, 0.01, 4),
-    "Cd": ParamMeta("Drag coefficient", "", "OVERWRITTEN by Data/DATA_AA.mat when present", 0.0, 5.0, 0.01, 4),
-    "Cl": ParamMeta("Lift coefficient", "", "OVERWRITTEN by Data/DATA_AA.mat when present", 0.0, 5.0, 0.01, 4),
+    "Cd": ParamMeta("Drag coefficient (placeholder)", "", "Placeholder: Data/DATA_AA.mat overwrites it. The 23-state model and the QSS never read it. Use Cd_scale", 0.0, 5.0, 0.01, 4),
+    "Cl": ParamMeta("Lift coefficient (placeholder)", "", "Placeholder: Data/DATA_AA.mat overwrites it. The 23-state model and the QSS never read it. Use Cl_scale", 0.0, 5.0, 0.01, 4),
+    "Cd_scale": ParamMeta("Drag scale (Cd_scale)", "", "Scales the whole drag coefficient of the 23-state model and the QSS. 1 = DATA_AA.mat as it is", 0.5, 1.5, 0.01, 4),
+    "Cl_scale": ParamMeta("Downforce scale (Cl_scale)", "", "Scales the whole downforce of the 23-state model and the QSS, every corner. 1 = DATA_AA.mat as it is", 0.5, 1.5, 0.01, 4),
     # Numerical (scientific notation; tiny values)
     "eps_x": ParamMeta("eps_x", "", "Longitudinal-slip smoothing epsilon", 1.0e-12, 1.0, 0.0, 12, kind="sci"),
     "eps_y": ParamMeta("eps_y", "", "Lateral-slip smoothing epsilon", 1.0e-12, 1.0, 0.0, 12, kind="sci"),

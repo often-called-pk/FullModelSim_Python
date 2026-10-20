@@ -15,7 +15,7 @@ ok("groups cover exactly the override keys", set(grouped) == (PRIMARY_KEYS | MF_
 exp = {**default_primaries(), **vars(_default_mf())}
 ok("all_vp_defaults(tyre_set='CopyB') == primaries+legacy mf merge", all_vp_defaults(tyre_set="CopyB") == exp)
 ok("all_vp_defaults == primaries+mf+MF205 overrides merge", all_vp_defaults() == {**exp, **_MF205_OVERRIDES})
-ok("all_vp_defaults has 115 keys", len(all_vp_defaults()) == len(PRIMARY_KEYS | MF_KEYS))
+ok("all_vp_defaults has 117 keys", len(all_vp_defaults()) == len(PRIMARY_KEYS | MF_KEYS))
 
 defs = all_vp_defaults()
 ok("default tyre set is MF205: pKy4 == 2.0", defs["pKy4"] == 2.0)
