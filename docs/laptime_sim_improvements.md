@@ -33,20 +33,20 @@ The runs below used MUMPS on Linux. The column "Seed" names the warm start. A la
 | Run | Case | Seed | Result |
 |---|---|---|---|
 | V10 | Sturn, `physics='corrected'` | Cold | 20.02081 s, 392 iterations. On 18 October, before A4: 20.02413 s, 218 iterations. |
+| V14 | BCN, `physics='corrected'` | Cold | 130.04167 s, 212 iterations, 224 s wall. On 18 October, before A4: 130.03517 s, 179 iterations. |
 | V11 | Sturn, LKY = 0.9 | Stored Sturn result with duals | 18.09017 s, 6 iterations, +0.07384 s. The objective changes by +0.07146 s. The first-order estimate is +0.06404 s. |
 | V12 | Sturn, LKY = 0.95 | Stored Sturn result with duals | 18.05111 s, 3 iterations, +0.03478 s. The objective changes by +0.03379 s. The first-order estimate is +0.03202 s. |
 | V13 | Sturn, `physics='corrected'`, `Preg` = 50 kW | The V10 result with duals | 19.97510 s, 49 iterations, -0.04571 s (-0.23%). The QSS forecast is -0.42%. |
 
 Findings:
 
-- **A4 in the NLP.** With `physics='corrected'`, the cold Sturn lap is 0.0033 s (0.017%) shorter than the lap of 18 October (V10). This difference is smaller than the cold-solve scatter of about 0.01 s on Sturn (ladder study, default physics). So the solve shows only that the effect of A4 is small, as the QSS forecast of -0.003% says. The solve took 392 iterations, against 218 on 18 October. On this path-sensitive NLP, the iteration count does not measure the change.
+- **A4 in the NLP.** With `physics='corrected'`, the cold Sturn lap is 0.0033 s (0.017%) shorter than the lap of 18 October (V10). This difference is smaller than the cold-solve scatter of about 0.01 s on Sturn (ladder study, default physics). So the solve shows only that the effect of A4 is small, as the QSS forecast of -0.003% says. The solve took 392 iterations, against 218 on 18 October. On this path-sensitive NLP, the iteration count does not measure the change. On BCN, the cold lap is 0.0065 s (0.005%) longer than on 18 October (V14). The QSS forecast is 0.012% shorter, so the two signs differ. So the BCN solve also shows only that the effect of A4 is small.
 - **Setup gradient (C2).** For LKY = 0.9, the first-order estimate is 10.4% below the change of the objective (V11). For LKY = 0.95, the gap is 5.2% (V12). The gap halves with the step. This is the sign of a second-order term, not of a gradient error. The objective includes the input regularisation, so the lap changes are about 3% larger than the objective changes.
 - **Regenerative braking (A5).** With `Preg` = 50 kW, the single motor brakes at 7 of the 19 knots (V13). Its power reaches -50.000 kW at the knots and -50.069 kW between them, because the power row applies only at the knots (B3). The motor energy falls from 1016.4 Wh to 982.1 Wh. The QSS forecast of -0.42% is 1.8 times the NLP change of -0.23%.
 - **A5 in the QSS.** With `physics='corrected'` and four motors, half ratings (301 Nm, 228 kW) make the QSS lap 1.10% longer on Sturn and 0.89% longer on BCN. A 456 kW pack limit adds 4.88% and 4.07%. A regen power of 456 kW for each motor removes 0.58% and 0.44%.
 
 Open items, each with a trigger:
 
-- No cold BCN solve with `physics='corrected'` checks A4 yet. A BCN solve needs 6 GB of free memory, and less than 5 GB was free during this work. Run it when 6 GB is free. The QSS forecast for BCN is -0.012%.
 - The owner still has to pick the per-motor ratings, the pack limit and the regen power. The defaults keep the current car: 602 Nm and 456 kW for each motor, no pack row and no regen.
 - No solve tests the four-motor car with the A5 keys. Run one before you use such a result.
 - The vendor document does not state the ChassisSim signs of ay and steer. The export assumes that ChassisSim takes a right turn as positive. Check this with the first ChassisSim import.

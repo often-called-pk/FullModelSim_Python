@@ -552,7 +552,8 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   pitch 5.2 Hz zeta 0.35, max|eig| 191 1/s (matlab 2.7e4). Measured (Linux, MUMPS, cold): Sturn 18.019 -> 20.024 s
   (+11.1%, 152 -> 218 iterations), BCN 116.444 -> 130.035 s (+11.7%, 207 -> 179 iterations); QSS forecast +10.0% /
   +11.1%. These corrected laps predate the drag pitch moment. Re-measured 2026-10-21 (same setup): Sturn 20.02081 s,
-  392 iterations. BCN not re-measured yet (a BCN solve needs 6 GB free, under 5 GB was free).
+  392 iterations. BCN 130.04167 s, 212 iterations (+0.0065 s vs 18 Oct; QSS forecast -0.012%; both too small to
+  resolve the moment in a cold NLP).
   Watch: the body sits 9.4 mm low at 60 m/s under corrected (12.8 mm at 70 m/s), and the matlab start box
   holds zs to +-OPT_e = 10 mm. The old claim "vi above ~62 m/s makes the start infeasible" is wrong: corrected Sturn
   at vi = 70 m/s converges (404 iterations, 20.18902 s) with zs(0) on the -10 mm box edge, so the car starts off its
