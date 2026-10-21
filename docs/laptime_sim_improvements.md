@@ -10,6 +10,57 @@ Compiled 17 October 2026 from `docs/lap_time_simulation_literature.md` and a rev
 - **Evidence.** No NLP solve ran during the review. The numbers come from stored results, stored multipliers and the QSS screener. Treat them as estimates until an NLP run checks them.
 - **Outcome.** 21 items passed all three checks, 11 passed two, and 6 failed two. This list keeps 30 items, some of them merged or narrowed. The section "Skipped for now" holds the rest, each with a trigger.
 
+## Status on 21 October 2026
+
+Branch `finish-partials` closes the open part of seven items: A4, A5, C2, C6, D1, E1 and E3. Each new knob has a default that keeps the old behaviour. With the default `physics='matlab'`, the NLP stays byte-identical in seven test builds, and the parity gates stay green. With `physics='corrected'`, only A4 changes the NLP, by design. All 44 test files pass on Linux.
+
+Done:
+
+- **A4, drag pitch moment.** With `physics='corrected'`, the rear-wing drag acts at the wing height `hw` (1.28 m), and the body drag acts at the CG height (0.5 m). The MATLAB co-optimisation scripts use the same split. A rearward force above the CG lifts the nose, and the QSS moves the matching load to the rear axle. At 60 m/s, the coast pitch changes from 2.2569 mrad to 2.0886 mrad. The QSS lap changes by -0.003% on Sturn and by -0.012% on BCN.
+- **A5, the rest of the powertrain.** With `physics='corrected'`, `vp_overrides` takes five keys: `gear`, `Tmax`, `Pmax`, `Preg` and `Ppack`. `Tmax` and `Pmax` set the ratings of one motor. `Preg` sets the regenerative braking power of each motor, and `Ppack` limits the sum of the motor powers. With the default physics, each key raises `ValueError`.
+- **C2 stage M, setup gradients.** `functions/sensitivity.setup_gradients` gives the first-order change of the objective per unit of a setup parameter. It rebuilds the NLP at the stored optimum with the stored multipliers, and it does not solve. A parameter can be a vehicle primary or a Magic Formula factor. It takes 0.11 s on Sturn and 1.01 s on BCN. For 27 parameters, the gradients agree with central differences of the rebuilt NLP to 1.8e-6 or better. `optimise_design` can now also promote a Magic Formula factor.
+- **C6, the other Magic Formula factors.** The branch adds LFZO (nominal load), LKX (longitudinal slip stiffness) and LKY (cornering stiffness), default 1, as in the PAC2002 manual. LFZO = 0.9 gives the same full-model tyre forces and the same QSS lap as the override Fz0 = 0.9 x 4905 N. That QSS lap on Sturn is 18.89453 s, 0.80% longer than the default. LKX and LKY change the slip stiffness, and the peak forces do not change. The QSS uses only the peak friction, so LKX and LKY do not change the QSS lap. The 7-state model ignores the three factors.
+- **D1 stage M, track builder.** `functions/track_qa.write_track` builds a track file from a polyline, runs the track QA and writes the file. `xy_from_gps` converts GPS fixes to east and north metres, and `smooth_xy` smooths GPS noise. `write_track` writes no file in these cases:
+  - The start and the end have a gap between them.
+  - A closed line does not turn +1 or -1 laps.
+  - The track QA finds an error.
+- **D1, test on BCN.** BCN, built again from its own x and y, turns -1.000000000000 laps and has no QA issue. Its QSS lap is 134.768 s, 4.1% longer than with the parity file. So BCN keeps its old file, and the branch registers no new circuit.
+- **E1 stage M, channels at the collocation points.** `MLTP` now evaluates the vehicle channels at every knot and collocation point. It uses the inputs that the NLP dynamics use. With the linear inputs (`u_full`), ax and ay at the collocation points are wrong by 0.70 m/s^2 and 1.15 m/s^2 RMS. The result now holds `vehicle_full` and `t_full`, and the 66 old result arrays do not change. `functions/telemetry.py` writes a ChassisSim monster file at 50 Hz and a CSV file at 1 m steps.
+- **E3, aero scales.** `Cd_scale` scales the whole drag coefficient, and `Cl_scale` scales all four lift coefficients. The default is 1. The full model and the QSS apply the scales with both physics settings. On Sturn, `Cd_scale` = 1.2 adds 0.0084 s to the QSS lap, and `Cl_scale` = 1.2 removes 0.0041 s. The `Cd` and `Cl` fields stay MATLAB placeholders, and the Setup tab labels them so.
+
+The runs below used MUMPS on Linux. The column "Seed" names the warm start. A lap change compares with the stored Sturn baseline of 18.01633 s. For V13, it compares with V10.
+
+| Run | Case | Seed | Result |
+|---|---|---|---|
+| V10 | Sturn, `physics='corrected'` | Cold | 20.02081 s, 392 iterations. On 18 October, before A4: 20.02413 s, 218 iterations. |
+| V11 | Sturn, LKY = 0.9 | Stored Sturn result with duals | 18.09017 s, 6 iterations, +0.07384 s. The objective changes by +0.07146 s. The first-order estimate is +0.06404 s. |
+| V12 | Sturn, LKY = 0.95 | Stored Sturn result with duals | 18.05111 s, 3 iterations, +0.03478 s. The objective changes by +0.03379 s. The first-order estimate is +0.03202 s. |
+| V13 | Sturn, `physics='corrected'`, `Preg` = 50 kW | The V10 result with duals | 19.97510 s, 49 iterations, -0.04571 s (-0.23%). The QSS forecast is -0.42%. |
+
+Findings:
+
+- **A4 in the NLP.** With `physics='corrected'`, the cold Sturn lap is 0.0033 s (0.017%) shorter than the lap of 18 October (V10). This difference is smaller than the cold-solve scatter of about 0.01 s on Sturn (ladder study, default physics). So the solve shows only that the effect of A4 is small, as the QSS forecast of -0.003% says. The solve took 392 iterations, against 218 on 18 October. On this path-sensitive NLP, the iteration count does not measure the change.
+- **Setup gradient (C2).** For LKY = 0.9, the first-order estimate is 10.4% below the change of the objective (V11). For LKY = 0.95, the gap is 5.2% (V12). The gap halves with the step. This is the sign of a second-order term, not of a gradient error. The objective includes the input regularisation, so the lap changes are about 3% larger than the objective changes.
+- **Regenerative braking (A5).** With `Preg` = 50 kW, the single motor brakes at 7 of the 19 knots (V13). Its power reaches -50.000 kW at the knots and -50.069 kW between them, because the power row applies only at the knots (B3). The motor energy falls from 1016.4 Wh to 982.1 Wh. The QSS forecast of -0.42% is 1.8 times the NLP change of -0.23%.
+- **A5 in the QSS.** With `physics='corrected'` and four motors, half ratings (301 Nm, 228 kW) make the QSS lap 1.10% longer on Sturn and 0.89% longer on BCN. A 456 kW pack limit adds 4.88% and 4.07%. A regen power of 456 kW for each motor removes 0.58% and 0.44%.
+
+Open items, each with a trigger:
+
+- No cold BCN solve with `physics='corrected'` checks A4 yet. A BCN solve needs 6 GB of free memory, and less than 5 GB was free during this work. Run it when 6 GB is free. The QSS forecast for BCN is -0.012%.
+- The owner still has to pick the per-motor ratings, the pack limit and the regen power. The defaults keep the current car: 602 Nm and 456 kW for each motor, no pack row and no regen.
+- No solve tests the four-motor car with the A5 keys. Run one before you use such a result.
+- The vendor document does not state the ChassisSim signs of ay and steer. The export assumes that ChassisSim takes a right turn as positive. Check this with the first ChassisSim import.
+- A result file name does not show the knob values (E2). So a knob run with `save=True` overwrites the default result. Use `save=False` or a separate `results_dir` until E2 gives unique names.
+- `limit_prices` gives no price for the regen bounds or the pack row. Add these prices when a regen study needs them.
+- The research report says that lap times, tyre temperature and tyre pressure cannot identify LFZO, LKX, LKY and the aero scales. Keep these knobs at 1 until the data of Table 5 in `docs/tyre_scaling_track_method.md` exist.
+- The branch skips the items below. Add each one when its trigger occurs.
+  - The ride-height aeromap stage of A4. Add it when ride-height or damper data exist.
+  - The side-force roll moment. The side force is zero at the default twist-wing angle of 0 degrees. Add it when a run tilts the twist wing.
+  - GUI rows for the A5 keys. Add them with F2, when the GUI offers `physics='corrected'`.
+  - A tool to fit the new factors and scales. Add it when the data of Table 5 exist.
+  - A command line for the track builder. Add it when a new circuit arrives.
+  - The optional strain columns of the monster file. Add them when a rig needs them.
+
 ## Status on 20 October 2026
 
 Branch `sim-phase2` now holds part 2 of C6 and the grip part of E3. The owner decisions of 19 October 2026 and Table 5 of `docs/tyre_scaling_track_method.md` set the scope. That research report gives a candidate method to estimate the factors from lap times, tyre temperature and tyre pressure. No human reviewed the report.
@@ -152,6 +203,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Change, stage 1.** Send the downforce through the springs. Add the aero pitch moment and the drag pitch moment about the CG.
 - **Gain.** The aero balance becomes live, and about 17% of the downforce moves to the front axle. The QSS lap moves +0.03% on Sturn and +0.13% on BCN. The wing-angle co-optimisation and the active aero become physical.
 - **Status.** The checks rejected the first version of this item. The ride-height aeromap stage is now in "Skipped for now".
+- **Status on 21 October 2026.** Stage 1 is complete. The downforce goes through the springs, with the aero pitch and roll moments (status of 18 October). The rear-wing drag now also gives a pitch moment. With `physics='corrected'`, the QSS lap changes by -0.003% on Sturn and by -0.012% on BCN. The cold Sturn solve gives 20.02081 s (run V10).
 
 ### A5. Four-motor powertrain (M)
 
@@ -159,6 +211,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Change.** Add a per-motor model behind the flag: speed times gear, per-motor ratings, `gear` as a setup field and an optional pack power row. Regenerative braking also needs a new upper bound on the power rows (`MLTP.py:93-96`).
 - **Gain.** The four-motor car becomes power limited. The QSS BCN lap moves +0.13% to +7.6%, depending on the ratings that the owner picks.
 - **Risk.** The four-motor NLP is already fragile and needs the friction homotopy.
+- **Status on 21 October 2026.** Done, with `physics='corrected'`. Each motor turns at the wheel speed times the gear ratio (status of 18 October). The per-motor ratings, the gear, regenerative braking and the pack power row are now `vp_overrides` keys. Run V13 checks regen on Sturn: 50 kW makes the lap 0.23% shorter. The owner picks the ratings, and no solve checks the four-motor car with the keys yet.
 
 ### A6. Wheel kinematics (S)
 
@@ -227,6 +280,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Change.** Add `functions/sensitivity.py` (numpy only) for limit prices and costate maps. Later, add setup gradients at fixed parameters.
 - **Gain.** Sensitivities to the width, the torque, brake and power limits and the start speed, at zero solve cost.
 - **Risk.** The prices are first order only. They are wrong across a change of active constraints.
+- **Status on 21 October 2026.** Done. Stage S, the limit prices, is in the status of 19 October. Stage M adds `setup_gradients`, which gives the setup gradients at zero solve cost. Runs V11 and V12 check one gradient against two solves.
 
 ### C3. Anti-roll bars (S)
 
@@ -255,6 +309,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Change.** Substitute the nominal load in the Python TyreOptim path as MATLAB does, and add a test. Add Magic Formula scaling factors for load, grip and stiffness, default 1, shared with E3.
 - **Status.** The checks rejected the first version of this item, because the literature has no source on scaling factors. The code check found the port gap itself.
 - **Status on 20 October 2026.** Part 2 adds only the grip factors LMUX and LMUY, default 1, in the full model and the QSS screener. It does not add the load factor LFZO or the stiffness factors LKX and LKY. The status of 20 October gives the reasons.
+- **Status on 21 October 2026.** Done. The branch adds LFZO, LKX and LKY, default 1, so all five standard factors exist. LFZO = 0.9 gives the same QSS lap as Fz0 = 0.9 x 4905 N: 18.89453 s on Sturn. At LKY = 0.9, the first-order gradient predicts the change of the objective within 10.4% (run V11). The data limits of the status of 20 October still apply: keep the new factors at 1 without data.
 
 ## D. Track data
 
@@ -265,6 +320,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Change, S.** Add `functions/track_qa.py`: turning, closure, sign agreement with x and y, spacing and monotonic s. Warn at load time. Rebuild Jarama from its x and y.
 - **Change, M.** Add a heading-conserving builder from GPS or x and y. `IRP/MLTP_Python/track_processor.py` already does part of this.
 - **Risk.** The smoothing level is itself a fit parameter. Smoothing moved the QSS lap on the racing line by 1.7%.
+- **Status on 21 October 2026.** Done. Stage S, the QA gate, is in the status of 19 October. Stage M adds `write_track`, `xy_from_gps` and `smooth_xy` to `functions/track_qa.py`. BCN, built again from its own x and y, turns -1.000000000000 laps. Its QSS lap is 4.1% longer than with the parity file, so the smoothing risk is real, and BCN keeps its file.
 
 ## E. Outputs and correlation with data
 
@@ -274,6 +330,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Problem.** The motor energy is in Wh but has the label kWh (`MLTP.py:599-609` and the GUI). MATLAB stores the motor power in kW (`MLTP.m:592`), so its energy value is in kWh, and the label matches the value.
 - **Change, S.** Add accelerometer-equivalent ax and ay, the steer angle and the wheel speeds. Fix the energy unit, and update `tests/test_results.py`.
 - **Change, M.** Store channels at the collocation points, and export at 1 m or 50 Hz in the ChassisSim "monster file" format.
+- **Status on 21 October 2026.** Done. Stage S is in the status of 19 October. Stage M stores `vehicle_full` and `t_full` and adds `functions/telemetry.py`, which writes the monster file and a 1 m CSV. At the collocation points, ax and ay agree with the kinematics of the state polynomials to 5.2e-5 m/s^2 and 7.4e-7 m/s^2. The signs of ay and steer in the monster file are not verified. The E5 readers can go in the same module.
 
 ### E2. Provenance and a defaults table (S, file-name change M)
 
@@ -289,6 +346,7 @@ Effort: S = hours, M = days, L = weeks. Gains are QSS or first-order estimates u
 - **Gain.** The staged matching of Section 8 becomes possible with the existing sweep tools. In QSS, 5% more grip changes the lap by -1.3% to -1.4%.
 - **Risk.** The knobs absorb model error. Do A1 to A3 first.
 - **Status on 20 October 2026.** The C6 factors LMUX and LMUY are the grip knobs `mu_x_scale` and `mu_y_scale`, in one implementation. The branch does not add `Cd_scale` and `Cl_scale`, and the problem with the `Cd` and `Cl` fields stays open. The status of 20 October gives the reasons.
+- **Status on 21 October 2026.** Done. `Cd_scale` and `Cl_scale` exist, default 1, in the full model and the QSS screener. The `Cd` and `Cl` fields stay MATLAB placeholders, and the Setup tab labels them "(placeholder)". On Sturn, `Cd_scale` = 1.2 adds 0.0084 s to the QSS lap. The research report still advises against a fit of the scales from lap times.
 - **Driver margin.** The research report advises a different use. It keeps the effective grip level, which includes the driver margin, out of the vehicle model, as a lap-time ratio.
 
 ### E4. Logging specification (S)
