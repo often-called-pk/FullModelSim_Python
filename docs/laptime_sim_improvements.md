@@ -51,7 +51,7 @@ Open items, each with a trigger:
 - No solve tests the four-motor car with the A5 keys. Run one before you use such a result.
 - The vendor document does not state the ChassisSim signs of ay and steer. The export assumes that ChassisSim takes a right turn as positive. Check this with the first ChassisSim import.
 - A result file name does not show the knob values (E2). So a knob run with `save=True` overwrites the default result. Use `save=False` or a separate `results_dir` until E2 gives unique names.
-- `limit_prices` gives no price for the regen bounds or the pack row. Add these prices when a regen study needs them.
+- `limit_prices` gives no price for the regen bounds or the pack row. For a result with regen, it gives NaN for Tmax and Pmax, because their formulas assume no regen. Add these prices when a regen study needs them.
 - The research report says that lap times, tyre temperature and tyre pressure cannot identify LFZO, LKX, LKY and the aero scales. Keep these knobs at 1 until the data of Table 5 in `docs/tyre_scaling_track_method.md` exist.
 - The branch skips the items below. Add each one when its trigger occurs.
   - The ride-height aeromap stage of A4. Add it when ride-height or damper data exist.

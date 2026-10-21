@@ -150,6 +150,14 @@ ok("3e Xi[0] NaN: vi is NaN", np.isnan(limit_prices(r)["vi"]))
 r = record()
 del r.constraints
 ok("3f no constraints: Pmax is NaN", np.isnan(limit_prices(r)["Pmax"]))
+r = record()
+r.u_opt = np.zeros((7, 19))
+r.u_opt[0, 4] = -6.02e-6                # -1e-8 x 602 Nm: IPOPT's bound relaxation (Sturn_paramOptim.mat), not regen
+p = limit_prices(r)
+ok("3g T_motor -1e-8 u_s: Tmax and Pmax stay numbers", not np.isnan(p["Tmax"]) and not np.isnan(p["Pmax"]))
+r.u_opt[0, 4] = -30.0                   # regen (vp_overrides Preg)
+p = limit_prices(r)
+ok("3h T_motor -30 Nm (regen): Tmax and Pmax are NaN", np.isnan(p["Tmax"]) and np.isnan(p["Pmax"]))
 
 # ---- 4. lateral_prices and costates -----------------------------------------------
 print("4. lateral_prices and costates")
@@ -344,6 +352,8 @@ for p, h in STEP.items():
 for p in ("gamma_fl", "k_fl", "mb"):
     ok(f"8c derived {p} -> ValueError",
        raised(ValueError, setup_gradients, STURN, [p], circuit="Sturn"))
+ok("8c Tbrake_max (it sets u_s of T_brake) -> ValueError",
+   raised(ValueError, setup_gradients, STURN, ["Tbrake_max"], circuit="Sturn"))
 ok("8c vp_overrides mb=1850 (setup differs from the solve) -> ValueError",
    raised(ValueError, setup_gradients, STURN, ["alpha_RW"], circuit="Sturn", vp_overrides={"mb": 1850.0}))
 ok("8c vi=55 (the solve used 60) -> ValueError",

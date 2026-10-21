@@ -3,7 +3,7 @@
 resample() gives the channels at equal steps of distance or time. export_monster() writes a ChassisSim
 monster file. export_csv() writes the same table as a CSV with a header row.
 `data` is the result of MLTP (ctx.data) or of load_solution(). It needs OPT_d, s_full, t_full, x_full and
-vehicle_full. A result saved before E1 has no vehicle_full: solve it again.
+vehicle_full. A result saved before E1 stage M (2026-10-21) has no vehicle_full: solve it again.
 """
 import numpy as np
 

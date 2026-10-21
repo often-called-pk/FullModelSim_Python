@@ -109,7 +109,7 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_start_state.py`: `userOpts(start_state=...)` boxes (matlab unchanged, rolling `Xi_tol`, periodic closed circuits only + closing sample), start stems, `n_periodic` in the structure record and the warm-start planning, periodic rows + start box in a fake-solver build
 - `test_start_wiring.py`: `vehModel.rolling_start` (60 m/s coast equilibrium, variants, bounds, failures); start_state through `MLTP`, `MLTP_initial`, `optimise_design`, the refine passes, `setup_sweep._precheck_base`, the `MLTP_screen` stem; real builds with a fake solver (saved records, warm-start modes, plotSDI folder). Section 12: braking-limit warning (text values, silent at vi 67.5), rolling seed rows 9-22 at the equilibrium, rows 0-8 and inputs = matlab-start seed
 - `test_track_width.py`: `userOpts(n_bounds=...)` forms + errors, `n_tag` stems, bounds at knots + collocation points (23- and 7-state), `n_bounds=4.0` == default, empty-start-box and corner-radius ValueErrors, `reconstruct_track` edges, full+duals warm start with a band, narrow-band continuity, periodic Spa arrays, `MLTP_screen` stem
-- `test_sensitivity.py`: `functions/sensitivity.py`: `nlp_index` rows of w and g, `limit_prices` (W start-row rule, torque, brake, power, start speed), `lateral_prices`, `costates`, prices of the stored results, KKT check on the rebuilt Sturn NLP, oracle (rebuilt Lagrangian differences == prices). Section 8: `setup_gradients`, no solve. brkB = Tdist = 0.0 exact with ATD on, wing signs, central difference of the rebuilt Lagrangian (rel 1e-6). ValueError for derived fields, mismatched options and a missing `data.nlp`
+- `test_sensitivity.py`: `functions/sensitivity.py`: `nlp_index` rows of w and g, `limit_prices` (W start-row rule, torque, brake, power, start speed, NaN under regen), `lateral_prices`, `costates`, prices of the stored results, KKT check on the rebuilt Sturn NLP, oracle (rebuilt Lagrangian differences == prices). Section 8: `setup_gradients`, no solve. brkB = Tdist = 0.0 exact with ATD on, wing signs, central difference of the rebuilt Lagrangian (rel 1e-6). ValueError for derived fields, `Tbrake_max`, mismatched options and a missing `data.nlp`
 - `test_tyreoptim_fz0.py`: C6: TyreOptim model at `Fz0_shift = S` == plain model with `Fz0 = 4905*S` (both physics), the coupling at S = 0.5, S = 1 exact, no coupling in `MLTP_paramOptim`
 - `test_mf_scaling.py`: C6: the five MF scaling factors `LMUX`, `LMUY`, `LFZO`, `LKX`, `LKY` (defaults 1.0, both tyre sets), overrides, unknown key raises. Full model at LMUX / LMUY 0.9 / 0.8 (both physics, camber on, no solve): `mu_*`, the peak forces and the vertical shifts scale. The zero-slip slopes do not change (pHy1 = pHy2 = 0). With camber off and pVy1 = pVy2 = 0, the fy zero crossing (alpha = -SHy) does not move, and Svyk scales. Section 2b: LFZO 0.9 == the override `Fz0 = 0.9*4905` (mu, fx, fy), LKX / LKY 1.2 scale the zero-slip slope by 1.2 and move no peak. QSS peaks and lap (1.0 = default lap, LFZO lap == Fz0 override lap, LKX / LKY leave it). 7-state build unchanged (all five). Parity export drops all five only while all are 1.0. Sections 2-5 need casadi + `Data/DATA_AA.mat`
 - `test_aero_scale.py`: E3 `Cd_scale` / `Cl_scale`: defaults, registry, `Cd` / `Cl` placeholders inert with DATA_AA. f_drag and the five lifts scale, the side force does not (both physics). QSS == vehModel, parity export joint filter. Section 5, A4: the corrected drag pitch moment (closed form at 20 / 60 m/s, none under matlab, `Cd_scale` on it). QSS axle shift == coast equilibrium, QSS lap moves < 0.01%. Casadi + `Data/DATA_AA.mat`, no solve
@@ -224,7 +224,8 @@ a quick screening-grade cold start, `homotopy=True` when a cold solve fails: EM4
   stored full result. It promotes each p (vehParams primary or MF key) and rebuilds the NLP at the stored point
   with the stored multipliers. The gradient of `f + lam_g'g` in the P rows is dJ*/dp (envelope theorem). `kw` =
   the solve's options (circuit, vi, AeroConfig, `vp_overrides`, physics, tyre_set ...). ValueError for a derived
-  field (`ms`, `gamma_fl_rad`) or a primary that vehParams derives others from (`gamma_fl`, `mb`, `k_fl`). Also
+  field (`ms`, `gamma_fl_rad`) or a primary that vehParams derives others from (`gamma_fl`, `mb`, `k_fl`).
+  ValueError for `Tbrake_max`: it sets the scale `u_s` of `T_brake` (`limit_prices` gives its price). Also
   ValueError for a result that does not fit, or a point that is not an optimum of the rebuilt NLP. First order,
   and J includes the regularisation. Sturn 0.11 s, BCN 1.01 s. Sturn values: alpha_FL -4.60e-4,
   alpha_FR -4.53e-4, alpha_RW +1.90e-4, alpha_TW -7.01e-5, LMUY -3.29, LKY -0.640. brkB = Tdist = 0.0 exact (ATD
@@ -583,7 +584,8 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   Sturn): single motor, Preg 50 kW. 49 iterations, 19.97510 s (-0.04571 s, -0.23%, QSS -0.42%). Min P_motor
   -50.000 kW at the knots, -50.069 kW at the collocation points (the power row holds at the knots only, B3).
   Energy 1016.4 -> 982.1 Wh. No corrected EM4 solve with the keys yet. `limit_prices` does not price the regen
-  bounds or the pack row. Same `save=True` caveat as the MF factors (stem `_physCorrected`, no knob tag).
+  bounds or the pack row. It gives NaN for Tmax and Pmax if a motor torque is below -1e-6 x its scale `u_s`
+  (regen). Same `save=True` caveat as the MF factors (stem `_physCorrected`, no knob tag).
 - **Start state (2026-10-18, pinned by `tests/test_start_state.py`, `tests/test_start_wiring.py`).**
   `userOpts(start_state='matlab' | 'rolling' | 'periodic')`, one kwarg, modes exclusive. `'matlab'` (default) = MATLAB
   boxes, NLP byte-identical (sha256 snapshot of 7 builds). `'rolling'`: start box centred on the model's straight-line
@@ -657,8 +659,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   km/h. Sign default = right positive, UNVERIFIED (the vendor does not say): flip `sign` if ChassisSim disagrees.
   `export_csv(data, path, step=1.0, by='distance')` writes an own CSV with a header row. Its columns: s, t, vx, vy,
   r, n, eps, delta, throttle, om_gear, xs_*, ax, ay. Export times (stored Sturn): 5.5 ms for the monster
-  file (901 x 11), 2.3 ms for the CSV (541 x 16). BCN: 23 ms for the monster file (5953 x 11). A result saved
-  before stage M has no `vehicle_full` (resample raises): solve it again. ax, ay and the forces stay mesh limited on the 30 m mesh.
+  file (901 x 11), 2.3 ms for the CSV (541 x 16). BCN stand-in solve (N 155, not a solved lap): 23 ms for the
+  monster file (5953 x 11). A result saved before stage M has no `vehicle_full` (resample raises): solve it again.
+  ax, ay and the forces stay mesh limited on the 30 m mesh.
 - **23-state NLP constraint set matches `MLTP.m` (fixed 2026-10-04, pinned by `test_mltp_constraints.py`).**
   Two port gaps were closed. (1) The input-rate bounds are divided by `u_s` (`m.duk_lb/ub`, as `vehModel.m`
   L377-379 and the 7-state model do). Before, the physical Nm/s, rad/s and deg/s values bounded the normalised

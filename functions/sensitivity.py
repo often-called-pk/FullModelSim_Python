@@ -111,6 +111,8 @@ def limit_prices(data, Pmax=None):
     - Tbrake_max [s/Nm]: vp.Tbrake_max.
     - Pmax [s/W]: pt.Pmax. NaN if the result has no constraints.
     - vi [s per m/s]: the centre of the start speed box. NaN if the start has no speed box.
+    Tmax and Pmax are NaN if u_opt has a motor torque below -1e-6 u_s (regen, vp_overrides Preg). Their formulas
+    assume no regen. IPOPT's bound relaxation (1e-8 u_s) is not regen.
     ``Pmax`` [W] is the rating that the solve used. None takes the default of Powertrain.
     Raise ValueError if the result has no nlp record or the multipliers do not fit it.
     """
@@ -118,8 +120,8 @@ def limit_prices(data, Pmax=None):
     lam, _ = _n_rows(r)
     n_hi, n_lo = -np.maximum(lam, 0).sum() / r.x_s[3], np.maximum(-lam, 0).sum() / r.x_s[3]
     keys = norm_keys(get_field(data, "input_keys"))
-    Tmax = -sum(np.maximum(r.lx[r.ix["U"][j]], 0).sum() / r.u_s[j]
-                for j, key in enumerate(keys) if key.startswith("T_motor"))
+    jm = [j for j, key in enumerate(keys) if key.startswith("T_motor")]
+    Tmax = -sum(np.maximum(r.lx[r.ix["U"][j]], 0).sum() / r.u_s[j] for j in jm)
     jb = keys.index("T_brake")
     Tbrake_max = np.minimum(r.lx[r.ix["U"][jb]], 0).sum() / r.u_s[jb]
     if Pmax is None:
@@ -130,6 +132,9 @@ def limit_prices(data, Pmax=None):
     power = np.nan if cons is None else sum(
         (r.lg[r.ix["h"][i]] * (1 - vec(h))).sum()
         for i, (name, h) in enumerate(as_dict(cons).items()) if name.startswith("motor_power")) / Pmax
+    u = get_field(data, "u_opt")
+    if u is not None and (np.asarray(u)[jm] < -1e-6 * r.u_s[jm, None]).any():
+        Tmax = power = np.nan           # regen: the -Tmax and P >= -Preg bounds have no price here
     vi = np.nan if r.xi is not None and np.isnan(r.xi[0]) else -r.lg[r.ix["start"][0]] / r.x_s[0]
     prices = dict(W=n_hi - n_lo, n_hi=n_hi, n_lo=n_lo, Tmax=Tmax, Tbrake_max=Tbrake_max,
                   Pmax=power, vi=vi)
@@ -182,6 +187,8 @@ def setup_gradients(data, params, tol=1e-3, **kw):
     - p is not a vehParams primary or an MF key (a derived field such as ms or gamma_fl_rad, or a typo).
     - p is a primary that vehParams derives other fields from (gamma_fl, toe_front, mb, k_fl, kt, Rw ...).
       A promoted p would leave the derived fields stale. Use two rebuilds with vp_overrides instead.
+    - p is Tbrake_max. It sets the NLP scale u_s of T_brake, and a promoted p cannot be a scale.
+      limit_prices gives its price.
     - the result is not a full result whose multipliers fit this NLP: no data.nlp, or another circuit, tyre set,
       mesh or option, or a co-optimisation result that has its own design parameters.
     - the stored point is not an optimum of the rebuilt NLP: the dual residual |grad L| is above
@@ -196,6 +203,9 @@ def setup_gradients(data, params, tol=1e-3, **kw):
     if not set(params) <= PRIMARY_KEYS | MF_KEYS:
         raise ValueError(f"not a vehParams primary or MF key (a derived field, or a typo): "
                          f"{sorted(set(params) - PRIMARY_KEYS - MF_KEYS)}")
+    if "Tbrake_max" in params:
+        raise ValueError("Tbrake_max sets the NLP scale u_s of T_brake, and setup_gradients cannot promote a scale. "
+                         "Use limit_prices(data)['Tbrake_max'] for its price.")
     ov = kw.get("vp_overrides") or {}
     args = (kw.get("data_dir", "Data"), kw.get("tyre_set", "MF205"), kw.get("physics", "matlab"))
     s0 = _vp_snapshot(ov, {}, *args)
