@@ -16,6 +16,7 @@ applied last, on top of either set.
 ``ctx.physics`` (set by userOpts, default "matlab"): "corrected" adds m_u_fl..rr and m_c_fl..rr,
 re-derives Wfl0..Wrr0, xsi_*, xti_*, lsi_* by the lever rule and c_* = 2 zeta sqrt(k m_c);
 "matlab" keeps the MATLAB values.
+``vp_overrides`` also takes the powertrain keys PT_KEYS (gear, Tmax, Pmax, Preg, Ppack), with physics="corrected" only.
 """
 import os
 import warnings
@@ -97,6 +98,10 @@ def _default_mf():
 
 PRIMARY_KEYS = frozenset(default_primaries())
 MF_KEYS = frozenset(vars(_default_mf()))
+# A5 powertrain knobs for vp_overrides (physics='corrected' only). They are not primaries, so the GUI table and
+# the setup sweeps do not see them. gear sets vp.gear. Tmax and Pmax set the ratings of ONE motor in ctx.pt.
+# Preg (regen power per motor, W) and Ppack (limit on the sum of the motor powers, W) exist in ctx.pt only when given.
+PT_KEYS = frozenset({"gear", "Tmax", "Pmax", "Preg", "Ppack"})
 
 # ---- selectable tyre coefficient sets ---------------------------------------
 # "MF205" (default) = _default_mf() with the nine coefficients below replaced
@@ -129,6 +134,9 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
     vp = ctx.vp
 
     overrides = dict(vp_overrides or {})
+    pt_over = {k: overrides.pop(k) for k in list(overrides) if k in PT_KEYS}
+    if pt_over and getattr(ctx, "physics", "matlab") != "corrected":
+        raise ValueError(f"vp_overrides keys {sorted(pt_over)} need physics='corrected' (A5)")
     unknown = set(overrides) - PRIMARY_KEYS - MF_KEYS
     if unknown:
         raise ValueError(f"Unknown vehParams override keys: {sorted(unknown)}")
@@ -139,6 +147,12 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
     p.update(overrides)
     for k, v in p.items():
         setattr(vp, k, v)
+    if pt_over and not hasattr(ctx, "pt"):
+        ctx.pt = SimpleNamespace()              # a bare ctx (setup_sweep._vp_snapshot). Powertrain() replaces it.
+    for k, v in pt_over.items():
+        if not (0 < v < np.inf or (k == "Preg" and v == 0)):
+            raise ValueError(f"vp_overrides {k} must be finite and > 0 (Preg >= 0), got {v!r}")
+        setattr(vp if k == "gear" else ctx.pt, k, float(v))
 
     # ---- phase 2: derived quantities --------------------------------------
     vp.ms = vp.mb + vp.md

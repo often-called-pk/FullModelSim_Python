@@ -68,7 +68,11 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
           per-motor rows with EM4 (nh = 3 / 4 / 12); the combined-slip Magic
           Formula itself bounds the tyre forces.
       'PureSlip': the four friction circles rho_lim_fl..rr in [0, 1] first, then
-          the same rows (nh = 7 / 8 / 16)."""
+          the same rows (nh = 7 / 8 / 16).
+
+    A5 (physics='corrected', vp_overrides Preg and Ppack, both absent by default): with pt.Preg the motor_power
+    rows have the upper bound 1 + Preg/Pmax and the BrTh rows have no upper bound. With pt.Ppack the last row
+    is pack_power = (Ppack - sum of the motor powers)/Ppack in [0, inf], and nh grows by one."""
     if TyreModel is None:
         TyreModel = getattr(m, "TyreModel", "CombinedSlip")
     if TyreModel not in ("CombinedSlip", "PureSlip"):
@@ -107,6 +111,19 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
              BrTh_fl, BrTh_fr, BrTh_rl, BrTh_rr]
         h_lb = [0, 0, 0, 0, 0, 0, 0, 0, -1.0, -1, -1, -1]
         h_ub = [1, 1, 1, 1, 1, 1, 1, 1, 1.0, 1, 1, 1]
+
+    # A5 (physics='corrected'): regen and pack rows. ctx.pt has no Preg and no Ppack unless vp_overrides gave them.
+    Preg = getattr(pt, "Preg", 0.0)             # regen power per motor [W]
+    if Preg:
+        for i, nm in enumerate(hnames):
+            if nm.startswith("motor_power"):    # P >= -Preg is (Pmax - P)/Pmax <= 1 + Preg/Pmax
+                h_ub[i] = 1 + Preg / pt.Pmax
+            elif nm.startswith("BrTh"):         # regen with the friction brake gives a positive product
+                h_ub[i] = np.inf
+    Ppack = getattr(pt, "Ppack", None)          # limit on the sum of the motor powers [W]
+    if Ppack:
+        P = m.P_motor if pt.EM4 == 0 else m.P_motor_fl + m.P_motor_fr + m.P_motor_rl + m.P_motor_rr
+        hnames.append("pack_power"); h.append((Ppack - P) / Ppack); h_lb.append(0); h_ub.append(np.inf)
 
     if TyreModel == "PureSlip":                 # friction circles, ahead of the rest
         def rho(fx, fy, mux, muy, fz):
@@ -646,6 +663,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     else:
         P = (vehicle["P_motor_fl"] + vehicle["P_motor_fr"]
              + vehicle["P_motor_rl"] + vehicle["P_motor_rr"])
+    # A5 regen, motor by motor. The loop divides by eff: drive costs P/eff, regen returns eff*|P|.
+    if getattr(pt, "Preg", 0.0):
+        P = sum(np.where(p < 0, p * pt.eff ** 2, p) for k, p in vehicle.items() if k.startswith("P_motor"))
     E = np.zeros(N + 1)
     for i in range(N):
         E[i + 1] = E[i] + 0.5 * (P[i] + P[i + 1]) * (t_opt[i + 1] - t_opt[i]) * 2.7778e-4 / pt.eff

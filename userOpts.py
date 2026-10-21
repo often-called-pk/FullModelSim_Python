@@ -295,7 +295,7 @@ def userOpts(ctx,
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
              hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
-             vp_overrides=None,            # dict of vehParams primary/mf overrides
+             vp_overrides=None,            # dict of vehParams primary/mf overrides (+ PT_KEYS if physics='corrected')
              tyre_set="MF205",             # 'MF205' (default, MATLAB-run lateral set) | 'CopyB' (legacy shipped set, pKy4=0)
              OPT_ds=30,                    # collocation step (m)
              OPT_d=3,                      # degree of interpolating polynomials

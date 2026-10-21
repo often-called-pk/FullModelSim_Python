@@ -64,7 +64,9 @@ Drive     EM4=0: wheel force <= min(Tmax*gear/Rw, Pmax/v), none above the motor
           min(Tmax*gear/Rw, Pmax*gear^2/v) -- vehModel's per-motor speed is
           Om_wheel/gear (sic), mirrored here. Tyre traction: all four corners
           when ATD=1 or EM4=1 (free distribution); fixed rear share vp.Tdist
-          when ATD=0 and EM4=0. No regenerative braking (T_motor >= 0).
+          when ATD=0 and EM4=0. No regenerative braking (T_motor >= 0), unless pt.Preg is set
+          (A5, corrected only): the motors then add min(F_mot_trq, P_regen/v) to the brake-torque
+          limit below the rpm limit (P_regen = Preg times the number of motors). pt.Ppack (A5) caps P_mot.
 Brakes    Total wheel torque <= 2*vp.Tbrake_max. Split free with ATD (EM4=0),
           fixed front share vp.brkB otherwise.
 Inertia   The torque/power/brake-torque limits act on M + 4*Jw/Rw^2 (wheel
@@ -112,6 +114,7 @@ class Envelope:
     P_mot: float = np.inf         # [W]     power limit at the wheels (drive force <= P_mot/v)
     v_rpm: float = np.inf         # [m/s]   motor rpm limit (no drive force above it)
     F_brk_trq: float = np.inf     # [N]     brake-torque-limited braking force
+    P_regen: float = None         # [W]     regenerative braking power of the motors (None: no regen)
     v_cap: float = np.inf         # [m/s]   speed cap (pt.Vmax)
     load_model: str = "synthetic"
     F_lift: np.ndarray = None     # [N]     aero downforce on v_grid (diagnostics)
@@ -131,6 +134,15 @@ class Envelope:
         with np.errstate(divide="ignore"):
             f = np.minimum(self.F_mot_trq, self.P_mot / np.maximum(v, 1e-12))
         return np.where(v < self.v_rpm, f, 0.0)
+
+    def F_brk(self, v):
+        """Brake-torque braking limit at the wheels [N]: the friction brakes plus the regenerating motors
+        (same torque and rpm limits as the drive, power P_regen)."""
+        if not self.P_regen:
+            return self.F_brk_trq
+        v = np.asarray(v, dtype=float)
+        f = np.minimum(self.F_mot_trq, self.P_regen / np.maximum(v, 1e-12))
+        return self.F_brk_trq + np.where(v < self.v_rpm, f, 0.0)
 
     def to_dict(self):
         """Plain dict for scipy.io.savemat (no None values)."""
@@ -417,6 +429,10 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
         P_mot = pt.Pmax
         v_rpm = pt.OMmax * Rw / gear
     F_brk_trq = 2.0 * vp.Tbrake_max / Rw
+    Ppack, Preg = getattr(pt, "Ppack", None), getattr(pt, "Preg", 0.0)   # A5 (corrected only), absent by default
+    if Ppack:
+        P_mot = min(P_mot, Ppack)               # pack row: the limit is on the sum of the motor powers
+    P_regen = (4.0 if EM4 else 1.0) * Preg or None   # regen: the torque and rpm limits of the drive, power P_regen
     M_eff = M + 4.0 * vp.Jw / Rw ** 2
     Fz_tot0 = Fz_f0 + Fz_r0
     c_res0 = vp.f * Fz_tot0
@@ -426,11 +442,11 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
                    ax_acc=np.zeros_like(v), ax_brk=np.zeros_like(v),
                    M=M, M_eff=float(M_eff), c_res0=float(c_res0), c_res2=float(c_res2),
                    F_mot_trq=float(F_mot_trq), P_mot=float(P_mot), v_rpm=float(v_rpm),
-                   F_brk_trq=float(F_brk_trq), v_cap=v_cap, load_model=load_model,
+                   F_brk_trq=float(F_brk_trq), P_regen=P_regen, v_cap=v_cap, load_model=load_model,
                    F_lift=F_lift, F_drag=F_drag, Fz_front=Fz_f, Fz_rear=Fz_r)
     res = env.F_res(v)
     env.ax_acc = np.minimum((Fx_trac - res) / M, (env.F_mot(v) - res) / env.M_eff)
-    env.ax_brk = np.minimum((Fx_brk + res) / M, (F_brk_trq + res) / env.M_eff)
+    env.ax_brk = np.minimum((Fx_brk + res) / M, (env.F_brk(v) + res) / env.M_eff)
     env.info = dict(EM4=EM4, ATD=ATD, ActAero=int(getattr(vp, "ActAero", 0)),
                     active_aero_as_static=int(getattr(vp, "ActAero", 0) > 0),
                     drive="all-wheel" if drive_all else "split Tdist",
@@ -488,7 +504,7 @@ def _make_accel(env, lut, brake):
     vlo, inv_dv, jmax, AY, dAY, FX, dFX, FB, dFB = lut
     c0, c2 = env.c_res0, env.c_res2
     invM, invMe = 1.0 / env.M, 1.0 / env.M_eff
-    Ft, P, vrpm, Fb = env.F_mot_trq, env.P_mot, env.v_rpm, env.F_brk_trq
+    Ft, P, vrpm, Fb, Pr = env.F_mot_trq, env.P_mot, env.v_rpm, env.F_brk_trq, env.P_regen
     T, dT = (FB, dFB) if brake else (FX, dFX)
     sqrt = math.sqrt
 
@@ -510,7 +526,8 @@ def _make_accel(env, lut, brake):
         res = c0 + c2 * vv
         if brake:
             a = ((T[j] + f * dT[j]) * e + res) * invM           # tyre (ellipse)
-            a2 = (Fb + res) * invMe                             # brake torque
+            fb = Fb + ((Pr / v if v * Ft > Pr else Ft) if v < vrpm else 0.0) if Pr else Fb   # + regen
+            a2 = (fb + res) * invMe                             # brake torque
         else:
             a = ((T[j] + f * dT[j]) * e - res) * invM           # tyre (ellipse)
             fm = (P / v if v * Ft > P else Ft) if v < vrpm else 0.0

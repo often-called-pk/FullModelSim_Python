@@ -131,16 +131,17 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     assert nx == x.shape[0], "Number of states is not consistent"
 
     # ===================== model (A): inputs (config-dependent) ===========
-    # motor torque(s)
+    # motor torque(s). With regen (pt.Preg > 0, A5, corrected only) the lower bound is -Tmax and the power rows limit it.
+    Treg = pt.Tmax if getattr(pt, "Preg", 0.0) > 0 else 0
     if pt.EM4 == 0:
         T_motor_n = SX.sym("T_motor_n"); T_motor_s = pt.Tmax; T_motor = T_motor_s * T_motor_n
-        T_motor_lim = np.array([0, pt.Tmax]) / T_motor_s
+        T_motor_lim = np.array([-Treg, pt.Tmax]) / T_motor_s
     else:
         T_motor_fl_n = SX.sym("T_motor_fl_n"); T_motor_fl_s = pt.Tmax; T_motor_fl = T_motor_fl_s * T_motor_fl_n
         T_motor_fr_n = SX.sym("T_motor_fr_n"); T_motor_fr_s = pt.Tmax; T_motor_fr = T_motor_fr_s * T_motor_fr_n
         T_motor_rl_n = SX.sym("T_motor_rl_n"); T_motor_rl_s = pt.Tmax; T_motor_rl = T_motor_rl_s * T_motor_rl_n
         T_motor_rr_n = SX.sym("T_motor_rr_n"); T_motor_rr_s = pt.Tmax; T_motor_rr = T_motor_rr_s * T_motor_rr_n
-        T_motor_lim = np.array([0, pt.Tmax]) / pt.Tmax
+        T_motor_lim = np.array([-Treg, pt.Tmax]) / pt.Tmax
 
     # brake torque
     T_brake_n = SX.sym("T_brake_n"); T_brake_s = vp.Tbrake_max; T_brake = T_brake_s * T_brake_n
