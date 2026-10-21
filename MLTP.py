@@ -41,7 +41,7 @@ from functions.warmstart import (resolve_source, guesses_from_full, nlp_structur
                                  plan_full_warm_start, nlp_record, GOOD_STATUS)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
-                                      interp_inputs, compute_time,
+                                      interp_inputs, compute_time, time_at_points,
                                       reconstruct_track)
 from userOpts import userOpts
 from vehModel import vehModel, rolling_start
@@ -621,7 +621,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     n_width = 2.0 * (m.x_s[3] * m.x_max[3])
     track = reconstruct_track(ctx.track, disc["s_full"], disc["k_full"], x_full[3, :], n_width)
 
-    # ---- vehicle channels at the knot points -----------------------------
+    # ---- vehicle channels at the knots and the collocation points --------
     veh_syms = [
         ("f_drag", m.f_drag), ("f_lift", m.f_lift),
         ("f_lift_fl", m.f_lift_fl), ("f_lift_fr", m.f_lift_fr),
@@ -652,10 +652,20 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                      ("P_motor_rl", m.P_motor_rl), ("P_motor_rr", m.P_motor_rr),
                      ("Om_motor_fl", m.Om_motor_fl), ("Om_motor_fr", m.Om_motor_fr),
                      ("Om_motor_rl", m.Om_motor_rl), ("Om_motor_rr", m.Om_motor_rr)]
+    thr = m.T_motor_n if pt.EM4 == 0 else (m.T_motor_fl_n + m.T_motor_fr_n + m.T_motor_rl_n + m.T_motor_rr_n) / 4
+    veh_syms += [("om_gear", (m.Om_fl + m.Om_fr + m.Om_rl + m.Om_rr) / 4 * vp.gear),   # motor speed [rad/s]
+                 ("throttle", thr),                                                    # normalised motor torque
+                 ("xs_fl", m.xs_fl), ("xs_fr", m.xs_fr),                               # damper [m], > 0 in bump
+                 ("xs_rl", m.xs_rl), ("xs_rr", m.xs_rr),
+                 ("sf", m.sf)]                                                         # dt/ds [s/m]
     labels = [k for k, _ in veh_syms]
     f_veh = ca.Function("f_veh", [m.x, m.u, m.pv], [s for _, s in veh_syms], fn_opts(ctx))
-    vv = f_veh(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None], disc["pv_knot"])
-    vehicle = {labels[i]: np.array(vv[i]).reshape(-1) for i in range(len(labels))}
+    # One call on every point. The NLP dynamics use near-hold inputs at the collocation points, not u_full.
+    u_nlp = nlp_inputs(disc, u_opt, disc["s_full"], ctx.OPT_uinter)
+    vv = f_veh(x_full / m.x_s[:, None], u_nlp / m.u_s[:, None], disc["pv_full"])
+    vehicle_full = {labels[i]: np.array(vv[i]).reshape(-1) for i in range(len(labels))}
+    vehicle = {k: v[::ctx.OPT_d + 1] for k, v in vehicle_full.items()}       # the knots
+    t_full = time_at_points(disc, vehicle_full["sf"], t_opt)
 
     # energy [Wh] (P_motor in W; MLTP.m:592 stores P_motor in kW, so MATLAB's E_motor is kWh)
     if pt.EM4 == 0:
@@ -680,6 +690,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         "s_full": disc["s_full"], "k_full": disc["k_full"],
         "x_opt": x_opt, "u_opt": u_opt, "xc_opt": xc_opt, "x_full": x_full, "u_full": u_full,
         "t_opt": t_opt, "lap_time": float(t_opt[-1]),
+        "t_full": t_full, "vehicle_full": vehicle_full,     # every knot and collocation point (functions/telemetry.py)
         "track": {k: v for k, v in track.items()}, "vehicle": vehicle,
         "constraints": constraints, "input_keys": list(ctx.input_keys),
         "N": N, "OPT_ds": ctx.OPT_ds, "OPT_d": ctx.OPT_d, "circuit": circuit,
