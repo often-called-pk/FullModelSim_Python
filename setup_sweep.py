@@ -1564,7 +1564,7 @@ class _Sweep:
             fl = self.flags[f]
             if fl["promotion_safe"]:
                 continue
-            why = ("not a vehParams primary: the sweep finish promotes primaries only"
+            why = ("not a vehParams primary (a Pacejka MF key): the sweep finish promotes primaries only"
                    if not fl["primary"] else
                    "vehParams derives other quantities from it (phase 2), so promoting it would "
                    "leave them stale" if not fl["phase2_free"] else
