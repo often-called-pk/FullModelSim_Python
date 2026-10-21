@@ -4,8 +4,9 @@ functions/sensitivity.py prices the bounds of a saved full result from its NLP m
 width W (n_hi, n_lo), the torque and brake torque limits, the power rating Pmax, the start speed vi,
 the per-point lateral price map and the continuity costates. Sections 1-5 are numpy only. Section 5
 reads the stored Sturn and BCN results in Results/ and prints SKIP for a file that is absent.
-Sections 6-7 rebuild the stored Sturn NLP through a stand-in solver (no IPOPT) and compare the prices
-with finite differences of the rebuilt Lagrangian. They need casadi and Data/DATA_AA.mat (SKIP,
+Sections 6-8 rebuild the stored Sturn NLP through a stand-in solver (no IPOPT) and compare the prices
+with finite differences of the rebuilt Lagrangian. Section 8 tests setup_gradients, which gives the
+first-order gradients dJ*/dp of setup parameters. They need casadi and Data/DATA_AA.mat (SKIP,
 exit 0 otherwise). No section runs IPOPT. Run from anywhere:
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_sensitivity.py
@@ -194,7 +195,7 @@ else:
 
 # ---- casadi sections: the rebuilds need the aero file and the stored Sturn solution -
 if not os.path.exists(DATA_AA) or not os.path.exists(STURN):
-    print("SKIP test_sensitivity sections 6-7: Data/DATA_AA.mat or "
+    print("SKIP test_sensitivity sections 6-8: Data/DATA_AA.mat or "
           "Results/Sturn_Static_ATDOn_EM4Off.mat missing")
     sys.exit(0)
 
@@ -311,5 +312,58 @@ del c_a, c_b
 c_a, c_b = rebuild(n_bounds=3.99), rebuild(n_bounds=4.01)
 ok("7e W: dV / 0.02 == limit_prices W (rel 1e-4)", close(dV(c_a, c_b) / 0.02, P["W"], 1e-4))
 del c_a, c_b
+
+# ---- 8. setup_gradients: dJ*/dp of the stored optimum, zero solves ----------------
+print("8. setup_gradients: first-order dJ*/dp of setup parameters from the stored optimum")
+from functions.sensitivity import setup_gradients  # noqa: E402
+
+SETUP = ["brkB", "Tdist", "alpha_FL", "alpha_FR", "alpha_RW", "alpha_TW"]
+G = quiet(setup_gradients, STURN, SETUP, circuit="Sturn")
+ok("8a brkB == 0.0 exactly (ATD on)", G["brkB"] == 0.0)
+ok("8a Tdist == 0.0 exactly (ATD on)", G["Tdist"] == 0.0)
+ok("8a alpha_FL < 0 and alpha_FR < 0", G["alpha_FL"] < 0 and G["alpha_FR"] < 0)
+ok("8a alpha_RW > 0 and alpha_TW < 0", G["alpha_RW"] > 0 and G["alpha_TW"] < 0)
+
+
+def lagr(**kw):
+    """J + lam_g' g of the rebuilt Sturn NLP at the stored point w."""
+    c = rebuild(**kw)
+    J, g = c.nlp_fg(w)
+    return float(J) + lg @ np.asarray(g).ravel()
+
+
+BASE = {"alpha_RW": c0.vp.alpha_RW, "LMUY": c0.mf.LMUY, "LKY": c0.mf.LKY,
+        "Fz0_shift": c0.vp.Fz0_shift, "rho": c0.vp.rho, "f": c0.vp.f}
+STEP = {"alpha_RW": 1e-3, "LMUY": 1e-4, "LKY": 1e-4, "Fz0_shift": 1e-4, "rho": 1e-4, "f": 1e-6}
+GS = quiet(setup_gradients, STURN, iter(STEP), circuit="Sturn")  # any iterable of names
+for p, h in STEP.items():
+    fd = (lagr(vp_overrides={p: BASE[p] + h}) - lagr(vp_overrides={p: BASE[p] - h})) / (2 * h)
+    ok(f"8b {p}: setup_gradients == central difference of the rebuilt Lagrangian (rel 1e-6)",
+       close(GS[p], fd, 1e-6))
+
+for p in ("gamma_fl", "k_fl", "mb"):
+    ok(f"8c derived {p} -> ValueError",
+       raised(ValueError, setup_gradients, STURN, [p], circuit="Sturn"))
+ok("8c vp_overrides mb=1850 (setup differs from the solve) -> ValueError",
+   raised(ValueError, setup_gradients, STURN, ["alpha_RW"], circuit="Sturn", vp_overrides={"mb": 1850.0}))
+ok("8c vi=55 (the solve used 60) -> ValueError",
+   raised(ValueError, setup_gradients, STURN, ["alpha_RW"], circuit="Sturn", vi=55.0))
+ok("8c physics='corrected' -> ValueError",
+   raised(ValueError, setup_gradients, STURN, ["alpha_RW"], circuit="Sturn", physics="corrected"))
+ok("8c tyre_set='CopyB' -> ValueError",
+   raised(ValueError, setup_gradients, STURN, ["alpha_RW"], circuit="Sturn", tyre_set="CopyB"))
+nodual = load_solution(STURN)
+del nodual.nlp
+ok("8c no data.nlp (no duals) -> ValueError",
+   raised(ValueError, setup_gradients, nodual, ["alpha_RW"], circuit="Sturn"))
+ok("8c data=None -> ValueError", raised(ValueError, setup_gradients, None, ["alpha_RW"], circuit="Sturn"))
+
+if os.path.exists(BCN):
+    GB = quiet(setup_gradients, BCN, SETUP, circuit="BCN")
+    ok("8e BCN brkB == 0.0 and Tdist == 0.0 exactly", GB["brkB"] == 0.0 and GB["Tdist"] == 0.0)
+    ok("8e BCN alpha_FL < 0, alpha_FR < 0, alpha_RW > 0, alpha_TW < 0",
+       GB["alpha_FL"] < 0 and GB["alpha_FR"] < 0 and GB["alpha_RW"] > 0 and GB["alpha_TW"] < 0)
+else:
+    print("  SKIP 8e: Results/BCN_Static_ATDOn_EM4Off.mat missing")
 
 print("test_sensitivity: all asserts passed")

@@ -39,6 +39,7 @@ from functions.transcription import (discretise, build_and_solve_nlp,
                                       compute_time, reconstruct_track)
 from userOpts import userOpts
 from vehModel import vehModel
+from vehParams import MF_KEYS
 from MLTP import build_path_constraints, warmstart_guesses, warmstart_guesses_full
 from MLTP_initial import MLTP_initial
 
@@ -46,9 +47,10 @@ from MLTP_initial import MLTP_initial
 def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
                     warm_start=None, AeroConfig="Static", ATD="On",
                     Electric_4Motors="Off", save=True, results_dir="Results",
-                    warm_start_duals=True, Fz0_follows_shift=False, **useropts_kwargs):
+                    warm_start_duals=True, Fz0_follows_shift=False, build_only=False, **useropts_kwargs):
     """Solve the MLTP with the given design parameters promoted to decision
     variables. ``param_specs`` is a list of (vp_field_name, lower, upper).
+    A name can also be an MF key of ctx.mf (for example LMUY or LKY).
     Returns ctx with ctx.data (including ctx.data.optimal_params) and
     ctx.elapsed (init / solve seconds, ipopt_iters, warm_start mode, duals).
 
@@ -79,7 +81,14 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
 
     ``Fz0_follows_shift=True`` (only MLTP_TyreOptim passes it) multiplies vp.Fz0 by Fz0_shift
     before it builds the model, as MLTP_TyreOptim.m:128 does. MLTP_paramOptim and the setup_sweep
-    finish keep Fz0 fixed, as MLTP.m and MLTP_paramOptim.m do."""
+    finish keep Fz0 fixed, as MLTP.m and MLTP_paramOptim.m do.
+
+    ``build_only=True`` (only functions/sensitivity.setup_gradients passes it) returns the dict of
+    build_and_solve_nlp(build_only=True) and does not solve. It raises ValueError if ``warm_start`` is None
+    or a full result that this NLP does not accept with its multipliers ('full+duals'). A 7-state init gives
+    the dict without lam_g0 and lam_x0."""
+    if build_only and warm_start is None:       # a cold start would solve the 7-state init with IPOPT
+        raise ValueError("build_only needs a full result as warm_start")
     t0 = time.time()
     elapsed = {}
     ctx = Ctx()
@@ -93,9 +102,10 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     # ---- promote design parameters: replace vp floats with SX symbols -----
     P_syms, p_lb, p_ub, p_x0, p_names = [], [], [], [], []
     for field, lb, ub in param_specs:
-        x0_val = float(getattr(vp, field))         # current value = warm-start guess
+        holder = ctx.mf if field in MF_KEYS else vp
+        x0_val = float(getattr(holder, field))     # current value = warm-start guess
         sym = ca.SX.sym(field)
-        setattr(vp, field, sym)                    # model now sees it symbolically
+        setattr(holder, field, sym)                # model now sees it symbolically
         P_syms.append(sym); p_lb.append(lb); p_ub.append(ub)
         p_x0.append(x0_val); p_names.append(field)
     P = ca.vertcat(*P_syms)
@@ -164,6 +174,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         warm, ws_mode, note = plan_design_warm_start(
             src_full, expected, p_x0, use_duals=warm_start_duals,
             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
+        if build_only and ws_mode != "full+duals":
+            raise ValueError(f"the stored result does not fit this NLP: {note}")
         if ws_mode == "cold":
             print(f"[{tag}] warm start ignored: {note}; running the 7-state init")
             src_full = None
@@ -187,7 +199,9 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc, guesses, reg,
         m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,     # rate bounds / u_s (normalised)
         ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, ctx.opts, param=param, warm=warm,
-        Xi_tol=ctx.Xi_tol, periodic=ctx.periodic)
+        Xi_tol=ctx.Xi_tol, periodic=ctx.periodic, build_only=build_only)
+    if build_only:
+        return res
     sol = res["sol"]
     ctx.solve_stats = res["solver"].stats()
     elapsed["solve"] = time.time() - t0 - elapsed["init"]

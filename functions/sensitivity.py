@@ -1,6 +1,7 @@
 """sensitivity.py - limit prices from the multipliers that a full MLTP result stores.
 
-Numpy only. No MLTP module imports it.
+Numpy only, except setup_gradients. It imports casadi and MLTP_paramOptim when it runs.
+No MLTP module imports this file.
 
 At an optimum, the multiplier of an active bound gives the first-order change of the
 objective J per unit of that bound. CasADi marks an active upper bound with lam > 0.
@@ -10,6 +11,7 @@ Then dJ*/d(bound) = -lam. So one solve prices every limit, with no second solve.
 - limit_prices() gives scalar prices: track bounds, torque and power limits, start speed.
 - lateral_prices() gives the price of the track bounds at every grid point of the lap.
 - costates() gives the continuity multipliers per physical unit of each state.
+- setup_gradients() gives dJ*/dp for setup parameters p (wing angles, tyre factors). It rebuilds the NLP.
 
 Units are SI. A price below zero means that a looser limit makes the lap faster.
 A price is correct to first order only. It is wrong across an active-set change, where
@@ -18,8 +20,7 @@ regularisation R (0.27% of the Sturn lap, 0.12% of the BCN lap). So a price is n
 the change of the lap time.
 
 Skipped: the price of the lap time alone. It needs the primal sensitivity (one KKT solve).
-Add it when the share of R matters. Skipped: gradients with respect to the setup
-parameters. Add them when a setup optimiser needs them.
+Add it when the share of R matters.
 """
 from types import SimpleNamespace
 
@@ -164,3 +165,59 @@ def costates(data):
     r = _record(data)
     s = knots_from_full(get_field(data, "s_full"), r.d, r.N + 1)[1:]
     return dict(s=s, P=r.lg[r.ix["cont"]] / r.x_s[:, None])
+
+
+def setup_gradients(data, params, tol=1e-3, **kw):
+    """dJ*/dp [s per unit of p] of a stored full result, for the setup parameters ``params``. No solve.
+
+    At an optimum, dJ*/dp = df/dp + lam_g' dg/dp (the envelope theorem). The function promotes each p to a
+    design parameter, as MLTP_paramOptim.optimise_design does. A p is a vp field or an MF key such as LMUY.
+    It rebuilds the NLP at the stored point with the stored multipliers. One reverse sweep gives all gradients.
+    ``kw`` are the optimise_design arguments of the solve: circuit, vi, ni, AeroConfig, ATD, Electric_4Motors,
+    Fz0_follows_shift and the userOpts keys (vp_overrides, physics, tyre_set ...). Pass the same values.
+    A gradient is first order. J includes the input regularisation R, so it is not exactly d(lap time)/dp.
+    A p that the NLP never reads gives exactly 0 (brkB and Tdist with ATD on).
+
+    Raise ValueError if:
+    - p is not a vehParams primary or an MF key (a derived field such as ms or gamma_fl_rad, or a typo).
+    - p is a primary that vehParams derives other fields from (gamma_fl, toe_front, mb, k_fl, kt, Rw ...).
+      A promoted p would leave the derived fields stale. Use two rebuilds with vp_overrides instead.
+    - the result is not a full result whose multipliers fit this NLP: no data.nlp, or another circuit, tyre set,
+      mesh or option, or a co-optimisation result that has its own design parameters.
+    - the stored point is not an optimum of the rebuilt NLP: the dual residual |grad L| is above
+      tol * (1 + max|lam_g|), or a bound is violated by more than tol. The setup differs from the solve.
+    """
+    import casadi as ca
+    from MLTP_paramOptim import optimise_design
+    from setup_sweep import _same, _vp_snapshot
+    from vehParams import MF_KEYS, PRIMARY_KEYS
+    params = list(params)
+    n = len(params)
+    if not set(params) <= PRIMARY_KEYS | MF_KEYS:
+        raise ValueError(f"not a vehParams primary or MF key (a derived field, or a typo): "
+                         f"{sorted(set(params) - PRIMARY_KEYS - MF_KEYS)}")
+    ov = kw.get("vp_overrides") or {}
+    args = (kw.get("data_dir", "Data"), kw.get("tyre_set", "MF205"), kw.get("physics", "matlab"))
+    s0 = _vp_snapshot(ov, {}, *args)
+    for p in params:
+        if p in PRIMARY_KEYS:
+            s1 = _vp_snapshot(ov, {p: s0[p] + 0.01 * (1 + abs(s0[p]))}, *args)
+            bad = [k for k in s0 if k != p and not _same(s0[k], s1[k])]
+            if bad:
+                raise ValueError(f"{p}: vehParams derives {bad[:3]} from it, so a promoted {p} leaves them stale")
+    res = optimise_design([(p, -np.inf, np.inf) for p in params], "grad", warm_start=data, save=False,
+                          build_only=True, **kw)
+    if "lam_g0" not in res:
+        raise ValueError("the stored multipliers were not accepted: the result does not fit this NLP")
+    nlp, w0, lg, lx = res["nlp"], res["w0"].ravel(), res["lam_g0"].ravel(), res["lam_x0"].ravel()
+    w, g = nlp["x"], nlp["g"]
+    lam = ca.SX.sym("lam", g.numel())
+    gl, gv = ca.Function("gl", [w, lam], [ca.gradient(nlp["f"] + ca.dot(lam, g), w), g])(w0, lg)
+    gl, gv = np.asarray(gl).ravel(), np.asarray(gv).ravel()
+    res_dual = np.abs(gl[:-n] + lx[:-n]).max()        # stationarity of the rows without p: grad L + lam_x = 0
+    viol = np.max([np.max(np.maximum(lo.ravel() - x, x - hi.ravel()))
+                   for x, lo, hi in ((gv, res["lbg"], res["ubg"]), (w0, res["lbw"], res["ubw"]))])
+    if not (res_dual <= tol * (1 + np.abs(lg).max()) and viol <= tol):      # written so that NaN fails
+        raise ValueError(f"the stored point is not an optimum of the rebuilt NLP (dual residual {res_dual:.2e}, "
+                         f"bound violation {viol:.2e}): pass the same options as the solve")
+    return dict(zip(params, map(float, gl[-n:])))

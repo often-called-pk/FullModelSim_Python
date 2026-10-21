@@ -223,7 +223,7 @@ def _pad_last(M, ca):
 def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
                         disc, guesses, reg, duk_lb, duk_ub,
                         Xi, Xf, OPT_d, OPT_uinter, OPT_e, opts, param=None,
-                        sym_type=None, warm=None, Xi_tol=None, periodic=False):
+                        sym_type=None, warm=None, Xi_tol=None, periodic=False, build_only=False):
     """Assemble and solve the collocation NLP. Mirrors the NLP sections of
     MLTP_initial.m / MLTP.m exactly.
 
@@ -264,6 +264,9 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     periodic: True adds nx + nu equality rows LAST in g, Xk[:, N] - Xk[:, 0] = 0
               and Uk[:, N] - Uk[:, 0] = 0 (closed circuit, flying lap). The aux
               variables Yk are not periodic. False adds no row.
+    build_only: True returns dict(nlp, structure, warm_info, w0, lbw, ubw, lbg, ubg) before the solver exists, plus
+              lam_g0 and lam_x0 when the warm start accepted them (functions/sensitivity.setup_gradients). It
+              does not solve. False (default) solves and returns the dict below.
     Returns : dict(sol, solver, N, nx, nu, ny, Xk, Uk, Yk, Xkj, dt_opt,
               sym_type, t_build, w_opt, lam_g, lam_x, n_w, n_g, structure,
               warm_info, linear_solver) -- t_build = NLP construction wall
@@ -511,6 +514,10 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
         print(f"[transcription] warm start: primal x0 {'yes' if warm_info['x0'] else 'no'}, "
               f"duals {'yes' if warm_info['duals'] else 'no'}"
               + (" (IPOPT warm-start options applied)" if warm_info["ipopt"] else ""))
+
+    if build_only:
+        return dict(nlp=nlp, structure=structure, warm_info=warm_info, w0=w0, lbw=lbw, ubw=ubw, lbg=lbg, ubg=ubg,
+                    **solve_kw)
 
     t_asm = time.perf_counter() - t_enter
     solver_info = {}
