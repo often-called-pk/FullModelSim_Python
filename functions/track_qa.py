@@ -3,9 +3,13 @@
 check_track() tests a loaded track (s, k and optional x, y) and never changes it.
 userOpts._load_track runs it on every real circuit. k_from_xy() builds a valid k
 from a centreline polyline: use it to rebuild a track file that fails the QA.
+write_track() builds a track file from a polyline and checks it. xy_from_gps() converts GPS fixes to a polyline.
 """
 import numpy as np
+import scipy.io as sio
 from scipy.interpolate import CubicSpline
+from scipy.signal import savgol_filter
+from types import SimpleNamespace
 
 TWO_PI = 2.0 * np.pi
 TURN_WARN, TURN_ERROR = 0.005, 0.25   # laps: |turning of k - turning of x,y|
@@ -14,6 +18,7 @@ K_CURVED = 2e-3                       # 1/m: a point is curved above this |k| of
 GAP_WARN = 0.005                      # closed lap: end gap of the path integrated from k, share of L
 DS_WARN = 25.0                        # m: largest step of s
 K_WARN = 0.2                          # 1/m: |k| above this is R < 5 m
+WGS84_A, WGS84_E2 = 6378137.0, 0.00669437999014   # semi-major axis [m], first eccentricity squared
 
 
 def _cumtrapz(f, s):
@@ -106,3 +111,68 @@ def k_from_xy(x, y, closed=True, ds=1.0, window=5, passes=2, max_chord=30.0):
                         np.ones(window) / window, mode="valid")
     if closed: k = np.append(k, k[0])                                     # last point == first point
     return s, cx(s), cy(s), k
+
+
+def xy_from_gps(lat, lon):
+    """East, north [m] of WGS84 lat, lon [deg] on the tangent plane at the mean position.
+
+    East is +x and north is +y. A left turn then runs counter-clockwise, so k > 0 as in the model.
+    """
+    # ponytail: tangent plane, relative error 1e-4 at 0.8 km from the mean, use a real projection beyond about 5 km
+    lat, lon = np.deg2rad(np.asarray(lat, float)), np.deg2rad(np.asarray(lon, float))
+    p0 = lat.mean()
+    w = np.sqrt(1.0 - WGS84_E2 * np.sin(p0) ** 2)
+    n = WGS84_A / w                                   # prime-vertical radius of curvature
+    return n * np.cos(p0) * (lon - lon.mean()), n * (1.0 - WGS84_E2) / w ** 2 * (lat - p0)
+
+
+def smooth_xy(x, y, length, closed=True, ds=1.0):
+    """Smooth a polyline: resample it to ds [m], then apply a cubic Savitzky-Golay filter over `length` [m].
+
+    Use it for GPS noise above about 0.05 m. A closed result has no repeated end point.
+    """
+    if closed:
+        x, y = np.append(x, x[0]), np.append(y, y[0])
+    c = np.concatenate(([0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))))
+    u = np.linspace(0.0, c[-1], max(int(round(c[-1] / ds)), 3) + 1)[: -1 if closed else None]
+    w, mode = 2 * int(length / ds / 2) + 1, "wrap" if closed else "interp"
+    return tuple(savgol_filter(np.interp(u, c, a), w, 3, mode=mode) for a in (x, y))
+
+
+def write_track(path, x, y, closed=True, smooth=0.0, **kw):
+    """Build s, k, x, y from a polyline [m], run the track QA and write the .mat file. Return (metrics, issues).
+
+    kw goes to k_from_xy (ds, window, passes, max_chord). window and passes set the smoothing of k.
+    smooth > 0 first smooths the polyline over that length [m] (smooth_xy).
+    Raise ValueError, and write nothing, in these cases:
+    - The QA finds an error.
+    - A closed lap has a gap between its start and its end.
+    - A closed lap does not turn +-1 laps.
+    To use the file as a circuit, add it to userOpts._REAL_CIRCUITS and app/mainwindow.CIRCUITS by hand.
+    """
+    x, y = np.asarray(x, float).ravel(), np.asarray(y, float).ravel()
+    keep = np.r_[True, np.hypot(np.diff(x), np.diff(y)) > 1e-3]       # a logger repeats each GPS fix between updates
+    x, y = x[keep], y[keep]
+    if closed:
+        # a lap that overshoots its start has a closing chord that points backward: trim the tail until it points forward
+        # ponytail: the first two chords set the start heading, untested for a lap that starts inside a hairpin
+        while x.size > 3 and (x[0] - x[-1]) * (x[2] - x[0]) + (y[0] - y[-1]) * (y[2] - y[0]) <= 0:
+            x, y = x[:-1], y[:-1]
+        if x.size <= 3:                       # no later fix lies behind the start. 3 fixes always pass the gap test
+            raise ValueError("The line does not come back to its start, so this is not a closed lap. "
+                             "Pass closed=False for an open track.")
+        gap = np.hypot(x[-1] - x[0], y[-1] - y[0])
+        if gap > 3.0 * np.hypot(np.diff(x), np.diff(y)).max():
+            raise ValueError(f"The start and end are {gap:.1f} m apart, so this is not a closed lap. "
+                             "Pass closed=False for an open track.")
+    if smooth:
+        x, y = smooth_xy(x, y, smooth, closed, kw.get("ds", 1.0))
+    s, x, y, k = k_from_xy(x, y, closed, **kw)
+    met, issues = check_track(SimpleNamespace(s=s, k=k, x=x, y=y))
+    errs = [t for lvl, t in issues if lvl == "error"]
+    if closed and abs(abs(met["turn_k"]) - 1.0) > 1e-6:
+        errs.append(f"the line turns {met['turn_k']:+.6f} laps, not +-1, so it crosses itself or holds more than one lap")
+    if errs:
+        raise ValueError("The track fails the track QA:\n- " + "\n- ".join(errs))
+    sio.savemat(path, {"s": s, "k": k, "x": x, "y": y}, do_compression=True)
+    return met, issues

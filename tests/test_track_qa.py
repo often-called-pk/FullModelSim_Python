@@ -1,9 +1,9 @@
 """Track QA gate and rebuilt circuit data (Phase 2 plan, Task 2).
 
-Covers functions/track_qa.py (check_track, k_from_xy), the QA hook in
+Covers functions/track_qa.py (check_track, k_from_xy, xy_from_gps, write_track), the QA hook in
 userOpts._load_track, the rebuilt Jarama and BCN sector files, the removal of
-BCNAssetto and the QSS lap pins. No NLP solve. Section 11 needs
-Data/DATA_AA.mat and prints SKIP without it. Run from any directory:
+BCNAssetto, the QSS lap pins and the GPS track builder. No NLP solve. Sections 11 and 14 need
+Data/DATA_AA.mat and print SKIP without it. Run from any directory:
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_track_qa.py
 """
@@ -20,7 +20,7 @@ import numpy as np
 import scipy.io as sio
 
 from functions.context import Ctx
-from functions.track_qa import check_track, k_from_xy
+from functions.track_qa import check_track, k_from_xy, write_track, xy_from_gps
 from MLTP_screen import MLTP_screen
 from userOpts import _load_track, userOpts
 
@@ -201,4 +201,121 @@ else:
         lap = quiet(MLTP_screen, circuit=c, save=False, verbose=False).data.lap_time
         ok(f"11 QSS {c}: lap {lap:.3f} s within 0.1% of {want:.3f} s", abs(lap - want) <= 1e-3 * want)
 
-print("\nALL track QA TESTS PASSED" + ("" if DATA_AA else " (section 11 skipped)"))
+# 12. GPS projection and GPS circles: WGS84 tangent plane, east +x, north +y
+LAT0, LON0 = 41.57, 2.2611                       # Barcelona, as in the other GPS checks
+WGS84_A, WGS84_E2 = 6378137.0, 0.00669437999014  # the test's own constants: the ECEF oracle below
+PHI0 = np.deg2rad(LAT0)
+W0 = np.sqrt(1.0 - WGS84_E2 * np.sin(PHI0) ** 2)
+N0 = WGS84_A / W0                                # prime-vertical radius at LAT0
+M0 = N0 * (1.0 - WGS84_E2) / W0 ** 2             # meridian radius at LAT0
+
+
+def ecef(lat, lon):
+    """WGS84 ECEF position [m], 3 x N, of lat, lon [deg]."""
+    a, b = np.deg2rad(lat), np.deg2rad(lon)
+    n = WGS84_A / np.sqrt(1.0 - WGS84_E2 * np.sin(a) ** 2)
+    return np.stack([n * np.cos(a) * np.cos(b), n * np.cos(a) * np.sin(b), n * (1.0 - WGS84_E2) * np.sin(a)])
+
+
+def gps_lap(sign=+1, hold=1, extra=0, drop=0.0, sigma=0.0, seed=0, radius=R):
+    """GPS fixes [deg] of a circle of radius [m], fixes 3..5 m apart, clockwise for sign -1.
+    hold repeats each fix, extra repeats the first fixes at the end, drop cuts the lap
+    short (share of the lap), sigma adds white noise [m] east and north."""
+    g = np.random.default_rng(seed)
+    t = [0.0]
+    while t[-1] < TWO_PI * radius * (1.0 - drop) - 5.0:
+        t.append(t[-1] + g.uniform(3.0, 5.0))
+    t = np.array(t) / radius
+    x, y = radius * np.cos(t), sign * radius * np.sin(t)
+    if extra:
+        x, y = np.append(x, x[:extra]), np.append(y, y[:extra])
+    x, y = np.repeat(x, hold), np.repeat(y, hold)
+    if sigma:
+        x, y = x + sigma * g.standard_normal(x.size), y + sigma * g.standard_normal(x.size)
+    return LAT0 + np.rad2deg(y / M0), LON0 + np.rad2deg(x / (N0 * np.cos(PHI0)))
+
+
+def build(lat, lon, **kw):
+    """write_track on GPS fixes in a temp dir. Returns (metrics, issues, dict of s, k, x, y read back)."""
+    with tempfile.TemporaryDirectory(prefix="track_qa_") as tmp:
+        p = os.path.join(tmp, "gps.mat")
+        met, iss = write_track(p, *xy_from_gps(lat, lon), **kw)
+        r = sio.loadmat(p, squeeze_me=True)
+    return met, iss, {n: np.asarray(r[n], float) for n in "skxy"}
+
+
+x, y = xy_from_gps([LAT0, LAT0, LAT0 + 0.001], [LON0, LON0 + 0.001, LON0])
+ok("12 projection: 0.001 deg east = 83.41 m (+-0.05)", abs(x[1] - x[0] - 83.41) < 0.05)
+ok("12 projection: 0.001 deg north = 111.06 m (+-0.05)", abs(y[2] - y[0] - 111.06) < 0.05)
+ok("12 projection: east is +x, north is +y",
+   x[1] > x[0] and y[2] > y[0] and abs(y[1] - y[0]) < 1e-9 and abs(x[2] - x[0]) < 1e-9)
+rng = np.random.default_rng(1)
+la, lo = LAT0 + rng.uniform(-0.007, 0.007, 300), LON0 + rng.uniform(-0.01, 0.01, 300)
+xg, yg = xy_from_gps(la, lo)
+i, j = rng.integers(0, 300, 1000), rng.integers(0, 300, 1000)
+pairs = i != j
+E = ecef(la, lo)
+chord = np.linalg.norm(E[:, i[pairs]] - E[:, j[pairs]], axis=0)
+rel = np.abs(np.hypot(xg[i[pairs]] - xg[j[pairs]], yg[i[pairs]] - yg[j[pairs]]) - chord) / chord
+ok(f"12 projection: pair distances match ECEF chords in a box of about 1.6 km (max rel {rel.max():.1e} < 2e-4)",
+   rel.max() < 2e-4)
+for sign, name in ((+1, "counter-clockwise"), (-1, "clockwise")):
+    met, _, t = build(*gps_lap(sign))
+    ok(f"12 GPS circle {name}: turning {sign:+d} lap (1e-9)", abs(met["turn_k"] - sign) < 1e-9)
+    ok(f"12 GPS circle {name}: length within 1e-3 of 2 pi R", abs(t["s"][-1] / (TWO_PI * R) - 1) < 1e-3)
+    ok(f"12 GPS circle {name}: median k R within 2e-3 of {sign:+d}", abs(np.median(t["k"]) * R - sign) < 2e-3)
+
+# 13. closure guards: overlap and repeated fixes give one lap. A gap or a figure of eight is refused.
+# A 55% gap leaves no fix behind the start: the overshoot trim then removes all but 3 fixes.
+# closed=False writes an open arc, also with smoothing.
+met, _, _ = build(*gps_lap(+1, extra=3))
+ok("13 overlap: last 3 fixes repeat the first 3: turning +1 (not +2)", abs(met["turn_k"] - 1) < 1e-9)
+met, _, _ = build(*gps_lap(+1, hold=5))
+ok("13 duplicates: every fix repeated 5 times: turning +1", abs(met["turn_k"] - 1) < 1e-9)
+for drop in (0.3, 0.55):
+    try:
+        build(*gps_lap(+1, drop=drop))
+        ok(f"13 {drop:.0%} gap: ValueError raised", False)
+    except ValueError as e:
+        ok(f"13 {drop:.0%} gap: ValueError 'not a closed lap'", "not a closed lap" in str(e))
+with tempfile.TemporaryDirectory(prefix="track_qa_") as tmp:
+    met, iss = write_track(os.path.join(tmp, "arc.mat"), R * np.cos(tq), R * np.sin(tq), closed=False, smooth=20.0)
+ok("13 open quarter arc, closed=False, smooth 20 m: turning +0.25 lap (1e-4), no QA issue",
+   abs(met["turn_k"] - 0.25) < 1e-4 and iss == [])
+try:
+    with tempfile.TemporaryDirectory(prefix="track_qa_") as tmp:
+        t8 = np.arange(0.0, TWO_PI, 0.04)
+        write_track(os.path.join(tmp, "eight.mat"), 100 * np.sin(t8), 50 * np.sin(2 * t8))
+    ok("13 figure of eight: ValueError raised", False)
+except ValueError as e:
+    ok("13 figure of eight: ValueError 'crosses itself'", "crosses itself" in str(e))
+
+# 14. BCN rebuilt from its own x,y: turning, QA, closure and the QSS lap (DATA_AA guard).
+# x, y stay N x 1 columns, as loadmat gives them. Window 301 smooths k so far that the QA sign check fails.
+r_bcn = sio.loadmat(os.path.join(CIRC, "Barcelona_circuit.mat"))
+with tempfile.TemporaryDirectory(prefix="track_qa_") as tmp:
+    met, iss = write_track(os.path.join(tmp, "Barcelona_circuit.mat"), r_bcn["x"], r_bcn["y"], True)
+    ok(f"14 BCN rebuilt: turning -1 (1e-9): {met['turn_k']:.12f}", abs(met["turn_k"] + 1) < 1e-9)
+    ok("14 BCN rebuilt: no QA issue", iss == [])
+    ok(f"14 BCN rebuilt: path from k ends {met['gap_k']:.2f} m from its start (< 1 m)", met["gap_k"] < 1.0)
+    if DATA_AA:
+        lap = quiet(MLTP_screen, circuit="BCN", circuits_dir=tmp, save=False, verbose=False).data.lap_time
+        ok(f"14 BCN rebuilt: QSS lap {lap:.3f} s within 0.1% of 134.768 s", abs(lap - 134.768) <= 1e-3 * 134.768)
+    else:
+        print("  [SKIP] 14 BCN rebuilt QSS lap: Data/DATA_AA.mat missing")
+    p_bad = os.path.join(tmp, "window301.mat")
+    try:
+        write_track(p_bad, r_bcn["x"], r_bcn["y"], window=301)
+        ok("14 BCN with window 301: ValueError raised", False)
+    except ValueError as e:
+        ok("14 BCN with window 301: ValueError 'track QA', no file written",
+           "track QA" in str(e) and not os.path.exists(p_bad))
+
+# 15. noisy GPS circles (0.05 m white noise) with 40 m smoothing. R = 20 m catches a smoothing
+# length that is too long (160 m), R = 100 m does not.
+for radius in (100.0, 20.0):
+    met, iss, t = build(*gps_lap(+1, sigma=0.05, seed=2, radius=radius), smooth=40.0)
+    kR = np.median(t["k"]) * radius
+    ok(f"15 noisy circle R {radius:g} m, smooth 40 m: median k R within 3% of +1 ({kR:.4f})", abs(kR - 1) < 0.03)
+
+print("\nALL track QA TESTS PASSED" + ("" if DATA_AA else " (sections 11 and 14 skipped)"))
