@@ -245,7 +245,8 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0)
                                   n_pathcol=n_col * disc["N"] * pathcol_points(disc["tau"])),
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                     x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
-                    start_state=ctx.start_state, between_knots=ctx.between_knots, collocation=ctx.collocation)
+                    start_state=ctx.start_state, between_knots=ctx.between_knots, collocation=ctx.collocation,
+                    state_scaling=ctx.state_scaling)
     warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
                                             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
     if strict and warm is None:
@@ -379,6 +380,14 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     data['collocation'] holds the value when it is not 'legendre'. A source result of another scheme seeds the
     primal only (no multipliers). optimise_design, the setup sweep and MLTP_screen use the same grid.
 
+    ``state_scaling`` (a userOpts kwarg) sets the scales of the 14 chassis states, rows 9-22 of the state vector.
+    'matlab' (default) keeps the scale 1.0 of MATLAB. 'typical' uses userOpts.TYPICAL_CHASSIS_SCALE, the typical size of
+    each state. The physical problem and the physical start box stay the same. The units of w, g and the
+    multipliers change. IPOPT applies constr_viol_tol and dual_inf_tol in these units. So the stop rule is up to
+    100 times tighter on the chassis defects and looser on the dual infeasibility of the chassis states.
+    The 7-state init ignores it. data['state_scaling'] holds the value when it is not 'matlab'.
+    A source result of the other scaling seeds the primal only (no multipliers). optimise_design uses the same scales.
+
     Any other setup knob that differs from its default adds _<8 hex digits> to the result stem, so a knob run
     never overwrites the default result. The knobs are TyreModel and every userOpts argument outside
     userOpts._NOT_SETUP (userOpts.setup_knobs). A number n_bounds is in the stem already, so only a (lo, hi)
@@ -398,7 +407,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
       - the default result holds setup knobs (data.provenance.setup)
       - its IPOPT status is not Solve_Succeeded or Solved_To_Acceptable_Level
       - it does not fit this NLP (other N, mesh grid, input channels, path rows, tyre set, start_state,
-        between_knots or collocation)
+        between_knots, collocation or state_scaling)
 
     Then solve the default setup first, or pass warm_start. A result saved before E2 has no provenance:
     MLTP trusts its file name. A solve that does not converge gives a warning. The result saves under its
@@ -816,6 +825,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         data["between_knots"] = ctx.between_knots
     if ctx.collocation != "legendre":   # B4: the scheme of the grid in s_full. A result without the field is 'legendre'.
         data["collocation"] = ctx.collocation
+    if ctx.state_scaling != "matlab":   # B7: the units of w and the multipliers. A result without the field is 'matlab'.
+        data["state_scaling"] = ctx.state_scaling
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
         data["setup_tag"] = setup_tag
     data["provenance"] = provenance_record(

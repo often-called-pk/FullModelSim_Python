@@ -927,6 +927,10 @@ def _precheck_base(src, base_ctx, disc, nh, circuit, label):
     have = str(get_field(src, "between_knots", None) or "matlab").strip()
     if have != "matlab":
         reasons.append(f"between_knots {have!r} != 'matlab'")
+    have = str(get_field(src, "state_scaling", None) or "matlab").strip()
+    want = str(getattr(base_ctx, "state_scaling", "matlab"))
+    if have != want:
+        reasons.append(f"state_scaling {have!r} != {want!r}")
     c = get_field(src, "circuit", None)
     if c is not None and str(c).strip() != circuit:
         reasons.append(f"circuit {str(c).strip()!r} != {circuit!r}")

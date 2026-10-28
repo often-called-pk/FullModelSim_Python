@@ -45,7 +45,8 @@ STRUCT_KEYS = ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g", "n_param", "n_perio
 
 # Setup knobs that change the NLP without always changing its sizes: (name, value of a result that has no such
 # field). plan_full_warm_start refuses the multipliers of a source that has another value (primal only).
-WARM_KNOBS = (("start_state", "matlab"), ("between_knots", "matlab"), ("collocation", "legendre"))
+WARM_KNOBS = (("start_state", "matlab"), ("between_knots", "matlab"), ("collocation", "legendre"),
+              ("state_scaling", "matlab"))
 
 # neutral seeds for input channels a source result does not have (as in
 # MLTP.warmstart_guesses: equal torque split, wings at 0)

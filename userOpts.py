@@ -191,6 +191,18 @@ BETWEEN_KNOTS = ("matlab", "linear", "linear+power")
 # The 7-state init always uses 'legendre'.
 COLLOCATION = ("legendre", "radau")
 
+# userOpts(state_scaling=...) sets the scales of the 14 chassis states, rows 9-22 (B7). The check is case-sensitive.
+#   'matlab'  (default) scale 1.0 for all 14 rows, as vehModel.m.
+#   'typical' TYPICAL_CHASSIS_SCALE: a typical size per row (zs 10 mm, wu 0.3 m/s, zt 20 mm and so on).
+#             Each value rounds the RMS size of that state in the stored optima.
+#             The physical problem is the same. The start box keeps its physical width.
+#             The units of w, g and the multipliers change. A saved w or multiplier of the other setting does not apply.
+#             IPOPT applies constr_viol_tol and dual_inf_tol in these units. So the stop rule is up to 100 times
+#             tighter on the chassis defects and looser on the dual infeasibility of the chassis states.
+# The 7-state init ignores it.
+STATE_SCALINGS = ("matlab", "typical")
+TYPICAL_CHASSIS_SCALE = np.array([1e-2, 1e-1, 1e-2, 1e-1, 1e-2, 1e-1] + [3e-1] * 4 + [2e-2] * 4)
+
 
 def _parse_n_bounds(n_bounds, s):
     """userOpts(n_bounds=...) -> (lo, hi, tag): float arrays on the track stations ``s`` [m]
@@ -434,7 +446,8 @@ def userOpts(ctx,
              start_state="matlab",         # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
              n_bounds=None,                # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
              between_knots="matlab",       # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
-             collocation="legendre"):      # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
+             collocation="legendre",       # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
+             state_scaling="matlab"):      # 'matlab' | 'typical': scales of the 14 chassis states (STATE_SCALINGS)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
@@ -459,6 +472,12 @@ def userOpts(ctx,
     if collocation not in COLLOCATION:
         raise ValueError(f"collocation must be one of {list(COLLOCATION)}, got {collocation!r}")
     ctx.collocation = collocation
+
+    # ---- state scaling (B7): checked before any work. vehModel reads ctx.chassis_scale (None = MATLAB's 1.0).
+    if state_scaling not in STATE_SCALINGS:
+        raise ValueError(f"state_scaling must be one of {list(STATE_SCALINGS)}, got {state_scaling!r}")
+    ctx.state_scaling = state_scaling
+    ctx.chassis_scale = None if state_scaling == "matlab" else TYPICAL_CHASSIS_SCALE
 
     # ---- vehModel switches (checked here, read by vehModel through ctx)
     if Steering not in STEERING:
@@ -546,6 +565,9 @@ def userOpts(ctx,
         # free start (only n if given): the NLP closes the lap with equality rows instead
         ctx.Xi[:] = ctx.Xi_init[:] = nan
         ctx.Xi[3] = ctx.Xi_init[3] = ni
+    if ctx.chassis_scale is not None:       # B7: rows 9-22 keep their physical start-box width
+        tol = np.full(23, OPT_e) if ctx.Xi_tol is None else ctx.Xi_tol
+        ctx.Xi_tol = np.r_[tol[:9], tol[9:] / ctx.chassis_scale]
 
     # ---- collocation options ----------------------------------------------
     ctx.OPT_ds = OPT_ds         # collocation step (m)

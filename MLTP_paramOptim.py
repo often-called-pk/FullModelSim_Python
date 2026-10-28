@@ -82,6 +82,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     A source result of another between_knots seeds the primal only. ``collocation`` (a userOpts kwarg)
     works as in MLTP: the NLP and the result use the Radau grid, and data.collocation holds 'radau'.
     A source result of another scheme seeds the primal only.
+    ``state_scaling`` (a userOpts kwarg) works as in MLTP. The NLP uses the scales of the 14 chassis states.
+    data.state_scaling holds the value when it is not 'matlab'. A source result of the other scaling seeds the primal only.
     Any other setup knob that differs from its default (vp_overrides, vi, OPT_ds and more, see userOpts.setup_knobs)
     appends _<8 hex digits> to the stem and appears in data.provenance.setup, as in MLTP. The promoted parameters and their
     bounds (param_specs, Fz0_shift_bounds) are not part of the name. ctx.out_path is the file that save=True wrote.
@@ -183,7 +185,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
                         input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                         x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
                         start_state=ctx.start_state, between_knots=ctx.between_knots,
-                        collocation=ctx.collocation)
+                        collocation=ctx.collocation, state_scaling=ctx.state_scaling)
         warm, ws_mode, note = plan_design_warm_start(
             src_full, expected, p_x0, use_duals=warm_start_duals,
             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
@@ -267,6 +269,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         data["n_tag"] = ctx.n_tag
     if ctx.collocation != "legendre":   # B4: the scheme of the grid in s_full. A result without the field is 'legendre'.
         data["collocation"] = ctx.collocation
+    if ctx.state_scaling != "matlab":   # B7: the units of w and the multipliers. A result without the field is 'matlab'.
+        data["state_scaling"] = ctx.state_scaling
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
         data["setup_tag"] = setup_tag
     ctx.data = SimpleNamespace(**data)
