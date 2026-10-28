@@ -217,7 +217,7 @@ ok("unknown mesh raises ValueError", raised)
 ok("mesh_opts={'ds_max': 60.0} accepted",
    _uo(mesh="curvature", mesh_opts={"ds_max": 60.0}).mesh_opts == {"ds_max": 60.0})
 allowed = ("a", "b", "ds_min", "ds_max", "smooth_window", "N", "pct", "grid_ds")
-ok("all eight curvature_mesh kwargs accepted as mesh_opts keys",
+ok("the eight curvature_mesh kwargs other than speed accepted as mesh_opts keys",
    _uo(mesh="curvature", mesh_opts=dict.fromkeys(allowed, 1.0)).mesh_opts == dict.fromkeys(allowed, 1.0))
 for bad_key in ("bogus", "OPT_ds"):             # unknown, and a positional arg discretise() supplies
     raised = False

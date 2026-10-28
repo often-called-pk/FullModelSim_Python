@@ -75,6 +75,18 @@ neighbouring-interval ratio below ~2.7. The monitor is geometric only: it does
 not see brake points, which sit upstream of the corners on the straights;
 ds_max bounds the interval that can contain one.
 
+Speed term (opt-in, B6). A weight speed > 0 adds speed |dv/ds| / dv_ref to M.
+Here v(s) is the QSS speed profile. userOpts puts it on track.v_qss when
+mesh_opts gives speed > 0. The term uses v smoothed with the same window as k.
+dv_ref is the pct-th percentile of the smoothed |dv/ds|, with the same rules
+as k_ref, so a constant speed drops the term. The term puts knots where the car
+brakes or accelerates hard. N does not change, so the corners lose the knots
+that the braking zones gain. The default speed = 0 reads no profile and leaves
+M, and so the knots, as they were. The QSS speed depends on the setup, so the
+knots move when vp_overrides change. A warm start from a solve with other
+vp_overrides (a homotopy step, a chain of setups) is then full-interp: primal
+only, no duals. For this reason, setup_sweep refuses the term.
+
 Spacing bounds. ds_min <= dsk <= ds_max (defaults 0.25*OPT_ds and 2.5*OPT_ds)
 hold exactly: the monitor is clipped to [c/ds_max, c/ds_min], c being the
 per-interval monitor integral. Clipping changes c, so the clip levels and c are
@@ -89,6 +101,7 @@ import numpy as np
 A_DEFAULT = 1.0          # weight of |k| / k_ref       (corner body)
 B_DEFAULT = 1.0          # weight of |dk/ds| / dk_ref  (corner entry / exit)
 PCT_DEFAULT = 90.0       # percentile that sets k_ref and dk_ref
+SPEED_DEFAULT = 0.0      # weight of |dv/ds| / dv_ref (QSS speed change), 0 = off
 DS_MIN_FRAC = 0.25       # default ds_min = DS_MIN_FRAC * OPT_ds
 DS_MAX_FRAC = 2.5        # default ds_max = DS_MAX_FRAC * OPT_ds
 _MAX_GRID = 200001       # cap on the fine monitor grid size
@@ -148,16 +161,22 @@ def default_n_intervals(s, OPT_ds):
 # monitor function
 # ----------------------------------------------------------------------------
 def monitor(s, k, OPT_ds, a=A_DEFAULT, b=B_DEFAULT, smooth_window=None,
-            pct=PCT_DEFAULT, grid_ds=None):
+            pct=PCT_DEFAULT, grid_ds=None, speed=SPEED_DEFAULT, v=None):
     """Monitor M(s) = 1 + a|k|/k_ref + b|dk/ds|/dk_ref on a uniform fine grid.
+
+    A weight speed > 0 adds the term speed|dv/ds|/dv_ref (see the module docstring).
 
     s, k          : track arc length [m] (increasing) and curvature [1/m]
     OPT_ds        : nominal collocation step [m] (sets the default smoothing)
     smooth_window : moving-average width [m]; None -> OPT_ds, 0 -> no smoothing
-    pct           : percentile used for k_ref / dk_ref
+    pct           : percentile used for k_ref / dk_ref / dv_ref
     grid_ds       : fine-grid spacing [m]; None -> min(median track ds, OPT_ds/10)
-    Returns (sg, M, info) with info = dict(k_ref, dk_ref, n_window, grid_ds, K, DK);
-    k_ref / dk_ref are 0.0 for a term that is dropped (numerically zero signal).
+    speed, v      : weight of the speed term and the speed profile v = (s_v, v_v)
+                    [m, m/s], normally the QSS march. speed = 0 (default) is off and
+                    v is not read. speed > 0 without v raises ValueError.
+    Returns (sg, M, info) with info = dict(k_ref, dk_ref, dv_ref, n_window, grid_ds,
+    K, DK). k_ref / dk_ref / dv_ref are 0.0 for a term that is dropped (numerically
+    zero signal).
     """
     s, k = _track_arrays(s, k)
     L = s[-1] - s[0]
@@ -187,12 +206,24 @@ def monitor(s, k, OPT_ds, a=A_DEFAULT, b=B_DEFAULT, smooth_window=None,
     # replaces a percentile under _NOISE_REL of the max (noise between sparse corners).
     k_ref = _ref(K, pct, _NEGLIGIBLE / L)
     dk_ref = _ref(DK, pct, _NEGLIGIBLE * float(np.max(K)) / L) if k_ref > 0.0 else 0.0
+    dv_ref = 0.0
+    if speed:
+        if v is None:
+            raise ValueError("The speed term needs a speed profile v = (s, v). "
+                             "userOpts sets track.v_qss from the QSS march.")
+        sv, vv = (np.asarray(x, dtype=float) for x in v)
+        vg = np.interp(sg, sv, vv)
+        DV = _box_smooth(np.abs(np.gradient(_box_smooth(vg, n_w), sg)), n_w)  # |dv/ds|
+        dv_ref = _ref(DV, pct, _NEGLIGIBLE * float(np.max(vg)) / L)    # 0.0: constant v
     M = np.ones_like(sg)
     if a and k_ref > 0.0:
         M = M + a * K / k_ref
     if b and dk_ref > 0.0:
         M = M + b * DK / dk_ref
-    return sg, M, dict(k_ref=k_ref, dk_ref=dk_ref, n_window=n_w, grid_ds=h, K=K, DK=DK)
+    if speed and dv_ref > 0.0:
+        M = M + speed * DV / dv_ref
+    return sg, M, dict(k_ref=k_ref, dk_ref=dk_ref, dv_ref=dv_ref, n_window=n_w,
+                       grid_ds=h, K=K, DK=DK)
 
 
 # ----------------------------------------------------------------------------
@@ -237,7 +268,8 @@ def _equidistribute(sg, M, N, ds_min, ds_max):
 
 
 def curvature_mesh(s, k, OPT_ds, a=A_DEFAULT, b=B_DEFAULT, ds_min=None, ds_max=None,
-                   smooth_window=None, N=None, pct=PCT_DEFAULT, grid_ds=None):
+                   smooth_window=None, N=None, pct=PCT_DEFAULT, grid_ds=None,
+                   speed=SPEED_DEFAULT, v=None):
     """Curvature-weighted collocation knots s_knot (length N+1).
 
     s, k          : track arc length [m] and curvature [1/m]
@@ -248,6 +280,7 @@ def curvature_mesh(s, k, OPT_ds, a=A_DEFAULT, b=B_DEFAULT, ds_min=None, ds_max=N
     smooth_window : smoothing width [m] (None -> OPT_ds; 0 disables smoothing)
     N             : explicit interval count (overrides round(L / OPT_ds))
     pct, grid_ds  : see monitor()
+    speed, v      : weight of the speed term and the speed profile, see monitor()
     Returns a strictly increasing array with s_knot[0] = s[0], s_knot[-1] = s[-1].
     """
     s, k = _track_arrays(s, k)
@@ -268,7 +301,7 @@ def curvature_mesh(s, k, OPT_ds, a=A_DEFAULT, b=B_DEFAULT, ds_min=None, ds_max=N
     if N == 1:
         return np.array([s[0], s[-1]])
     sg, M, _ = monitor(s, k, OPT_ds, a=a, b=b, smooth_window=smooth_window,
-                       pct=pct, grid_ds=grid_ds)
+                       pct=pct, grid_ds=grid_ds, speed=speed, v=v)
     return _equidistribute(sg, M, N, ds_min, ds_max)
 
 
@@ -293,6 +326,47 @@ def mesh_stats(s_knot):
                 ds_p50=float(np.percentile(dsk, 50)),
                 ds_p90=float(np.percentile(dsk, 90)),
                 max_adjacent_ratio=grading)
+
+
+def _t(x):
+    """A time in seconds as text, in s, ms or us."""
+    if x >= 0.1:
+        return f"{x:.2f} s"
+    return f"{x * 1e3:.0f} ms" if x >= 1e-3 else f"{x * 1e6:.0f} us"
+
+
+def mesh_report(dt, ev):
+    """Lines of text (ASCII) that compare the interval durations with the modes.
+
+    dt : interval durations [s]
+    ev : eigenvalues [1/s] of the vertical block of the physical-time Jacobian
+         (vehModel.vertical_eigs)
+    A complex pair is an oscillation. Its frequency is |Im| / 2 pi (the damped
+    frequency) and its period is the inverse. A real eigenvalue is a decaying mode.
+    Its time constant is 1 / |lambda|. The report leaves out a decaying mode that is
+    slower than the longest interval. An interval resolves an oscillation when it
+    lasts at most half the period. A model without an oscillation gets no
+    resolution line."""
+    dt, ev = np.asarray(dt, dtype=float), np.asarray(ev, dtype=complex)
+    f = np.sort(ev.imag[ev.imag > 1e-9]) / (2 * np.pi)
+    r = np.abs(ev.real[np.abs(ev.imag) <= 1e-9])
+    tau = np.sort(1.0 / r[r > 1.0 / dt.max()])[::-1]
+    out = [f"mesh: {dt.size} intervals last {_t(dt.min())} to {_t(dt.max())} "
+           f"(median {_t(np.median(dt))})."]
+    parts = []
+    if f.size:
+        parts.append("oscillating " + ", ".join(f"{x:.2f}" for x in f) + " Hz (periods "
+                     + ", ".join(_t(1 / x) for x in f) + ")")
+    if tau.size:
+        parts.append(f"{tau.size} decaying, time constants {_t(tau[0])} to {_t(tau[-1])}")
+    if parts:
+        out.append("vertical modes: " + ". ".join(parts) + ".")
+    if f.size:
+        n = int(np.sum(dt <= 0.5 / f.min()))
+        out.append("Intervals that last at most half the slowest period "
+                   f"({_t(1 / f.min())}): {n} of {dt.size}."
+                   + (" No interval resolves a vertical mode." if n == 0 else ""))
+    return out
 
 
 def mesh_opts_record(mesh_opts):

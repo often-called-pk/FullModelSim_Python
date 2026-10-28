@@ -48,8 +48,10 @@ def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None
     mesh      : 'uniform' (default) -> N = round(L/OPT_ds) equal intervals;
                 'curvature' -> functions.mesh.curvature_mesh: same N by default,
                 knots redistributed towards corners and corner entry / exit.
-    mesh_opts : dict of keyword arguments for curvature_mesh (a, b, ds_min,
+    mesh_opts : dict of keyword arguments for curvature_mesh (a, b, speed, ds_min,
                 ds_max, smooth_window, N, pct, grid_ds); ignored when uniform.
+                A weight speed > 0 reads the speed profile track.v_qss. userOpts sets
+                it from the QSS march. Without the profile, the call raises ValueError.
     s_knot    : explicit knot vector (overrides ``mesh``; reported as 'custom'),
                 strictly increasing, normally spanning the track [s[0], s[-1]].
     scheme    : collocation points, 'legendre' (default) or 'radau' (the CasADi names). A Radau IIA interval
@@ -75,7 +77,7 @@ def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None
         s_knot = np.linspace(s.min(), s.max(), N + 1)
     elif mesh == "curvature":
         from .mesh import curvature_mesh
-        s_knot = curvature_mesh(s, k, OPT_ds, **dict(mesh_opts or {}))
+        s_knot = curvature_mesh(s, k, OPT_ds, **dict(mesh_opts or {}), v=getattr(track, "v_qss", None))
         N = s_knot.size - 1
     else:
         raise ValueError(f"mesh must be 'uniform' or 'curvature', got {mesh!r}")

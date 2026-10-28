@@ -770,6 +770,35 @@ def rolling_start(ctx, m, vx, tol=1e-9, max_iter=50):
     return X, U
 
 
+def vertical_eigs(ctx, m, f_dyn, vx, h=1e-6):
+    """Eigenvalues [1/s] of the vertical block of the physical-time Jacobian.
+
+    The point is the static coast point at the speed ``vx`` [m/s]. The block holds the states 9 to 22: heave, pitch,
+    roll, the four unsprung masses and the four tyre deflections. The point has rolling wheels, the suspension at rest,
+    the static tyre deflection, no torque, ATD 1/4 each, the wings at zero and steering 1e-6. It is the point of the
+    modes test in tests/test_physics_suspension_aero.py.
+    ``f_dyn`` is the (x, u, pv) -> (dx, sf) Function of MLTP. This function takes central differences with the
+    step ``h`` in scaled units. One mapped call makes the 29 evaluations (the base point and 28 steps). It takes
+    about 1 ms to run. The sf value does not depend on the states 9 to 22. The block is therefore J / sf, with
+    J = d(dx)/d(x) in scaled coordinates. The state scaling is a similarity transform and does not change the
+    eigenvalues."""
+    vp = ctx.vp
+    xs, us = np.asarray(m.x_s, float), np.asarray(m.u_s, float)
+    X = np.zeros(m.nx)
+    X[0], X[5:7], X[7:9] = vx, vx / vp.Rw_f, vx / vp.Rw_r
+    X[19:23] = [vp.xti_fl, vp.xti_fr, vp.xti_rl, vp.xti_rr]
+    U = np.array([0.25 if str(k).strip() == "ATD" else 0.0 for k in ctx.input_keys])
+    U[-1] = 1e-6                                    # steering is last. Not 0: Ackermann divides by tan(delta)
+    rows = np.arange(9, 23)
+    n = 1 + 2 * rows.size                           # the base point, then a +h and a -h column per row
+    Xn = np.tile((X / xs)[:, None], (1, n))
+    Xn[rows, 1 + 2 * np.arange(rows.size)] += h
+    Xn[rows, 2 + 2 * np.arange(rows.size)] -= h
+    dx, sf = f_dyn.map(n)(Xn, np.tile((U / us)[:, None], (1, n)), np.zeros((1, n)))
+    dx = np.array(dx)[rows]
+    return np.linalg.eigvals((dx[:, 1::2] - dx[:, 2::2]) / (2 * h) / float(np.array(sf)[0, 0]))
+
+
 def _linear_interp(ca, x, x_data, y_data):
     """Piecewise-linear interpolation as a CasADi expression (port of linear_interp.m)."""
     x_data = np.asarray(x_data, dtype=float).reshape(-1)

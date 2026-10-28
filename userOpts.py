@@ -146,9 +146,9 @@ SCREENING_IPOPT = {
 MESH_AUTO_MIN_LENGTH = 2000.0
 
 # Accepted userOpts(mesh_opts=...) keys: the curvature_mesh keyword arguments
-# (s, k and OPT_ds are passed by discretise(), so they are not mesh_opts keys).
+# (discretise() passes s, k, OPT_ds and the speed profile v, so they are not mesh_opts keys).
 _MESH_OPTS_KEYS = tuple(n for n in inspect.signature(curvature_mesh).parameters
-                        if n not in ("s", "k", "OPT_ds"))
+                        if n not in ("s", "k", "OPT_ds", "v"))
 
 # userOpts(physics=...): 'matlab' (default) keeps the inherited MATLAB vehicle
 # physics bit for bit. 'corrected' is the opt-in set of fixes A1-A6
@@ -421,7 +421,7 @@ def userOpts(ctx,
              OPT_d=3,                      # degree of interpolating polynomials
              OPT_e=1e-2,                   # slack for path constraints / guesses
              mesh="auto",                  # 'auto' | 'uniform' | 'curvature' collocation knots (auto: by lap length)
-             mesh_opts=None,               # dict for functions.mesh.curvature_mesh (a, b, ds_min, ...)
+             mesh_opts=None,               # dict for functions.mesh.curvature_mesh (a, b, speed, ds_min, ...)
              max_iter=6000,                # IPOPT max iterations
              tol=1e-4,                     # IPOPT convergence tolerance
              jit=False,                    # JIT-compile the casadi Functions (needs gcc/clang/cl)
@@ -650,5 +650,11 @@ def userOpts(ctx,
     ctx.rdu2_init = _col(c.rdu2, init_keys)
     ctx.rdy_init = ctx.rdy[0, 0]
     ctx.rdy2_init = ctx.rdy2[0, 0]
+
+    # ---- mesh_opts speed > 0 (B6): the speed term needs the QSS speed. discretise() reads track.v_qss.
+    if ctx.mesh_opts and ctx.mesh_opts.get("speed"):
+        from functions.ladder import qss_profile
+        prof = qss_profile(ctx)
+        ctx.track.v_qss = (prof["s"], prof["v"])
 
     return ctx

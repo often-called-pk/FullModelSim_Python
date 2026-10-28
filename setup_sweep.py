@@ -1065,6 +1065,10 @@ class _Sweep:
         if bc.between_knots != "matlab":
             raise SweepError(f"The setup sweep does not support between_knots={bc.between_knots!r}. It supports only "
                              "MATLAB's arithmetic between the knots. Use between_knots='matlab'.")
+        if (bc.mesh_opts or {}).get("speed"):
+            raise SweepError("The setup sweep does not support the speed term of the mesh (mesh_opts 'speed'). "
+                             "The knots follow the QSS speed of each setup, so a hop cannot use the duals. "
+                             "Remove 'speed' from mesh_opts.")
         self.base_ctx = bc
         self.eATD, self.eEM4 = bc.ATD, bc.Electric_4Motors
         self.config = f"{self.AeroConfig}_ATD{self.eATD}_EM4{self.eEM4}"

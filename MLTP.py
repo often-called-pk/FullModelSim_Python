@@ -35,7 +35,7 @@ from functions.importfile import importfile, result_stem
 from functions.ladder import (quasi_static_states, resolve_ladder, qss_profile, seed_m23,
                               friction_overrides, homotopy_schedule, ladder_record,
                               homotopy_record, MA57_PRE_ALLOC)
-from functions.mesh import solution_knots, mesh_opts_record
+from functions.mesh import solution_knots, mesh_opts_record, mesh_report
 from functions.refine import (refine_options, run_refinement, defect_errors, state_rows,
                               interval_polynomials, eval_states, nlp_inputs, _input_affine, refine_record,
                               pass_accepted, lap_rise)
@@ -46,7 +46,7 @@ from functions.transcription import (discretise, build_and_solve_nlp,
                                       interp_inputs, compute_time, time_at_points,
                                       reconstruct_track, pathcol_points)
 from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
-from vehModel import vehModel, rolling_start
+from vehModel import vehModel, rolling_start, vertical_eigs
 from MLTP_initial import MLTP_initial
 
 
@@ -860,6 +860,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         summary += (f"  refine: N {chain_N}, lap {chain_lap} s, eta_max {chain_eta}, stop={refine_stop}"
                     f" (IPOPT iters total {elapsed['ipopt_iters_total']})")
     print(summary)
+    try:                                # B6: the mesh against the vertical modes. A report never costs a finished solve.
+        for line in mesh_report(np.diff(t_opt), vertical_eigs(ctx, m, f_dyn, ctx.vi)):
+            print(f"[MLTP] {line}")
+    except Exception as exc:
+        print(f"[MLTP] mesh report skipped: {exc}")
 
     if plot:
         try:
