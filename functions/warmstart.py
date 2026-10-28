@@ -11,8 +11,8 @@ of O(1000). Everything here is casadi-free (unit-tested by tests/test_warmstart.
                            produces for a problem (same packing / constraint order).
   structure_mismatch()     why a saved solution can NOT be re-injected verbatim
                            into a new problem ([] = compatible). Sizes, input
-                           channels and the collocation grid only: setup / tyre
-                           values (vp_overrides) never block re-injection.
+                           channels, path-row names and the collocation grid only:
+                           setup / tyre values (vp_overrides) never block re-injection.
   scaling_changed()        x_s / u_s moved with the setup (informational).
   resolve_source()         classify a warm_start argument: 7-state init (file or
                            MLTP_initial ctx) vs full 23-state result (file, MLTP
@@ -147,10 +147,11 @@ def structure_mismatch(saved, expected, s_atol=1e-6):
     """Reasons why `saved` cannot seed `expected` with its exact w / lam vectors.
 
     Both are dicts with the STRUCT_KEYS integers (a missing n_param / n_periodic /
-    n_pathcol counts as 0) and optionally `input_keys` and `s_full` (the collocation grid:
+    n_pathcol counts as 0) and optionally `input_keys`, `hnames` and `s_full` (the collocation grid:
     same N on another mesh puts the same w entries at other track positions);
-    these are compared only when present in both. Setup values (vp / tyre
-    parameters, vp_overrides) are deliberately NOT part of the structure: a
+    these are compared only when present in both. `hnames` are the names of the path rows, in order:
+    PureSlip with ATD On and CombinedSlip with atd_tbr > 1 both have 8 rows, but the rows are different.
+    Setup values (vp / tyre parameters, vp_overrides) are deliberately NOT part of the structure: a
     sweep re-injects across them.
     Returns [] when compatible, else a list of human-readable reasons."""
     if not saved:
@@ -168,6 +169,9 @@ def structure_mismatch(saved, expected, s_atol=1e-6):
     ka, kb = norm_keys(get_field(saved, "input_keys")), norm_keys(get_field(expected, "input_keys"))
     if ka is not None and kb is not None and ka != kb:
         reasons.append(f"input_keys {ka} -> {kb}")
+    ha, hb = get_field(saved, "hnames"), get_field(expected, "hnames")
+    if ha is not None and hb is not None and list(ha) != list(hb):
+        reasons.append(f"path rows {list(ha)} -> {list(hb)}")
     sa, sb = get_field(saved, "s_full"), get_field(expected, "s_full")
     if sa is not None and sb is not None:
         sa, sb = vec(sa), vec(sb)
@@ -327,6 +331,8 @@ def plan_full_warm_start(src, expected, use_duals=True, ipopt_overrides=None):
     ``expected`` can carry a key of WARM_KNOBS. The function then compares it with the source's
     field of that name (absent = the default of the key in WARM_KNOBS). A difference refuses the
     multipliers only, because they price the rows of another NLP. The primal is still interpolated.
+    ``expected`` can also carry ``hnames``, the path-row names of the new NLP. The function compares them
+    with the keys of the source's data.constraints (see structure_mismatch).
     Returns (warm, mode, note):
 
       None, "cold"                  the tyre sets differ: ``src`` is no usable
@@ -363,9 +369,11 @@ def plan_full_warm_start(src, expected, use_duals=True, ipopt_overrides=None):
     nlp = get_field(src, "nlp")
     if nlp is None:
         return None, "full-interp", "full result has no saved NLP vectors (data.nlp)"
+    cons = get_field(src, "constraints")        # {path-row name: values}, in row order
     saved = dict(as_dict(get_field(nlp, "structure")),
                  input_keys=get_field(src, "input_keys"), s_full=get_field(src, "s_full"),
-                 x_s=get_field(nlp, "x_s"), u_s=get_field(nlp, "u_s"))
+                 x_s=get_field(nlp, "x_s"), u_s=get_field(nlp, "u_s"),
+                 hnames=None if cons is None else list(as_dict(cons)))
     why = structure_mismatch(saved, expected)
     if why:
         return None, "full-interp", "NLP structure differs (" + "; ".join(why) + ")"

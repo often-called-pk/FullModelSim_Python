@@ -447,7 +447,8 @@ def userOpts(ctx,
              n_bounds=None,                # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
              between_knots="matlab",       # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
              collocation="legendre",       # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
-             state_scaling="matlab"):      # 'matlab' | 'typical': scales of the 14 chassis states (STATE_SCALINGS)
+             state_scaling="matlab",       # 'matlab' | 'typical': scales of the 14 chassis states (STATE_SCALINGS)
+             atd_tbr=None):                # None | TBR >= 1: torque-bias ratio of both axle differentials (ATD On only)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
@@ -505,6 +506,18 @@ def userOpts(ctx,
         Electric_4Motors = "On"
     pt.ATD = 1 if ATD == "On" else 0
     pt.EM4 = 1 if Electric_4Motors == "On" else 0
+
+    # ---- torque-bias rows (C4): none unless you give atd_tbr. MLTP.build_path_constraints reads pt.atd_k.
+    # k = (TBR - 1) / (TBR + 1) bounds |T_l - T_r| / |T_l + T_r| on each axle.
+    ctx.atd_tbr = atd_tbr
+    if atd_tbr is not None:
+        if pt.ATD != 1:                 # the guard above sets ATD Off when 4 motors are On
+            raise ValueError("atd_tbr needs ATD='On' and Electric_4Motors='Off'. It bounds the four ATD inputs.")
+        if (isinstance(atd_tbr, (bool, np.bool_)) or not isinstance(atd_tbr, numbers.Real)
+                or not (1.0 <= atd_tbr < np.inf)):
+            raise ValueError(f"atd_tbr must be None or a finite number >= 1, got {atd_tbr!r}. "
+                             "The value 1 means open differentials.")
+        pt.atd_k = (atd_tbr - 1.0) / (atd_tbr + 1.0)
 
     ctx.AeroConfig = AeroConfig
     ctx.ATD = ATD

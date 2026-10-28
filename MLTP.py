@@ -74,7 +74,13 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
 
     A5 (physics='corrected', vp_overrides Preg and Ppack, both absent by default): with pt.Preg the motor_power
     rows have the upper bound 1 + Preg/Pmax and the BrTh rows have no upper bound. With pt.Ppack the last row
-    is pack_power = (Ppack - sum of the motor powers)/Ppack in [0, inf], and nh grows by one."""
+    is pack_power = (Ppack - sum of the motor powers)/Ppack in [0, inf], and nh grows by one.
+
+    C4 (userOpts atd_tbr, ATD On and EM4 Off, absent by default) adds rows after ATD_eq. Here
+    k = pt.atd_k = (TBR - 1)/(TBR + 1), and a and b are ATD_l and ATD_r of one axle. TBR > 1 adds two rows per axle.
+    They are k (a + b) - (a - b) and k (a + b) + (a - b), both in [0, inf]. Their names are diff_F_l, diff_F_r,
+    diff_R_l and diff_R_r, and nh grows by four. TBR = 1 adds one row per axle, a - b fixed at 0. Their names are
+    diff_F and diff_R, and nh grows by two. The rows are linear in the inputs."""
     if TyreModel is None:
         TyreModel = getattr(m, "TyreModel", "CombinedSlip")
     if TyreModel not in ("CombinedSlip", "PureSlip"):
@@ -93,6 +99,17 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
             h.append(1 - (m.ATD_FL + m.ATD_FR + m.ATD_RL + m.ATD_RR))
             h_lb.append(-1e-3)
             h_ub.append(1e-3)
+            # C4 (userOpts atd_tbr): on each axle |a - b| <= k (a + b), with a and b = ATD_l and ATD_r. The wheel torque
+            # is ATD_i (gear T_motor + 2 T_brake), so this also bounds |T_l - T_r| / |T_l + T_r| (T_brake <= 0).
+            k = getattr(pt, "atd_k", None)
+            if k is not None:
+                for ax, a, b in (("F", m.ATD_FL, m.ATD_FR), ("R", m.ATD_RL, m.ATD_RR)):
+                    if k == 0:                  # TBR 1: one equality row. Two opposed inequalities have no interior.
+                        hnames.append(f"diff_{ax}"); h.append(a - b); h_lb.append(0); h_ub.append(0)
+                    else:
+                        hnames += [f"diff_{ax}_l", f"diff_{ax}_r"]
+                        h += [k * (a + b) - (a - b), k * (a + b) + (a - b)]
+                        h_lb += [0, 0]; h_ub += [np.inf, np.inf]
     else:
         BrTh_fl = (m.T_motor_fl_n * m.T_brake_n) / 1e-3
         BrTh_fr = (m.T_motor_fr_n * m.T_brake_n) / 1e-3
@@ -229,7 +246,7 @@ def warmstart_guesses_full(ctx, m, src, disc):
                              m.x_s, m.u_s)
 
 
-def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0):
+def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0, hnames=None):
     """Warm start from a previous full 23-state result: (guesses, warm, mode).
     Identical NLP structure (sizes, input_keys, collocation grid; setup / tyre
     values may differ, that is the sweep case) -> warm carries the saved w_opt
@@ -239,14 +256,16 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0)
     (None, None, "cold"), the caller falls back to the 7-state init.
     ``strict`` (set by MLTP(continue_from='auto')): raise ValueError with the reasons
     if the planned mode is not full+duals or full-primal. There is no fallback.
-    ``n_col`` (B3): the path rows per collocation point of this NLP (len of colloc_path_rows, 0 by default)."""
+    ``n_col`` (B3): the path rows per collocation point of this NLP (len of colloc_path_rows, 0 by default).
+    ``hnames``: the path-row names of this NLP. If you give them, a source with other row names
+    seeds the primal only."""
     n_per = (m.nx + m.nu) if ctx.periodic else 0
     expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh, n_periodic=n_per,
                                   n_pathcol=n_col * disc["N"] * pathcol_points(disc["tau"])),
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                     x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
                     start_state=ctx.start_state, between_knots=ctx.between_knots, collocation=ctx.collocation,
-                    state_scaling=ctx.state_scaling)
+                    state_scaling=ctx.state_scaling, hnames=hnames)
     warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
                                             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
     if strict and warm is None:
@@ -387,6 +406,16 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     100 times tighter on the chassis defects and looser on the dual infeasibility of the chassis states.
     The 7-state init ignores it. data['state_scaling'] holds the value when it is not 'matlab'.
     A source result of the other scaling seeds the primal only (no multipliers). optimise_design uses the same scales.
+
+    ``atd_tbr`` (a userOpts kwarg, default None: no extra row) bounds the torque bias ratio of both axle
+    differentials. It needs ATD On and Electric_4Motors Off. TBR is the largest ratio of the torque on one wheel
+    of an axle to the torque on the other wheel. With k = (TBR - 1) / (TBR + 1), every axle gets
+    |ATD_l - ATD_r| <= k (ATD_l + ATD_r). The wheel torque is ATD_i (gear T_motor + 2 T_brake). So the bound holds
+    for drive and for brake torque. TBR > 1 adds the rows diff_F_l, diff_F_r, diff_R_l and diff_R_r after ATD_eq
+    (4 rows per knot). TBR = 1 (open differentials) adds diff_F and diff_R, each fixed at 0 (2 rows per knot).
+    The rows are linear in the inputs. The warm start compares the path-row names of the source (data.constraints)
+    with the new rows. So a source result with other path rows seeds the primal only, also when the row count is
+    the same. data['atd_tbr'] holds the value when atd_tbr is not None. optimise_design uses the same rows.
 
     Any other setup knob that differs from its default adds _<8 hex digits> to the result stem, so a knob run
     never overwrites the default result. The knobs are TyreModel and every userOpts argument outside
@@ -592,7 +621,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     if src_full is not None:
         guesses, warm, ws_mode = warmstart_full(ctx, m, src_full, disc, len(hnames),
                                                 use_duals=warm_start_duals,
-                                                strict=continue_from is not None, n_col=n_col)
+                                                strict=continue_from is not None, n_col=n_col, hnames=hnames)
         if ws_mode == "cold":
             src_full = None
     if src_full is None:                # cold start through the ladder (or the given init)
@@ -827,6 +856,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         data["collocation"] = ctx.collocation
     if ctx.state_scaling != "matlab":   # B7: the units of w and the multipliers. A result without the field is 'matlab'.
         data["state_scaling"] = ctx.state_scaling
+    if ctx.atd_tbr is not None:         # C4: the torque-bias rows. A result without the field has none.
+        data["atd_tbr"] = float(ctx.atd_tbr)
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
         data["setup_tag"] = setup_tag
     data["provenance"] = provenance_record(
