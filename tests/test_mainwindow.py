@@ -226,7 +226,8 @@ with tempfile.TemporaryDirectory(prefix="mainwindow_test_") as out:
     os.makedirs(os.path.join(out, "Results"))
     sio.savemat(os.path.join(out, "Results", f"Sturn_Static_ATDOn_EM4Off_{tag}.mat"), {"data": {"lap_time": 12.5}})
     win._show_results(rct)
-    ok("_show_results reads Results/<stem>_<tag>.mat of the edited run", "12.500" in win.summary.text())
+    ok("_show_results reads Results/<stem>_<tag>.mat of the edited run",
+       win.summary.text().startswith("Lap time: 12.500 s"))
     win._reset_all_params()
     win.max_iter.setValue(6000); win.opt_ds.setValue(30.0); win.opt_d.setValue(3); win.opt_e.setValue(1e-2)
     win.tol.setValue(1e-4)
@@ -235,5 +236,53 @@ with tempfile.TemporaryDirectory(prefix="mainwindow_test_") as out:
     win._show_results(rc_def)
     ok("a default run does not find the knob result",
        rc_def.setup_tag() == "" and "unreadable" in win.summary.text())
+
+# --- F2: widgets -> RunConfig -> cfg.json -> headless kwargs -> result file; the default window changes nothing
+import re
+print("F2 options through cfg.json")
+
+
+def cfg_of(rc):
+    with tempfile.TemporaryDirectory(prefix="mainwindow_cfg_") as d:
+        return rc.write_cfg(os.path.join(d, "cfg.json"))
+
+
+win._reset_all_params()
+kw_d = headless_solve.build_solve_kwargs(cfg_of(win.collect_runconfig()), ROOT)
+ok("the default window makes the pre-F2 MLTP call (no F2 key forwarded, no warm start)",
+   not (set(headless_solve.FORWARD) & set(kw_d)) and "warm_start" not in kw_d)
+
+win.opt_combos["physics"].setCurrentText("corrected")
+win.opt_combos["start_state"].setCurrentText("rolling")
+win.homotopy.setChecked(True)
+win.more_json.setPlainText('{"n_bounds": 4.5, "ladder": "qss23", "ipopt_overrides": {"mu_strategy": "monotone"}, '
+                           '"pt_overrides": {"Tmax": 301.0, "Preg": 50000.0}}')
+rc_w = win.collect_runconfig()
+kw_w = headless_solve.build_solve_kwargs(cfg_of(rc_w), ROOT)
+ok("widgets and box reach the MLTP kwargs",
+   (kw_w["physics"], kw_w["start_state"], kw_w["ladder"], kw_w["n_bounds"], kw_w["homotopy"],
+    kw_w["ipopt_overrides"]) == ("corrected", "rolling", "qss23", 4.5, True, {"mu_strategy": "monotone"}))
+ok("the A5 keys reach vp_overrides", kw_w["vp_overrides"] == {"Tmax": 301.0, "Preg": 50000.0})
+name_w = os.path.basename(results.result_paths(rc_w)[0])
+ok("results lookup follows physics, start state, band and the A5 keys (a setup knob)",
+   re.fullmatch(r"Sturn_Static_ATDOn_EM4Off_physCorrected_startRolling_hw4p5_[0-9a-f]{8}\.mat", name_w) is not None)
+
+win.opt_combos["mode"].setCurrentText("qss")
+rc_q = win.collect_runconfig()
+kw_q = headless_solve.build_solve_kwargs(cfg_of(rc_q), ROOT)
+ok("qss mode drops the NLP-only keys", not ({"homotopy", "ladder", "refine", "continue_from", "plots_dir", "warm_start"}
+                                            & set(kw_q)))
+ok("qss mode looks for the _qss file of the same setup",
+   os.path.basename(results.result_paths(rc_q)[0]) == name_w.replace(".mat", "_qss.mat"))
+
+win.opt_combos["mode"].setCurrentText("nlp")
+win.opt_combos["physics"].setCurrentText("matlab")
+win.opt_combos["start_state"].setCurrentText("matlab")
+win.homotopy.setChecked(False)
+win.more_json.setPlainText("")
+rc_back = win.collect_runconfig()
+ok("back to the startup state: no overrides, no A5 keys, no F2 field set",
+   rc_back.vp_overrides() == {} and rc_back.pt_overrides is None and rc_back.homotopy is None
+   and rc_back.physics == "matlab")
 
 print("\nALL MainWindow TESTS PASSED")

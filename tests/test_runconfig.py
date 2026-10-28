@@ -128,4 +128,45 @@ except KeyError:
     raised_vp = False
 ok("unknown vp key raises ValueError not KeyError", raised_vp)
 
+# --- F2 options: top-level cfg fields at the MLTP / userOpts defaults; the A5 keys fold into vp_overrides ---
+from headless_solve import FORWARD
+F2D = {"mode": "nlp", "physics": "matlab", "start_state": "matlab", "n_bounds": None, "Steering": "NA",
+       "CamberGain": "Off", "ladder": "auto", "homotopy": None, "refine": None, "ipopt_overrides": None,
+       "between_knots": "matlab", "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,
+       "continue_from": None}
+for k, d in F2D.items():
+    ok(f"{k} top-level default", cfg[k] == d)
+    ok(f"{k} not in vp_overrides", k not in cfg["vp_overrides"])
+ok("every FORWARD default is the RunConfig default", all(getattr(RunConfig(), k) == d for k, d in FORWARD.items()))
+ok("pt_overrides is no cfg key (the A5 keys ride inside vp_overrides), default None",
+   "pt_overrides" not in cfg and RunConfig().pt_overrides is None)
+
+PT = {"Tmax": 301.0, "Pmax": 228000.0, "Preg": 5.0e4, "Ppack": 3.0e5, "gear": 8.0}
+F2_SET = dict(mode="qss", physics="corrected", start_state="rolling", n_bounds=4.5, Steering="Ackermann",
+              CamberGain="Table", ladder="qss23", homotopy=[1.3, 1.1, 1.0],
+              refine={"passes": 1, "max_lap_rise": float("inf")}, ipopt_overrides={"mu_strategy": "monotone"},
+              between_knots="linear", collocation="radau", state_scaling="typical", atd_tbr=2.0,
+              continue_from="auto")
+rc_g = RunConfig(pt_overrides=PT, **F2_SET)
+gpath = os.path.join(TMP, "_rc_cfg_f2.json")
+cfg_g = rc_g.write_cfg(gpath)
+ok("F2 options carried to cfg", all(cfg_g[k] == getattr(rc_g, k) for k in F2_SET))
+ok("pt_overrides folded into vp_overrides, no separate key", cfg_g["vp_overrides"] == PT and "pt_overrides" not in cfg_g)
+ok("vp_overrides() (the table diff) does not carry them", rc_g.vp_overrides() == {})
+with open(gpath) as fh:
+    ok("F2 options survive the JSON file (inf too)", json.load(fh) == cfg_g)
+ok("F2 options round-trip from_dict(to_dict)", RunConfig.from_dict(rc_g.to_dict()) == rc_g)
+ok("an old saved config (no F2 fields) loads with the F2 defaults",
+   all(getattr(RunConfig.from_dict({"circuit": "BCN"}), k) == d for k, d in F2D.items()))
+vp_t = dict(all_vp_defaults()); vp_t["alpha_RW"] = 12.0
+ok("a table override and the A5 keys merge",
+   RunConfig(vp=vp_t, pt_overrides={"gear": 8.0}).write_cfg(os.path.join(TMP, "_pt_merge.json"))["vp_overrides"]
+   == {"alpha_RW": 12.0, "gear": 8.0})
+raised_pt = False
+try:
+    RunConfig(pt_overrides={"mb": 1900.0}).write_cfg(os.path.join(TMP, "_pt_bad.json"))
+except ValueError:
+    raised_pt = True
+ok("a key that is not an A5 key raises ValueError (mb is a vp primary)", raised_pt)
+
 print("\nALL RunConfig TESTS PASSED")

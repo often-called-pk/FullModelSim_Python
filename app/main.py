@@ -1,4 +1,5 @@
 """Application entry. Normal launch -> GUI; `--headless cfg.json` -> solve."""
+import multiprocessing
 import sys
 
 
@@ -25,4 +26,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()    # a frozen exe starts itself again for each worker (screen_batch, workers > 1)
     sys.exit(main())

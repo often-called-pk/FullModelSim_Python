@@ -12,6 +12,7 @@ Typical use mirrors the MATLAB ``importfile('Static_MidDF.mat'); data.init = dat
     ctx.data = vars['data']            # the saved result struct
 """
 
+import numbers
 import re
 
 import numpy as np
@@ -89,6 +90,16 @@ def load_solution(path):
             if hasattr(ref, key):
                 setattr(ref, key, np.atleast_1d(np.asarray(getattr(ref, key))).reshape(-1))
     return data
+
+
+def n_tag(n_bounds):
+    """Result-stem tag of a userOpts n_bounds: "" for None, "hw<W>" for a half-width (3.5 gives "hw3p5"),
+    "nbCustom" for a (lo, hi) pair. userOpts and the GUI both call this function."""
+    if n_bounds is None:
+        return ""
+    if isinstance(n_bounds, numbers.Real) and not isinstance(n_bounds, (bool, np.bool_)):
+        return f"hw{float(n_bounds):g}".replace(".", "p")
+    return "nbCustom"
 
 
 def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="matlab",

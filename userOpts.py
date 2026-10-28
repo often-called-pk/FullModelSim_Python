@@ -28,7 +28,7 @@ from types import SimpleNamespace
 from Powertrain import Powertrain
 from vehParams import vehParams, all_vp_defaults, PRIMARY_KEYS, MF_KEYS, PT_KEYS
 from functions.simpleMA import simpleMA
-from functions.importfile import mat_to_namespace
+from functions.importfile import mat_to_namespace, n_tag
 from functions.mesh import curvature_mesh, mesh_opts_record
 from functions.sweep import fingerprint
 from functions.track_qa import check_track
@@ -226,7 +226,7 @@ def _parse_n_bounds(n_bounds, s):
         W = float(n_bounds)
         if not (np.isfinite(W) and W > 0):
             raise ValueError(f"n_bounds half-width W must be finite and > 0 m, got {n_bounds!r}")
-        return np.full(s.size, -W), np.full(s.size, W), f"hw{W:g}".replace(".", "p")
+        return np.full(s.size, -W), np.full(s.size, W), n_tag(W)
     if not (isinstance(n_bounds, (tuple, list)) and len(n_bounds) == 2):
         raise ValueError("n_bounds must be None, a number W > 0 (the band -W..W in m) or a (lo, hi) "
                          f"tuple or list of two entries, got {n_bounds!r:.80}")
@@ -240,7 +240,7 @@ def _parse_n_bounds(n_bounds, s):
     if not (lo < hi).all():
         raise ValueError("n_bounds needs lo < hi at every track point; a fixed line is a narrow "
                          "band (n_ref - b, n_ref + b)")
-    return lo, hi, "nbCustom"
+    return lo, hi, n_tag(n_bounds)
 
 
 # -----------------------------------------------------------------------------

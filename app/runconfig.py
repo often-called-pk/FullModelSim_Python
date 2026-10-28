@@ -8,15 +8,21 @@ widget yet and are settable from a saved RunConfig / cfg.json), and a single
 merged `vp_overrides` dict (vp diff-from-default). An expert config file is written
 into a default-seeded vp at construction; given an explicit vp it only contributes
 keys absent from vp.
+
+The F2 options are top-level cfg fields too: mode, physics, start_state, n_bounds, Steering,
+CamberGain, between_knots, collocation, state_scaling, atd_tbr, ladder, homotopy, refine,
+continue_from and ipopt_overrides. Each default is the MLTP or userOpts default. So a cfg without
+them makes the same call as before. `pt_overrides` (the A5 powertrain keys) is not a cfg key.
+`write_cfg` adds it to `vp_overrides`, where vehParams reads it.
 """
 import json
 from dataclasses import dataclass, asdict, field
-from typing import Optional
+from typing import Optional, Union
 
 from app.paths import default_output_dir
 from app.vp_params import all_vp_defaults
 from userOpts import setup_knobs, knob_tag
-from vehParams import PRIMARY_KEYS, MF_KEYS
+from vehParams import PRIMARY_KEYS, MF_KEYS, PT_KEYS
 
 
 @dataclass
@@ -45,6 +51,23 @@ class RunConfig:
     mesh_opts: Optional[dict] = None        # kwargs for functions.mesh.curvature_mesh
     tyre_set: str = "MF205"                 # 'MF205' | 'CopyB' (vehParams tyre_set)
     screening: bool = False                 # loose IPOPT tolerances (userOpts SCREENING_IPOPT)
+    # F2 options (top-level cfg fields). headless_solve forwards a value only when it differs from the default.
+    mode: str = "nlp"                       # 'nlp' (MLTP) | 'qss' (MLTP_screen: a lap ESTIMATE, no NLP)
+    physics: str = "matlab"                 # 'matlab' | 'corrected' (the A1-A6 changes)
+    start_state: str = "matlab"             # 'matlab' | 'rolling' | 'periodic' (closed circuits)
+    n_bounds: Optional[Union[float, list]] = None   # None (model +-4 m) | half-width W [m] | [lo, hi]
+    Steering: str = "NA"                    # 'NA' | 'Ackermann'
+    CamberGain: str = "Off"                 # 'Off' | 'Linear' | 'Table'
+    between_knots: str = "matlab"           # 'matlab' | 'linear' | 'linear+power' (B3)
+    collocation: str = "legendre"           # 'legendre' | 'radau' (B4)
+    state_scaling: str = "matlab"           # 'matlab' | 'typical' (B7)
+    atd_tbr: Optional[float] = None         # None | torque-bias ratio >= 1 (C4)
+    ladder: str = "auto"                    # 'auto' (= legacy) | 'legacy' | 'qss7' | 'qss23'
+    homotopy: Optional[Union[bool, list]] = None    # None | True | friction scales that end in 1.0
+    refine: Optional[Union[bool, dict]] = None      # None | True | refine options (functions.refine)
+    continue_from: Optional[str] = None     # None | 'auto' (B5: start from the stored default result)
+    ipopt_overrides: Optional[dict] = None  # any IPOPT options, merged last
+    pt_overrides: Optional[dict] = None     # A5 keys gear Tmax Pmax Preg Ppack (physics='corrected' only)
     # full vehicle-parameter set (primaries + Pacejka mf), seeded from the tyre_set defaults
     vp: Optional[dict] = None
 
@@ -92,14 +115,22 @@ class RunConfig:
         d = asdict(self)
         d.pop("expert_config", None)
         d.pop("vp", None)
-        d["vp_overrides"] = self.vp_overrides()
+        pt = d.pop("pt_overrides", None) or {}
+        unknown = set(pt) - PT_KEYS
+        if unknown:
+            raise ValueError(f"Unknown powertrain override keys: {sorted(unknown)}. Allowed: {sorted(PT_KEYS)}")
+        d["vp_overrides"] = {**self.vp_overrides(), **pt}
         return d
 
     def setup_tag(self):
         """The tag that MLTP puts at the end of the result stem for this run. It comes from the same function
-        (userOpts.setup_knobs) of the same kwargs (headless_solve.build_solve_kwargs). "" for the default setup."""
+        (userOpts.setup_knobs) of the same kwargs (headless_solve.build_solve_kwargs). "" for the default setup.
+        In mode 'qss', MLTP_screen ignores TyreModel, so TyreModel is no knob there."""
         from headless_solve import build_solve_kwargs
-        return knob_tag(setup_knobs(build_solve_kwargs(self._cfg(), "")))
+        kw = build_solve_kwargs(self._cfg(), "")
+        if self.mode == "qss":
+            kw.pop("TyreModel", None)
+        return knob_tag(setup_knobs(kw))
 
     def write_cfg(self, path):
         cfg = self._cfg()

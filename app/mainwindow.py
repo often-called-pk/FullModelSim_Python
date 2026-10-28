@@ -30,6 +30,36 @@ TYRES = ["CombinedSlip", "PureSlip"]
 SOLVERS = ["ma57", "ma97", "ma27", "mumps"]
 TYRE_SETS = ["MF205", "CopyB"]              # vehParams tyre_set names, default first
 MESHES = ["auto", "uniform", "curvature"]   # userOpts mesh choices, default first
+# F2 combos: RunConfig field, label, items (the first item is the RunConfig default), tooltip
+OPTION_COMBOS = [
+    ("mode", "Run", ["nlp", "qss"],
+     "nlp = the optimal-control solve. qss = a quasi-steady lap ESTIMATE, not an optimum. It takes about 1 s, "
+     "uses no IPOPT and follows the centreline. On Sturn and BCN its lap is 4% to 11% above the NLP lap. It "
+     "saves a .mat file and no plots. It ignores the warm start, ladder, homotopy, refine, continue_from and "
+     "the IPOPT options."),
+    ("physics", "Physics", ["matlab", "corrected"],
+     "matlab = the MATLAB model, bit for bit (default). corrected = the opt-in changes A1 to A6 (mass "
+     "bookkeeping, damper, frame, aero load path, 4-motor speed, toe). The result file name gets the "
+     "suffix _physCorrected."),
+    ("start_state", "Start state", ["matlab", "rolling", "periodic"],
+     "matlab = the MATLAB start box (default). rolling = the wheels and the chassis start at the coast "
+     "equilibrium. periodic = free start, and the end state equals the start state (closed circuits only)."),
+]
+# RunConfig fields that the "More options" JSON box may set (they have no widget). refine is not one of them:
+# an accepted refinement pass saves as <stem>_meshAdaptive, a file that the Output tab does not look for.
+MORE_KEYS = ("n_bounds", "ladder", "ipopt_overrides", "Steering", "CamberGain", "pt_overrides",
+             "between_knots", "collocation", "state_scaling", "atd_tbr", "continue_from")
+MORE_TIP = (
+    "More options as a JSON object. Keys: n_bounds (half-width in m, or [lo, hi]), ladder (auto, legacy, qss7, "
+    "qss23), ipopt_overrides (IPOPT options), Steering (NA, Ackermann), CamberGain (Off, Linear, Table), "
+    "pt_overrides (the A5 keys gear, Tmax, Pmax, Preg, Ppack: physics = corrected only), between_knots (matlab, "
+    "linear, linear+power), collocation (legendre, radau), state_scaling (matlab, typical), atd_tbr (torque-bias "
+    "ratio, 1 or more: ATD on only), continue_from (auto = start from the stored default result).")
+HOMOTOPY_TIP = (
+    "Solve three times, with the tyre friction scaled by 1.2, then 1.1, then 1.0. Each step starts from the "
+    "result before it. Use it when a cold solve fails. Choosing 4 Motors ticks this box, because a cold "
+    "4-motor solve can fail. Clearing 4 Motors unticks it. Untick it to solve once, for example from a warm "
+    "start .mat. MLTP refuses continue_from together with this box.")
 _PATH_ROLE = 256  # Qt.ItemDataRole.UserRole, stores the plot's filesystem path on the list item
 
 TYRE_SET_TIP = (
@@ -381,6 +411,24 @@ class MainWindow(QMainWindow):
         gform.addRow("Path-constraint slack", self.opt_e)
         gform.addRow("IPOPT tolerance", self.tol)
         form.addRow(grp)
+
+        # F2 options. No ampersand in the title: Qt reads it as a mnemonic key.
+        self.opt_combos = {}
+        grp2 = QGroupBox("Run, model and start")
+        f2 = QFormLayout(grp2)
+        for key, label, items, tip in OPTION_COMBOS:
+            cb = QComboBox(); cb.addItems(items); cb.setToolTip(tip)
+            self.opt_combos[key] = cb
+            f2.addRow(_tipped_label(label, tip), cb)
+        self.homotopy = QCheckBox("friction homotopy (1.2, 1.1, 1.0)")
+        self.homotopy.setToolTip(HOMOTOPY_TIP)
+        self.more_json = QPlainTextEdit()
+        self.more_json.setMaximumHeight(60)
+        self.more_json.setPlaceholderText('(none)  e.g. {"n_bounds": 4.5, "ipopt_overrides": {"mu_strategy": "monotone"}}')
+        self.more_json.setToolTip(MORE_TIP)
+        f2.addRow(_tipped_label("Homotopy", HOMOTOPY_TIP), self.homotopy)
+        f2.addRow(_tipped_label("More options (JSON)", MORE_TIP), self.more_json)
+        form.addRow(grp2)
         return w
 
     # ---- conflict rule ----------------------------------------------------
@@ -388,6 +436,9 @@ class MainWindow(QMainWindow):
         if on:
             self.atd.setChecked(False)
         self.atd.setEnabled(not on)
+        # F2-V1: the homotopy converged for 4 Motors on Sturn and BCN, and the cold Sturn solve hit max_iter.
+        # This sets the default only. The user can untick the box.
+        self.homotopy.setChecked(on)
 
     def set_em4(self, on):           # test hook
         self.em4.setChecked(on)
@@ -417,6 +468,22 @@ class MainWindow(QMainWindow):
                 w.setToolTip(tip)
 
     # ---- collect / run ----------------------------------------------------
+    def _more_options(self):
+        """The "More options" JSON box as RunConfig fields. A ValueError names the problem."""
+        text = self.more_json.toPlainText().strip()
+        if not text:
+            return {}
+        try:
+            d = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"More options are not valid JSON: {exc}") from None
+        if not isinstance(d, dict):
+            raise ValueError('More options must be a JSON object, for example {"n_bounds": 4.5}')
+        unknown = sorted(set(d) - set(MORE_KEYS))
+        if unknown:
+            raise ValueError(f"More options: unknown key(s) {unknown}. Allowed keys: {list(MORE_KEYS)}")
+        return d
+
     def collect_runconfig(self):
         tyre_set = self._tyre_set()
         defaults = all_vp_defaults(tyre_set)
@@ -426,6 +493,7 @@ class MainWindow(QMainWindow):
                 vp[k] = float(field.value())
             except (TypeError, ValueError):
                 vp[k] = float(defaults[k])
+        opts = {k: cb.currentText() for k, cb in self.opt_combos.items()}
         return RunConfig(
             circuit=self.circuit.currentText(),
             AeroConfig=self.aero.currentText(),
@@ -447,12 +515,15 @@ class MainWindow(QMainWindow):
             tol=float(self.tol.value()),
             mesh=self.mesh.currentText(),
             tyre_set=tyre_set,
+            homotopy=True if self.homotopy.isChecked() else None,
+            **opts,
+            **self._more_options(),
             vp=vp,
         )
 
     def _on_run(self):
-        rc = self.collect_runconfig()
         try:
+            rc = self.collect_runconfig()           # a bad "More options" box raises here: log it, start nothing
             os.makedirs(rc.output_dir, exist_ok=True)
             cfg_path = os.path.join(tempfile.gettempdir(), "fms_solve_cfg.json")
             rc.write_cfg(cfg_path)
@@ -461,6 +532,8 @@ class MainWindow(QMainWindow):
             return
         self._active_rc = rc
         self.log.clear()
+        self.summary.setText("No results yet.")      # a failed run must not leave the last lap on show
+        self.plot_list.clear()
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self._runner.start(cfg_path)
@@ -474,21 +547,16 @@ class MainWindow(QMainWindow):
             self._append_log(f"\n[solve exited with code {code}]\n")
 
     def _show_results(self, rc):
-        tag = rc.setup_tag()
-        mat = results.result_mat_path(rc.output_dir, rc.circuit, rc.AeroConfig,
-                                      rc.ATD, rc.Electric_4Motors,
-                                      rc.tyre_set, rc.mesh, tag)
+        mat, pdir = results.result_paths(rc)
         try:
             summ = results.parse_summary(mat)
             e = summ["energy_kWh"]
             self.summary.setText(
-                f"Lap time: {summ['lap_time_s']:.3f} s"
+                ("QSS estimate (not an optimum): " if rc.mode == "qss" else "Lap time: ")
+                + f"{summ['lap_time_s']:.3f} s"
                 + (f"   |   Energy: {e:.3f} kWh" if e is not None else ""))
         except Exception as exc:
             self.summary.setText(f"Results unreadable: {exc}")
-        pdir = results.plot_dir(rc.output_dir, rc.circuit, rc.AeroConfig,
-                                rc.ATD, rc.Electric_4Motors,
-                                rc.tyre_set, rc.mesh, tag)
         self.plot_list.clear()
         for p in results.list_plots(pdir):
             it = QListWidgetItem(os.path.basename(p))

@@ -169,4 +169,156 @@ for c in CIRCUITS:
 if gui_bad:
     print("  load errors:", gui_bad)
 ok("GUI list: every circuit loads (QA warnings allowed)", not gui_bad)
+# --- F2: Advanced-tab options (run mode, physics, start state, homotopy, "More options" JSON box) ----------
+import json, contextlib, io, tempfile
+from app.mainwindow import MORE_KEYS
+from app import results
+from functions.ladder import LADDERS, resolve_ladder
+
+print("F2 options")
+combos = win.opt_combos
+ok("combos: Run, Physics and Start state (the OPTION_COMBOS widgets)", set(combos) == {"mode", "physics", "start_state"})
+ok("Run combo lists nlp (default) then qss", items(combos["mode"]) == ["nlp", "qss"])
+ok("Physics combo lists matlab (default) then corrected", items(combos["physics"]) == ["matlab", "corrected"])
+ok("Start state combo lists matlab (default), rolling, periodic",
+   items(combos["start_state"]) == ["matlab", "rolling", "periodic"])
+
+
+def accepts(circuit="Sturn", **kw):
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            userOpts(Ctx(), circuit=circuit, **kw)
+        return True
+    except ValueError:
+        return False
+
+
+ok("every Physics and Start state item is accepted by userOpts (periodic on a closed circuit)",
+   all(accepts(physics=v) for v in items(combos["physics"]))
+   and all(accepts(circuit="Circle" if v == "periodic" else "Sturn", start_state=v)
+           for v in items(combos["start_state"])))
+ok("that acceptance check can fail", not accepts(physics="bogus") and not accepts(start_state="periodic"))
+
+F2F = ("mode", "physics", "start_state", "n_bounds", "Steering", "CamberGain", "ladder", "homotopy", "refine",
+       "ipopt_overrides", "pt_overrides", "between_knots", "collocation", "state_scaling", "atd_tbr", "continue_from")
+
+
+def cfg_of(rc):
+    with tempfile.TemporaryDirectory(prefix="gui_cfg_") as d:
+        return rc.write_cfg(os.path.join(d, "cfg.json"))
+
+
+fresh_win = MainWindow()                                 # a fresh window: startup state
+rc0 = fresh_win.collect_runconfig()
+ok("startup: every F2 field equals the RunConfig default", all(getattr(rc0, k) == getattr(RunConfig(), k) for k in F2F))
+ok("startup: the cfg has no vp or A5 override", cfg_of(rc0)["vp_overrides"] == {})
+
+for k, v in dict(mode="qss", physics="corrected", start_state="rolling").items():
+    combos[k].setCurrentText(v)
+win.homotopy.setChecked(True)
+rc1 = win.collect_runconfig()
+ok("collect carries the chosen combos and homotopy True",
+   (rc1.mode, rc1.physics, rc1.start_state, rc1.homotopy) == ("qss", "corrected", "rolling", True))
+
+# the "More options" JSON box: RunConfig fields without a widget of their own
+MORE = {"n_bounds": 4.5, "ladder": "qss23", "ipopt_overrides": {"mu_strategy": "monotone", "max_iter": 400},
+        "Steering": "Ackermann", "CamberGain": "Linear", "pt_overrides": {"Tmax": 301, "Preg": 5e4},
+        "between_knots": "linear", "collocation": "radau", "state_scaling": "typical", "atd_tbr": 2.0,
+        "continue_from": "auto"}
+ok("More options keys are exactly the eleven of the ruling (no refine, no widget key)",
+   set(MORE_KEYS) == {"n_bounds", "ladder", "ipopt_overrides", "Steering", "CamberGain", "pt_overrides",
+                      "between_knots", "collocation", "state_scaling", "atd_tbr", "continue_from"})
+ok("MORE_KEYS are RunConfig fields", set(MORE_KEYS) <= set(RunConfig.__dataclass_fields__))
+ok("the ladder names the box may take resolve (auto and every LADDERS key)",
+   all(resolve_ladder(v)[0] for v in ("auto",) + tuple(LADDERS)))
+win.more_json.setPlainText(json.dumps(MORE))
+rc2 = win.collect_runconfig()
+ok("collect carries every JSON key into its RunConfig field", all(getattr(rc2, k) == v for k, v in MORE.items()))
+ok("... and leaves the combos and the checkbox alone", (rc2.mode, rc2.physics, rc2.homotopy) == ("qss", "corrected", True))
+cfg_w = cfg_of(rc2)
+ok("the cfg carries the box, the A5 keys inside vp_overrides only",
+   cfg_w["n_bounds"] == 4.5 and cfg_w["ladder"] == "qss23" and cfg_w["vp_overrides"] == {"Tmax": 301, "Preg": 5e4}
+   and "pt_overrides" not in cfg_w)
+
+win.more_json.setPlainText("")
+rc3 = win.collect_runconfig()
+ok("empty box: no JSON field set", rc3.n_bounds is None and rc3.pt_overrides is None and rc3.continue_from is None)
+for bad, why in (("{'a': 1}", "not valid JSON"), ("not json", "not valid JSON"), ("[1, 2]", "must be a JSON object"),
+                 ('{"refine": true}', "unknown key"), ('{"physics": "corrected"}', "unknown key"),
+                 ('{"mode": "qss"}', "unknown key"), ('{"start_state": "rolling"}', "unknown key"),
+                 ('{"homotopy": true}', "unknown key"), ('{"nope": 1}', "unknown key")):
+    win.more_json.setPlainText(bad)
+    try:
+        win.collect_runconfig()
+        msg = ""
+    except ValueError as exc:
+        msg = str(exc)
+    ok(f"More options {bad!r} raises ValueError ({why})", msg.startswith("More options") and why in msg)
+
+# Run: a bad box logs an [error] and starts nothing; a good run clears the last result on show
+real_start, started = win._runner.start, []
+win._runner.start = started.append                       # records the cfg path, starts no process
+prev_out = win.output_dir.text()
+try:
+    win.log.clear()
+    win.more_json.setPlainText('{"refine": true}')
+    win._on_run()
+    ok("Run with a bad box logs an [error], starts nothing and stays idle",
+       "[error] More options" in win.log.toPlainText() and started == []
+       and win.run_btn.isEnabled() and not win.cancel_btn.isEnabled())
+    win.more_json.setPlainText("")
+    with tempfile.TemporaryDirectory(prefix="gui_run_") as run_out:
+        win.output_dir.setText(run_out)
+        win.summary.setText("Lap time: 1.000 s")
+        win.plot_list.addItem("stale.html")
+        win._on_run()
+        ok("Run clears the last summary and plot list (a failed run must not leave an old lap on show)",
+           win.summary.text() == "No results yet." and win.plot_list.count() == 0 and len(started) == 1
+           and not win.run_btn.isEnabled())
+finally:
+    win._runner.start = real_start
+    win.output_dir.setText(prev_out)
+    win.run_btn.setEnabled(True)
+    win.cancel_btn.setEnabled(False)
+
+# the Output tab reads the file that a qss run writes (numpy only; needs Data/DATA_AA.mat)
+if os.path.isfile(os.path.join(_bootstrap.ROOT, "Data", "DATA_AA.mat")):
+    from MLTP_screen import MLTP_screen
+    with tempfile.TemporaryDirectory(prefix="gui_qss_") as out:
+        with contextlib.redirect_stdout(io.StringIO()):
+            MLTP_screen(circuit="Sturn", save=True, results_dir=os.path.join(out, "Results"))
+        lap = results.parse_summary(os.path.join(out, "Results", "Sturn_Static_ATDOn_EM4Off_qss.mat"))["lap_time_s"]
+        nlp_plots = os.path.join(out, "Plots", "Sturn", "Static_ATDOn_EM4Off")     # an NLP run of the same setup
+        os.makedirs(nlp_plots)
+        open(os.path.join(nlp_plots, "speed.html"), "w").close()
+        win._show_results(RunConfig(output_dir=out))
+        ok("the nlp run of that setup lists its plot", win.plot_list.count() == 1)
+        win._show_results(RunConfig(mode="qss", output_dir=out))
+        ok("qss summary: labelled as an estimate, with the QSS lap, and no plots (not the NLP plots of the setup)",
+           win.summary.text().startswith(f"QSS estimate (not an optimum): {lap:.3f} s") and win.plot_list.count() == 0)
+        win._show_results(RunConfig(mode="qss", physics="corrected", output_dir=out))
+        ok("a stem the solve did not write is reported, not crashed on", win.summary.text().startswith("Results unreadable"))
+else:
+    print("  [SKIP] QSS summary: Data/DATA_AA.mat missing (the qss run needs ctx.aero)")
+
+# back to the startup state, then the 4 Motors tick
+for k in ("mode", "physics", "start_state"):
+    combos[k].setCurrentText(items(combos[k])[0])
+win.more_json.setPlainText("")
+win.homotopy.setChecked(False)
+ok("back to the defaults: the collected F2 fields equal the RunConfig defaults",
+   all(getattr(win.collect_runconfig(), k) == getattr(RunConfig(), k) for k in F2F))
+win.set_em4(True)
+ok("4 Motors on ticks Homotopy (the GUI default for four motors)",
+   win.homotopy.isChecked() and win.collect_runconfig().homotopy is True)
+win.homotopy.setChecked(False)
+ok("the user can untick Homotopy with 4 Motors on", win.collect_runconfig().homotopy is None)
+win.set_em4(False)
+ok("4 Motors off unticks Homotopy again (the one-motor default is unchanged)",
+   not win.homotopy.isChecked() and win.collect_runconfig().homotopy is None)
+ok("the library default stays off for four motors (RunConfig homotopy None)",
+   RunConfig(Electric_4Motors="On").homotopy is None)
+win.atd.setChecked(True)
+
 print("\nALL GUI logic TESTS PASSED")
