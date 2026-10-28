@@ -37,7 +37,7 @@ from functions.warmstart import (nlp_record, get_field, is_full_result, nlp_stru
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       compute_time, reconstruct_track)
-from userOpts import userOpts
+from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 from vehModel import vehModel
 from vehParams import MF_KEYS
 from MLTP import build_path_constraints, warmstart_guesses, warmstart_guesses_full
@@ -78,6 +78,9 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     ValueError: its start equilibrium depends on the design parameters. data.start_state and
     data.Xi record the start box. ``n_bounds`` (a userOpts kwarg) works as in MLTP: the result
     saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag.
+    Any other setup knob that differs from its default (vp_overrides, vi, OPT_ds and more, see userOpts.setup_knobs)
+    appends _<8 hex digits> to the stem and appears in data.provenance.setup, as in MLTP. The promoted parameters and their
+    bounds (param_specs, Fz0_shift_bounds) are not part of the name. ctx.out_path is the file that save=True wrote.
 
     ``Fz0_follows_shift=True`` (only MLTP_TyreOptim passes it) multiplies vp.Fz0 by Fz0_shift
     before it builds the model, as MLTP_TyreOptim.m:128 does. MLTP_paramOptim and the setup_sweep
@@ -94,6 +97,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
+    knobs = setup_knobs(dict(useropts_kwargs, vi=vi, ni=ni))
+    setup_tag = knob_tag(knobs)
     if ctx.start_state == "rolling":
         raise ValueError("optimise_design: start_state='rolling' is not supported, the start "
                          "equilibrium depends on the design parameters; use 'matlab' or 'periodic'")
@@ -246,9 +251,14 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
         # structure.n_param = nP: a later solve re-injects it only by
         # interpolation) and the warm-start mode this solve used
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
+        # no params: the promoted vp fields are symbols here
+        "provenance": provenance_record(knobs, linear_solver=ctx.opts["ipopt"].get("linear_solver"),
+                                        ipopt_overrides=ctx.ipopt_overrides),
     }
     if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
         data["n_tag"] = ctx.n_tag
+    if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
+        data["setup_tag"] = setup_tag
     ctx.data = SimpleNamespace(**data)
 
     if save:
@@ -257,8 +267,9 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
             circuit, tag, getattr(ctx, "tyre_set", "MF205"),
             getattr(ctx, "mesh_requested", "auto"),
             getattr(ctx, "physics", "matlab"), ctx.start_state,
-            n_tag=ctx.n_tag) + ".mat")
+            n_tag=ctx.n_tag, setup_tag=setup_tag) + ".mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
+        ctx.out_path = out_path
         print(f"Saved -> {out_path}")
 
     summary = ", ".join(f"{k}={v:.4f}" for k, v in optimal_params.items())

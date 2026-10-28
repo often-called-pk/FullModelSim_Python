@@ -210,4 +210,30 @@ ok("Reset all under MF205 restores the MF205 set (pKy4 == 2.0)",
    rc_end.tyre_set == "MF205" and rc_end.vp == MF and rc_end.vp["pKy4"] == 2.0
    and rc_end.vp_overrides() == {} and n_flagged() == 0 and badges() == [])
 
+# E2: an edited Setup row and the Advanced tab give the result file a tag, and _show_results finds that file
+import scipy.io as sio
+from userOpts import setup_knobs, knob_tag
+win.vp_spins["alpha_RW"].setValue(12.0)
+win.max_iter.setValue(2500); win.opt_ds.setValue(25.0); win.opt_d.setValue(4)
+win.opt_e.setValue(2e-3); win.tol.setValue(5e-5)
+rct = win.collect_runconfig()
+tag = knob_tag(setup_knobs({"vp_overrides": {"alpha_RW": 12.0}, "max_iter": 2500, "OPT_ds": 25.0, "OPT_d": 4,
+                            "OPT_e": 2e-3, "tol": 5e-5}))
+ok("an edited Setup row + Advanced values: rc.setup_tag() is the tag of those knobs",
+   tag != "" and rct.setup_tag() == tag)
+with tempfile.TemporaryDirectory(prefix="mainwindow_test_") as out:
+    rct.output_dir = out
+    os.makedirs(os.path.join(out, "Results"))
+    sio.savemat(os.path.join(out, "Results", f"Sturn_Static_ATDOn_EM4Off_{tag}.mat"), {"data": {"lap_time": 12.5}})
+    win._show_results(rct)
+    ok("_show_results reads Results/<stem>_<tag>.mat of the edited run", "12.500" in win.summary.text())
+    win._reset_all_params()
+    win.max_iter.setValue(6000); win.opt_ds.setValue(30.0); win.opt_d.setValue(3); win.opt_e.setValue(1e-2)
+    win.tol.setValue(1e-4)
+    rc_def = win.collect_runconfig()
+    rc_def.output_dir = out
+    win._show_results(rc_def)
+    ok("a default run does not find the knob result",
+       rc_def.setup_tag() == "" and "unreadable" in win.summary.text())
+
 print("\nALL MainWindow TESTS PASSED")

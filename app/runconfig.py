@@ -15,6 +15,7 @@ from typing import Optional
 
 from app.paths import default_output_dir
 from app.vp_params import all_vp_defaults
+from userOpts import setup_knobs, knob_tag
 from vehParams import PRIMARY_KEYS, MF_KEYS
 
 
@@ -93,6 +94,12 @@ class RunConfig:
         d.pop("vp", None)
         d["vp_overrides"] = self.vp_overrides()
         return d
+
+    def setup_tag(self):
+        """The tag that MLTP puts at the end of the result stem for this run. It comes from the same function
+        (userOpts.setup_knobs) of the same kwargs (headless_solve.build_solve_kwargs). "" for the default setup."""
+        from headless_solve import build_solve_kwargs
+        return knob_tag(setup_knobs(build_solve_kwargs(self._cfg(), "")))
 
     def write_cfg(self, path):
         cfg = self._cfg()

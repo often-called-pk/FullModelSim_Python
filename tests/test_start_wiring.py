@@ -33,7 +33,7 @@ from functions.ladder import boundary_box
 from functions.transcription import discretise
 from functions.warmstart import nlp_structure
 from MLTP_screen import MLTP_screen
-from userOpts import userOpts
+from userOpts import userOpts, setup_knobs, knob_tag
 import setup_sweep as SS
 
 DATA_AA = os.path.join(_bootstrap.ROOT, "Data", "DATA_AA.mat")
@@ -411,6 +411,7 @@ print("11. real build with the fake solver: saved records, warm-start modes, MLT
 import shutil
 from plotSDI import plotSDI
 
+TAG100 = "_" + knob_tag(setup_knobs({"OPT_ds": 100}))        # E2: OPT_ds=100 is a setup knob, its tag ends the stem
 RES_TMP = tempfile.mkdtemp(prefix="start_wiring_res_")
 PLOTS_TMP = tempfile.mkdtemp(prefix="start_wiring_plots_")
 try:
@@ -428,6 +429,7 @@ try:
             stem = f"{kw['circuit']}_Static_ATDOn_EM4Off" + ("" if st == "matlab" else "_start" + st.capitalize())
             if "refine" in kw:
                 stem += "_meshAdaptive" if c.mesh_requested == "adaptive" else ""
+            stem += TAG100 if "OPT_ds" in kw else ""
             p = os.path.join(RES_TMP, stem + ".mat")
             ok(f"{name}: saved {stem}.mat", os.path.isfile(p))
             d = load_solution(p)
@@ -458,7 +460,8 @@ try:
             kw = dict(dict(circuit="Sturn"), **kw)
             quiet(mi_mod.MLTP_initial, save=True, results_dir=RES_TMP, **kw)
             st = kw.get("start_state", "matlab")
-            fn = f"init_{kw['circuit']}" + ("" if st == "matlab" else "_start" + st.capitalize()) + ".mat"
+            fn = (f"init_{kw['circuit']}" + ("" if st == "matlab" else "_start" + st.capitalize())
+                  + (TAG100 if "OPT_ds" in kw else "") + ".mat")
             ok(f"MLTP_initial {name}: saved {fn}", os.path.isfile(os.path.join(RES_TMP, fn)))
             d = load_solution(os.path.join(RES_TMP, fn))
             ok(f"MLTP_initial {name}: init.start_state {st}, Xi (7,)",
@@ -471,12 +474,13 @@ try:
             quiet(po_mod.MLTP_paramOptim, warm_start=INIT, save=True, results_dir=RES_TMP, **kw)
             ok(f"{name}: no out-of-sync warning", not any("out of sync" in w for w in WARNS))
             st = kw.get("start_state", "matlab")
-            fn = f"{kw['circuit']}_paramOptim" + ("" if st == "matlab" else "_start" + st.capitalize()) + ".mat"
+            fn = (f"{kw['circuit']}_paramOptim" + ("" if st == "matlab" else "_start" + st.capitalize())
+                  + (TAG100 if "OPT_ds" in kw else "") + ".mat")
             ok(f"{name}: saved {fn}", os.path.isfile(os.path.join(RES_TMP, fn)))
             d = load_solution(os.path.join(RES_TMP, fn))
             ok(f"{name}: start_state + Xi (23,)", d.start_state == st and np.shape(d.Xi) == (23,))
             ok(f"{name}: structure n_periodic", int(d.nlp.structure.n_periodic) == (30 if st == "periodic" else 0))
-        pp = os.path.join(RES_TMP, "Circle_Static_ATDOn_EM4Off_startPeriodic.mat")
+        pp = os.path.join(RES_TMP, f"Circle_Static_ATDOn_EM4Off_startPeriodic{TAG100}.mat")
         c4 = quiet(po_mod.MLTP_paramOptim, circuit="Circle", OPT_ds=100, start_state="periodic",
                    warm_start=pp, save=False)
         ok("periodic MLTP -> periodic paramOptim: full+duals", c4.elapsed["warm_start"] == "full+duals")

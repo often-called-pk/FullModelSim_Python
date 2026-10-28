@@ -15,18 +15,22 @@ out of the box on any platform.
 """
 
 import os
+import functools
 import inspect
+import json
 import numbers
+import subprocess
 import warnings
 import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
 
 from Powertrain import Powertrain
-from vehParams import vehParams
+from vehParams import vehParams, all_vp_defaults, PRIMARY_KEYS, MF_KEYS, PT_KEYS
 from functions.simpleMA import simpleMA
 from functions.importfile import mat_to_namespace
-from functions.mesh import curvature_mesh
+from functions.mesh import curvature_mesh, mesh_opts_record
+from functions.sweep import fingerprint
 from functions.track_qa import check_track
 
 
@@ -205,6 +209,102 @@ def _parse_n_bounds(n_bounds, s):
         raise ValueError("n_bounds needs lo < hi at every track point; a fixed line is a narrow "
                          "band (n_ref - b, n_ref + b)")
     return lo, hi, "nbCustom"
+
+
+# -----------------------------------------------------------------------------
+# Setup identity (E2): which arguments name a result file
+# -----------------------------------------------------------------------------
+# A setup knob that differs from its default adds 8 hex digits to the result file name (knob_tag) and appears
+# in data['provenance']['setup']. Every userOpts argument is a setup knob, so a new argument is hashed at once.
+# These arguments are not: the file stem has them already, or they change only how the same NLP is solved
+# or where files live (ipopt_overrides goes to provenance['run']). TyreModel (an MLTP argument) is a knob too,
+# and so are load_model and ds_fine (MLTP_screen arguments).
+_NOT_SETUP = frozenset({"circuit", "AeroConfig", "ATD", "Electric_4Motors", "tyre_set", "physics", "start_state",
+                        "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "data_dir",
+                        "ipopt_overrides"})
+
+
+def _canon(v):
+    """Copy of a knob value for the hash: numbers become float (45 and 45.0 give one tag), None leaves a dict."""
+    if isinstance(v, dict):
+        return {str(k): _canon(x) for k, x in v.items() if x is not None}
+    if isinstance(v, np.ndarray):
+        v = v.tolist()
+    if isinstance(v, (list, tuple)):
+        return [_canon(x) for x in v]
+    if isinstance(v, numbers.Real) and not isinstance(v, (bool, np.bool_)):
+        return float(v)
+    return v
+
+
+def _is_default(v, d):
+    if isinstance(v, numbers.Real) and isinstance(d, numbers.Real):
+        return bool((np.isnan(v) and np.isnan(d)) or np.isclose(v, d, rtol=1e-12, atol=0.0))
+    return (_canon(v) or None) == (_canon(d) or None)       # None, {} and [] are the same
+
+
+def setup_knobs(kw):
+    """{name: value} of the setup knobs in ``kw`` that differ from their defaults, {} for the default setup.
+
+    ``kw`` holds the keyword arguments of a call: MLTP passes its userOpts kwargs plus vi, ni and TyreModel, the
+    GUI passes headless_solve.build_solve_kwargs(cfg), MLTP_screen adds load_model and ds_fine. Only userOpts
+    arguments, TyreModel, load_model and ds_fine are read, so save, plot, warm_start, ladder and the like never
+    count. vp_overrides keeps the A5 keys and the entries that differ from the default of the tyre set. A (lo, hi)
+    n_bounds pair is hashed by value (the stem says only 'nbCustom'). A number W is in the stem (hw<W>), so it is
+    not a knob."""
+    defaults = {k: p.default for k, p in inspect.signature(userOpts).parameters.items()
+                if p.default is not p.empty and k not in _NOT_SETUP}
+    defaults.update(TyreModel="CombinedSlip", load_model="vehModel", ds_fine=1.0)
+    out = {}
+    for k, d in defaults.items():
+        v = kw.get(k, d)
+        if k == "vp_overrides":
+            base = all_vp_defaults(kw.get("tyre_set", "MF205"))
+            v = {a: float(b) for a, b in dict(v or {}).items() if a in PT_KEYS or not _is_default(b, base.get(a))}
+            keep = bool(v)
+        elif k == "n_bounds":
+            keep = isinstance(v, (tuple, list))
+            v = fingerprint(_canon(v))[:12] if keep else None
+        else:
+            keep = not _is_default(v, d)
+        if keep:
+            out[k] = v
+    return out
+
+
+def knob_tag(knobs):
+    """8 hex digits that name a setup, '' for the default setup (a default result keeps its file name)."""
+    return fingerprint(_canon(knobs))[:8] if knobs else ""
+
+
+@functools.lru_cache(maxsize=1)
+def code_version():
+    """The output of ``git describe --always --dirty`` in the checkout of this file, or 'unknown' without
+    git (a frozen app). Never raises. On Windows the child gets no console window (a windowed app)."""
+    try:
+        r = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True, timeout=5,
+                           cwd=os.path.dirname(os.path.abspath(__file__)),
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def provenance_record(knobs, ctx=None, **run):
+    """data['provenance'] (savemat-safe): the code version, the setup knobs and how the solve ran (None is dropped).
+    run['ipopt_overrides'] is JSON text. Some IPOPT option names have more than 31 characters, and savemat does
+    not accept a longer struct field name. With ``ctx`` it adds ``params``: every vehicle, Magic Formula and
+    powertrain value of the built model."""
+    flat = lambda d: {k: mesh_opts_record(v) if isinstance(v, dict) else v for k, v in d.items() if v is not None}
+    if isinstance(run.get("ipopt_overrides"), dict):
+        run["ipopt_overrides"] = json.dumps(run["ipopt_overrides"], sort_keys=True, default=repr)
+    rec = {"code": code_version(), "setup": flat(knobs), "run": flat(run)}
+    if ctx is not None:
+        rec["params"] = {**{k: float(getattr(ctx.vp, k)) for k in sorted(PRIMARY_KEYS)},
+                         **{k: float(getattr(ctx.mf, k)) for k in sorted(MF_KEYS)},
+                         **{k: float(getattr(ctx.pt, k)) for k in ("Pmax", "Tmax", "OMmax", "Vmax", "eff", "Preg", "Ppack")
+                            if hasattr(ctx.pt, k)}, "gear": float(ctx.vp.gear)}
+    return rec
 
 
 # ----------------------------------------------------------------------------- 

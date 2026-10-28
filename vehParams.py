@@ -125,6 +125,16 @@ _MF205_OVERRIDES = {
 }
 
 
+def all_vp_defaults(tyre_set="MF205"):
+    """Full adjustable parameter set (primaries + Pacejka mf for `tyre_set`) as a flat dict."""
+    if tyre_set not in TYRE_SETS:
+        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
+    mf = dict(vars(_default_mf()))
+    if tyre_set == "MF205":
+        mf.update(_MF205_OVERRIDES)
+    return {**default_primaries(), **mf}
+
+
 def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
     if tyre_set not in TYRE_SETS:
         raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")

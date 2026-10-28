@@ -20,6 +20,12 @@ mp = results.result_mat_path("/out", "Sturn", "Static", "On", "Off")
 ok("mat path scheme", mp == os.path.join("/out", "Results", "Sturn_Static_ATDOn_EM4Off.mat"))
 pd = results.plot_dir("/out", "Sturn", "Static", "On", "Off")
 ok("plot dir scheme", pd == os.path.join("/out", "Plots", "Sturn", "Static_ATDOn_EM4Off"))
+# E2: a setup knob adds its tag as the last part of the stem, in the file and in the plot folder
+mp = results.result_mat_path("/out", "Sturn", "Static", "On", "Off", "CopyB", "curvature", "8c76aec0")
+ok("mat path with a setup tag",
+   mp == os.path.join("/out", "Results", "Sturn_Static_ATDOn_EM4Off_CopyB_meshCurvature_8c76aec0.mat"))
+pd = results.plot_dir("/out", "Sturn", "Static", "On", "Off", setup_tag="8c76aec0")
+ok("plot dir with a setup tag", pd == os.path.join("/out", "Plots", "Sturn", "Static_ATDOn_EM4Off_8c76aec0"))
 
 # summary from a crafted .mat (E_motor is stored in Wh)
 data = {"lap_time": 12.5, "vehicle": {"E_motor": np.array([0.0, 1000.0, 2300.0])}}

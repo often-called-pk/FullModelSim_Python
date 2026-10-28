@@ -71,7 +71,7 @@ def load_solution(path):
 
 
 def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="matlab",
-                start_state="matlab", n_tag=""):
+                start_state="matlab", n_tag="", setup_tag=""):
     """File stem (no extension) of a saved MLTP result; casadi-free, so MLTP and
     the GUI build the same name.
 
@@ -82,11 +82,13 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
     ``ctx.n_tag``: ``_hw3p5`` for n_bounds=3.5, ``_nbCustom`` for a (lo, hi) pair),
     plus ``_mesh<Mesh>`` when mesh_requested is neither None
     nor "auto" (e.g. ``_meshCurvature``; the mesh asked for, not the one "auto"
-    resolved to).
+    resolved to), plus ``_<setup_tag>`` last when setup_tag is not empty
+    (userOpts.knob_tag: 8 hex digits for the other setup knobs that differ from
+    their defaults, such as vp_overrides, vi or OPT_ds, listed in data.provenance.setup).
     Default runs (MF205, mesh "auto", physics "matlab", start_state "matlab", no
-    n_bounds) keep the old stem ``<circuit>_<cfg>``; any other tyre set / mesh /
-    physics / start state / lateral band gets its own file instead of overwriting
-    the default one."""
+    n_bounds, no other knob) keep the old stem ``<circuit>_<cfg>``. Any other tyre set /
+    mesh / physics / start state / lateral band / knob gets its own file instead of
+    overwriting the default one."""
     stem = f"{circuit}_{cfg}"
     if tyre_set != "MF205":
         stem += f"_{tyre_set}"
@@ -98,4 +100,6 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
         stem += f"_{n_tag}"
     if mesh_requested is not None and mesh_requested != "auto":
         stem += f"_mesh{mesh_requested.capitalize()}"
+    if setup_tag:
+        stem += f"_{setup_tag}"
     return stem

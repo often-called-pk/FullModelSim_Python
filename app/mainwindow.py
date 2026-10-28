@@ -474,9 +474,10 @@ class MainWindow(QMainWindow):
             self._append_log(f"\n[solve exited with code {code}]\n")
 
     def _show_results(self, rc):
+        tag = rc.setup_tag()
         mat = results.result_mat_path(rc.output_dir, rc.circuit, rc.AeroConfig,
                                       rc.ATD, rc.Electric_4Motors,
-                                      rc.tyre_set, rc.mesh)
+                                      rc.tyre_set, rc.mesh, tag)
         try:
             summ = results.parse_summary(mat)
             e = summ["energy_kWh"]
@@ -487,7 +488,7 @@ class MainWindow(QMainWindow):
             self.summary.setText(f"Results unreadable: {exc}")
         pdir = results.plot_dir(rc.output_dir, rc.circuit, rc.AeroConfig,
                                 rc.ATD, rc.Electric_4Motors,
-                                rc.tyre_set, rc.mesh)
+                                rc.tyre_set, rc.mesh, tag)
         self.plot_list.clear()
         for p in results.list_plots(pdir):
             it = QListWidgetItem(os.path.basename(p))

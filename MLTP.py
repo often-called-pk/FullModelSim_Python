@@ -12,7 +12,9 @@ The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
 tyre set / physics / start state / lateral band / mesh request appends _<tyre_set> /
 _physCorrected / _start<State> / _hw<W> or _nbCustom / _mesh<Mesh>, see
 functions.importfile.result_stem;
-an adaptively refined solve, refine=..., saves as _meshAdaptive). The saved
+an adaptively refined solve, refine=..., saves as _meshAdaptive). Any other setup knob
+that differs from its default, such as vp_overrides, vi or OPT_ds, appends _<8 hex
+digits> (userOpts.setup_knobs), and data['provenance'] lists the knobs. The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
 re-solving. Plotly figures are produced by plotSDI.py.
@@ -43,7 +45,7 @@ from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       interp_inputs, compute_time, time_at_points,
                                       reconstruct_track)
-from userOpts import userOpts
+from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 from vehModel import vehModel, rolling_start
 from MLTP_initial import MLTP_initial
 
@@ -336,7 +338,14 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     ``n_bounds`` (a userOpts kwarg, default None) replaces the model's +-4 m bound on the lateral
     offset n of the CG path by a band: a number W (-W..W) or a (lo, hi) pair, see
     userOpts._parse_n_bounds. The result saves as <stem>_hw<W> or <stem>_nbCustom, with data['n_tag']
-    and the per-point bounds in data.track.n_lo / n_hi (the drawn track edges)."""
+    and the per-point bounds in data.track.n_lo / n_hi (the drawn track edges).
+
+    Any other setup knob that differs from its default adds _<8 hex digits> to the result stem, so a knob run
+    never overwrites the default result. The knobs are TyreModel and every userOpts argument outside
+    userOpts._NOT_SETUP (userOpts.setup_knobs). A number n_bounds is in the stem already, so only a (lo, hi)
+    pair is a knob. data['setup_tag'] holds the digits (absent for the default setup). data['provenance'] holds the
+    code version (git describe), the knobs, how the solve ran (warm start source, linear solver, IPOPT
+    overrides as JSON text) and the parameter values of the model. ctx.out_path is the file that save=True wrote."""
     t0 = time.time()
     elapsed = {}
     hom_steps = useropts_kwargs.pop("_homotopy_steps", None)    # set by a homotopy's last step
@@ -346,6 +355,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     userOpts(ctx, circuit=circuit, vi=vi, ni=ni, AeroConfig=AeroConfig,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
     vp, pt = ctx.vp, ctx.pt
+    knobs = setup_knobs(dict(useropts_kwargs, vi=vi, ni=ni, TyreModel=TyreModel))
+    setup_tag = knob_tag(knobs)
     ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
     lname, chain = resolve_ladder(ladder)       # cold-start ladder (ValueError if unknown)
     sched = None if homotopy is None or homotopy is False else homotopy_schedule(homotopy)
@@ -353,6 +364,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ctx.opts["ipopt"].setdefault("ma57_pre_alloc", MA57_PRE_ALLOC)
 
     # ---- warm start: data.init (7-state) or a previous full result -------
+    src_name = "none"                   # provenance: where the warm start came from
+    if isinstance(warm_start, (str, os.PathLike)):
+        src_name = os.path.basename(os.fspath(warm_start))
+    elif warm_start is not None:
+        src_name = "memory"
     src_full = None                     # previous 23-state result, if given
     init = None
     if warm_start is None:
@@ -711,6 +727,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     }
     if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
         data["n_tag"] = ctx.n_tag
+    if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
+        data["setup_tag"] = setup_tag
+    data["provenance"] = provenance_record(
+        knobs, ctx, source=src_name, linear_solver=ctx.opts["ipopt"].get("linear_solver"), jit=ctx.jit, cse=ctx.cse,
+        ipopt_overrides=ctx.ipopt_overrides, casadi=ca.__version__)
     data["ladder"] = dict(ladder_rec)   # cold-start ladder + what its lower rungs cost (metadata)
     if hom_steps is not None:           # last step of MLTP(homotopy=...): the record of every step
         data["homotopy"] = homotopy_record(list(hom_steps) + [dict(
@@ -731,9 +752,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
         stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
                            getattr(ctx, "mesh_requested", "auto"),
-                           getattr(ctx, "physics", "matlab"), ctx.start_state, n_tag=ctx.n_tag)
+                           getattr(ctx, "physics", "matlab"), ctx.start_state, n_tag=ctx.n_tag,
+                           setup_tag=setup_tag)
         out_path = os.path.join(results_dir, f"{stem}.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
+        ctx.out_path = out_path
         print(f"Saved optimal solution -> {out_path}")
 
     summary = (f"[MLTP] circuit={circuit}  config={AeroConfig}/ATD={ctx.ATD}/EM4={ctx.Electric_4Motors}  "

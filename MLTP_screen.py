@@ -17,7 +17,9 @@ setup once ctx exists), never an optimum: the line is fixed to the centreline
 Output schema follows MLTP where it can (s_full/k_full from discretise(),
 lap_time, track, N, circuit/AeroConfig/ATD/EM4, mesh/mesh_opts/tyre_set/physics), plus the
 QSS profile and envelope; data.fidelity = 'qss'. Note t_opt is sampled at s_full (the NLP's
-t_opt is at the N+1 knots). Saved to Results/<circuit>_<cfg>_qss.mat.
+t_opt is at the N+1 knots). Saved to Results/<circuit>_<cfg>_qss.mat. A setup knob that differs
+from its default (vp_overrides, vi, OPT_ds, load_model, ds_fine and more, see userOpts.setup_knobs)
+appends _<8 hex digits> before _qss.
 """
 
 import os
@@ -32,7 +34,7 @@ from functions.ggv import build_envelope, march
 from functions.importfile import result_stem
 from functions.mesh import mesh_opts_record
 from functions.transcription import discretise, reconstruct_track
-from userOpts import userOpts
+from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 
 # vehModel hard-codes the lateral-offset bound n in [-4, 4] m (x_lim row 4) and
 # MLTP plots the track limits with n_width = 2*x_s[3]*x_max[3] = 8 m; mirrored
@@ -54,6 +56,8 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vi=vi, AeroConfig=AeroConfig, ATD=ATD,
              Electric_4Motors=Electric_4Motors, **useropts_kwargs)
+    knobs = setup_knobs(dict(useropts_kwargs, vi=vi, load_model=load_model, ds_fine=ds_fine))
+    setup_tag = knob_tag(knobs)
     t1 = time.perf_counter()
 
     env = build_envelope(ctx, load_model=load_model)
@@ -92,9 +96,12 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
         "tyre_set": getattr(ctx, "tyre_set", "MF205"),
         "mf_overrides": list(getattr(ctx, "mf_overrides", [])),
         "physics": getattr(ctx, "physics", "matlab"),
+        "provenance": provenance_record(knobs),
         "note": "ESTIMATE (QSS screen): centreline n=0, quasi-steady point mass, "
                 "no transients - not an optimum; see MLTP() for the NLP solution",
     }
+    if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
+        data["setup_tag"] = setup_tag
     ctx.data = SimpleNamespace(**data)
     ctx.envelope = env
     ctx.elapsed = {"setup": t1 - t0, "envelope": t2 - t1, "grid": t3 - t2,
@@ -108,7 +115,7 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
             getattr(ctx, "mesh_requested", "auto"),
             getattr(ctx, "physics", "matlab"),
             getattr(ctx, "start_state", "matlab"),
-            n_tag=getattr(ctx, "n_tag", "")) + "_qss.mat")
+            n_tag=getattr(ctx, "n_tag", ""), setup_tag=setup_tag) + "_qss.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         ctx.out_path = out_path
         if verbose:

@@ -4,7 +4,7 @@ only describes how each parameter is labelled, ranged, and edited.
 """
 from dataclasses import dataclass
 
-from vehParams import default_primaries, _default_mf, _MF205_OVERRIDES, TYRE_SETS, PRIMARY_KEYS, MF_KEYS
+from vehParams import all_vp_defaults  # noqa: F401  (moved to vehParams in E2: userOpts needs it and must not import the app)
 
 
 @dataclass
@@ -17,16 +17,6 @@ class ParamMeta:
     step: float = 0.1
     decimals: int = 6
     kind: str = "spin"          # "spin" -> QDoubleSpinBox, "sci" -> ScientificField
-
-
-def all_vp_defaults(tyre_set="MF205"):
-    """Full adjustable parameter set (primaries + Pacejka mf for `tyre_set`) as a flat dict."""
-    if tyre_set not in TYRE_SETS:
-        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
-    mf = dict(vars(_default_mf()))
-    if tyre_set == "MF205":
-        mf.update(_MF205_OVERRIDES)
-    return {**default_primaries(), **mf}
 
 
 def fmt_sci(x):
