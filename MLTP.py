@@ -143,6 +143,20 @@ def build_path_constraints(ca, m, pt, TyreModel=None):
     return hnames, h, np.array(h_lb, dtype=float), np.array(h_ub, dtype=float)
 
 
+def colloc_path_rows(ctx, hnames):
+    """B3 (between_knots='linear+power'): indices into the rows of build_path_constraints that also hold at the
+    collocation points. They are motor_power* and pack_power, with the bounds of the knot rows.
+    The rpm rows stay out. The Om state box (Vmax / Rw) caps the motor speed at gear * Vmax / Rw.
+    At the defaults the cap is 0.885 OMmax, so the rpm rows cannot bind. tests/test_between_knots.py pins the cap.
+    EM4 under physics='matlab' gets none: its rows use Om / gear and never bind.
+    ponytail: vp_overrides can lift the cap above OMmax (gear * Vmax / Rw > OMmax). That is gear above 8.19
+    (A5, corrected) or Rw below 0.3143 m (any physics). Then the rpm rows can bind at the knots, and no row checks
+    the motor speed between the knots. Add the rpm rows then."""
+    if ctx.pt.EM4 and ctx.physics != "corrected":
+        return []
+    return [i for i, n in enumerate(hnames) if n.startswith("motor_power") or n == "pack_power"]
+
+
 # quasi_static_states (rows 5-22 seeded from vx: rolling wheels, suspension at rest,
 # static tyre deflections) lives in functions/ladder.py and is imported above, so
 # MLTP.quasi_static_states is the object warmstart_guesses, warmstart_refined and
@@ -215,7 +229,7 @@ def warmstart_guesses_full(ctx, m, src, disc):
                              m.x_s, m.u_s)
 
 
-def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False):
+def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0):
     """Warm start from a previous full 23-state result: (guesses, warm, mode).
     Identical NLP structure (sizes, input_keys, collocation grid; setup / tyre
     values may differ, that is the sweep case) -> warm carries the saved w_opt
@@ -224,12 +238,14 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False):
     start. A source solved with another tyre set is no start at all:
     (None, None, "cold"), the caller falls back to the 7-state init.
     ``strict`` (set by MLTP(continue_from='auto')): raise ValueError with the reasons
-    if the planned mode is not full+duals or full-primal. There is no fallback."""
+    if the planned mode is not full+duals or full-primal. There is no fallback.
+    ``n_col`` (B3): the path rows per collocation point of this NLP (len of colloc_path_rows, 0 by default)."""
     n_per = (m.nx + m.nu) if ctx.periodic else 0
-    expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh, n_periodic=n_per),
+    expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh, n_periodic=n_per,
+                                  n_pathcol=n_col * disc["N"] * ctx.OPT_d),
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                     x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
-                    start_state=ctx.start_state)
+                    start_state=ctx.start_state, between_knots=ctx.between_knots)
     warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
                                             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
     if strict and warm is None:
@@ -276,7 +292,7 @@ def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
     for X in (x0, xc0):
         X[5:] = quasi_static_states(ctx.vp, X[0] * x_s[0],
                                     getattr(ctx, "physics", "matlab")) / x_s[5:, None]
-    u0 = nlp_inputs(prev_disc, Uk, disc_new["s_knot"], ctx.OPT_uinter)
+    u0 = nlp_inputs(prev_disc, Uk, disc_new["s_knot"], ctx.OPT_uinter, ctx.linear_inputs)
     return {"x0": x0, "u0": u0, "xc0": xc0}
 
 
@@ -345,6 +361,16 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     userOpts._parse_n_bounds. The result saves as <stem>_hw<W> or <stem>_nbCustom, with data['n_tag']
     and the per-point bounds in data.track.n_lo / n_hi (the drawn track edges).
 
+    ``between_knots`` (a userOpts kwarg) sets what the NLP does between two knots. 'matlab' (default) keeps
+    MATLAB's arithmetic. The dynamics at the collocation points see U_k + duk * tau, with duk per metre.
+    That is a near hold of U_k. The path rows apply at the knots only. 'linear' feeds the dynamics the linear
+    input U_k + (U_k+1 - U_k) * tau (same rows and variables). 'linear+power' adds the motor power rows
+    (pack_power too) at the N * OPT_d collocation points (colloc_path_rows). Then n_g grows by the rows per point
+    * N * OPT_d, and structure.n_pathcol records it. EM4 under physics='matlab' gets no such row, so there
+    'linear+power' equals 'linear' (n_pathcol 0). The 7-state init keeps the MATLAB arithmetic.
+    data['between_knots'] holds the value when it is not 'matlab'. A source result of another between_knots
+    seeds the primal only (no multipliers). optimise_design and the setup sweep raise on a value other than 'matlab'.
+
     Any other setup knob that differs from its default adds _<8 hex digits> to the result stem, so a knob run
     never overwrites the default result. The knobs are TyreModel and every userOpts argument outside
     userOpts._NOT_SETUP (userOpts.setup_knobs). A number n_bounds is in the stem already, so only a (lo, hi)
@@ -363,7 +389,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
       - the default result is missing
       - the default result holds setup knobs (data.provenance.setup)
       - its IPOPT status is not Solve_Succeeded or Solved_To_Acceptable_Level
-      - it does not fit this NLP (other N, mesh grid, input channels, path rows, tyre set or start_state)
+      - it does not fit this NLP (other N, mesh grid, input channels, path rows, tyre set, start_state or between_knots)
 
     Then solve the default setup first, or pass warm_start. A result saved before E2 has no provenance:
     MLTP trusts its file name. A solve that does not converge gives a warning. The result saves under its
@@ -479,6 +505,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     # ---- OCP: path constraints (powertrain; + friction circles if PureSlip) ----
     hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
     h_eq = ca.Function("h_eq", [m.x, m.u, m.pv], [h], ["x", "u", "pv"], ["h"], fn_opts(ctx))
+    # B3: the power rows at the collocation points (between_knots='linear+power'). n_col = rows per point.
+    h_col_rows = colloc_path_rows(ctx, hnames) if ctx.power_at_col else []
+    n_col = len(h_col_rows)
 
     # ---- discretisation ---------------------------------------------------
     disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,
@@ -545,7 +574,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     if src_full is not None:
         guesses, warm, ws_mode = warmstart_full(ctx, m, src_full, disc, len(hnames),
                                                 use_duals=warm_start_duals,
-                                                strict=continue_from is not None)
+                                                strict=continue_from is not None, n_col=n_col)
         if ws_mode == "cold":
             src_full = None
     if src_full is None:                # cold start through the ladder (or the given init)
@@ -560,7 +589,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub, disc_, guesses_, reg,
             m.duk_lb, m.duk_ub, ctx.Xi, ctx.Xf,
             ctx.OPT_d, ctx.OPT_uinter, ctx.OPT_e, opts_, warm=warm_,
-            Xi_tol=ctx.Xi_tol, periodic=ctx.periodic)
+            Xi_tol=ctx.Xi_tol, periodic=ctx.periodic, linear_inputs=ctx.linear_inputs, h_col_rows=h_col_rows)
 
     res = _solve(disc, guesses, warm, ctx.opts)
     if "nlp_fg" in res:                 # MLTP_KEEP_NLP=1 (validation gate 2): kept on ctx, never saved
@@ -631,7 +660,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             pl = r["payload"]
             x_n, u_n, xc_n = pl["scaled"]
             t1 = time.perf_counter()
-            de = defect_errors(f_dyn, pl["disc"], ctx.track, x_n, xc_n, u_n, None, ctx.OPT_uinter)
+            de = defect_errors(f_dyn, pl["disc"], ctx.track, x_n, xc_n, u_n, None, ctx.OPT_uinter,
+                               linear_inputs=ctx.linear_inputs)
             return de["E"][ind_rows].max(axis=0), dict(dT=de["dT"], t_eval=time.perf_counter() - t1)
 
         first = _pass(res, disc, "base", ws_mode, elapsed["solve"])
@@ -659,7 +689,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ctx.refine_log = refine_log
 
     if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, len(hnames),
-                                         n_periodic=(m.nx + m.nu) if ctx.periodic else 0):
+                                         n_periodic=(m.nx + m.nu) if ctx.periodic else 0,
+                                         n_pathcol=n_col * N * ctx.OPT_d):
         warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
                       f"transcription ({res['structure']}): dual re-injection is unreliable")
 
@@ -714,8 +745,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                  ("sf", m.sf)]                                                         # dt/ds [s/m]
     labels = [k for k, _ in veh_syms]
     f_veh = ca.Function("f_veh", [m.x, m.u, m.pv], [s for _, s in veh_syms], fn_opts(ctx))
-    # One call on every point. The NLP dynamics use near-hold inputs at the collocation points, not u_full.
-    u_nlp = nlp_inputs(disc, u_opt, disc["s_full"], ctx.OPT_uinter)
+    # One call on every point. The NLP dynamics use near-hold inputs at the collocation points, not u_full
+    # (with between_knots != 'matlab' they use the linear input, and u_nlp equals u_full).
+    u_nlp = nlp_inputs(disc, u_opt, disc["s_full"], ctx.OPT_uinter, ctx.linear_inputs)
     vv = f_veh(x_full / m.x_s[:, None], u_nlp / m.u_s[:, None], disc["pv_full"])
     vehicle_full = {labels[i]: np.array(vv[i]).reshape(-1) for i in range(len(labels))}
     vehicle = {k: v[::ctx.OPT_d + 1] for k, v in vehicle_full.items()}       # the knots
@@ -765,6 +797,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     }
     if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
         data["n_tag"] = ctx.n_tag
+    if ctx.between_knots != "matlab":   # B3: a result without the field is 'matlab'
+        data["between_knots"] = ctx.between_knots
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
         data["setup_tag"] = setup_tag
     data["provenance"] = provenance_record(

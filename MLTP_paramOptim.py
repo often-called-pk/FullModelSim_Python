@@ -77,7 +77,9 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     ``start_state`` (a userOpts kwarg) works as in MLTP, except that 'rolling' raises
     ValueError: its start equilibrium depends on the design parameters. data.start_state and
     data.Xi record the start box. ``n_bounds`` (a userOpts kwarg) works as in MLTP: the result
-    saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag.
+    saves as <stem>_hw<W> or <stem>_nbCustom, with data.n_tag. ``between_knots`` (a userOpts kwarg)
+    other than 'matlab' raises ValueError: this NLP keeps MATLAB's arithmetic between the knots.
+    A source result of another between_knots seeds the primal only.
     Any other setup knob that differs from its default (vp_overrides, vi, OPT_ds and more, see userOpts.setup_knobs)
     appends _<8 hex digits> to the stem and appears in data.provenance.setup, as in MLTP. The promoted parameters and their
     bounds (param_specs, Fz0_shift_bounds) are not part of the name. ctx.out_path is the file that save=True wrote.
@@ -102,6 +104,9 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     if ctx.start_state == "rolling":
         raise ValueError("optimise_design: start_state='rolling' is not supported, the start "
                          "equilibrium depends on the design parameters; use 'matlab' or 'periodic'")
+    if ctx.between_knots != "matlab":
+        raise ValueError(f"optimise_design does not support between_knots={ctx.between_knots!r}. The "
+                         "co-optimisation NLP keeps MATLAB's arithmetic between the knots. Use between_knots='matlab'.")
     vp, pt = ctx.vp, ctx.pt
 
     # ---- promote design parameters: replace vp floats with SX symbols -----
@@ -175,7 +180,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
                                       n_periodic=n_per),
                         input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                         x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
-                        start_state=ctx.start_state)
+                        start_state=ctx.start_state, between_knots=ctx.between_knots)
         warm, ws_mode, note = plan_design_warm_start(
             src_full, expected, p_x0, use_duals=warm_start_duals,
             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))

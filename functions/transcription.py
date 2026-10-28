@@ -241,7 +241,8 @@ def _pad_last(M, ca):
 def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
                         disc, guesses, reg, duk_lb, duk_ub,
                         Xi, Xf, OPT_d, OPT_uinter, OPT_e, opts, param=None,
-                        sym_type=None, warm=None, Xi_tol=None, periodic=False, build_only=False):
+                        sym_type=None, warm=None, Xi_tol=None, periodic=False, build_only=False,
+                        linear_inputs=False, h_col_rows=None):
     """Assemble and solve the collocation NLP. Mirrors the NLP sections of
     MLTP_initial.m / MLTP.m exactly.
 
@@ -285,14 +286,21 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     build_only: True returns dict(nlp, structure, warm_info, w0, lbw, ubw, lbg, ubg) before the solver exists, plus
               lam_g0 and lam_x0 when the warm start accepted them (functions/sensitivity.setup_gradients). It
               does not solve. False (default) solves and returns the dict below.
+    linear_inputs: True (B3) feeds the dynamics at the collocation points the linear input
+              U_k + (U_k+1 - U_k) * tau_j. False (default) keeps MATLAB's U_k + duk * tau_j with duk per metre,
+              a near hold of U_k. No extra row or variable.
+    h_col_rows: None or [] (default) adds no row. A list of row indices of h_eq (B3) adds those rows at the
+              N*d collocation points too. The rows use the inputs the dynamics see and the bounds h_lb / h_ub.
+              The rows go LAST in g, after the periodic rows, point by point.
+              g[off + n_rows * c + i] is row i at collocation point c. structure["n_pathcol"] is n_rows * N * OPT_d.
     Returns : dict(sol, solver, N, nx, nu, ny, Xk, Uk, Yk, Xkj, dt_opt,
               sym_type, t_build, w_opt, lam_g, lam_x, n_w, n_g, structure,
               warm_info, linear_solver) -- t_build = NLP construction wall
               time [s] (entry -> just before the IPOPT call, incl. nlpsol
               creation); w_opt/lam_g/lam_x = numpy primal/dual solution;
-              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic}
+              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic, n_pathcol}
               (what a later solve must match to re-inject them). n_periodic is
-              nx + nu with periodic=True, else 0. warm_info = which
+              nx + nu with periodic=True, else 0. n_pathcol is the h_col_rows count * N * OPT_d, else 0. warm_info = which
               warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
               linear_solver = the one actually used (after any HSL fallback).
               With env MLTP_KEEP_NLP=1 also nlp_fg (Function w -> (J, g)) and
@@ -370,6 +378,8 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     def _at_points(V, dV):
         if OPT_uinter == "linear":
             tau_rep = ca.DM(np.tile(np.asarray(tau).reshape(1, -1), (V.size1(), N)))
+            if linear_inputs:                           # B3: the increment over the interval, not the per-metre slope
+                dV = V[:, 1:] - V[:, :-1]
             return V[:, rep] + dV[:, rep] * tau_rep
         return V[:, rep]
 
@@ -454,18 +464,26 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     gper = [ca.vertcat(Xk[:, N] - Xk[:, 0], Uk[:, N] - Uk[:, 0])] if periodic else []
     zper = [np.zeros((nx + nu, 1))] if periodic else []
 
+    # B3: extra path rows at the collocation points, the inputs as the dynamics see them (dyn_args has h_eq's arguments)
+    gpc, lbpc, ubpc = [], [], []
+    rows_c = list(h_col_rows or [])
+    if rows_c:
+        gpc = [ca.reshape(h_eq.map(nd)(*dyn_args)[rows_c, :], -1, 1)]
+        lbpc = [np.tile(np.asarray(h_lb, float).reshape(-1)[rows_c].reshape(-1, 1), (nd, 1))]
+        ubpc = [np.tile(np.asarray(h_ub, float).reshape(-1)[rows_c].reshape(-1, 1), (nd, 1))]
+
     # assemble g and bounds
-    g = ca.vertcat(*gb, *gck, ghk, gduk, *gper)
+    g = ca.vertcat(*gb, *gck, ghk, gduk, *gper, *gpc)
     lbg = np.vstack(lbg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_lb).reshape(-1, 1), (N + 1, 1))]
                     + [np.tile(np.asarray(duk_lb).reshape(-1, 1), (N, 1))]
-                    + zper)
+                    + zper + lbpc)
     ubg = np.vstack(ubg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_ub).reshape(-1, 1), (N + 1, 1))]
                     + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))]
-                    + zper)
+                    + zper + ubpc)
 
     # per-point lateral band (userOpts n_bounds; n is state row 3 in both models): it replaces the
     # model's +-4 m at the knots, at the collocation points and in the start / end box of n.
@@ -490,7 +508,8 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     n_w, n_g = int(w.size1()), int(g.size1())
     structure = dict(nx=int(nx), nu=int(nu), ny=int(ny), N=int(N), OPT_d=int(OPT_d),
                      n_w=n_w, n_g=n_g, n_param=int(P.numel()) if has_param else 0,
-                     n_periodic=int(nx + nu) if periodic else 0)
+                     n_periodic=int(nx + nu) if periodic else 0,
+                     n_pathcol=len(rows_c) * nd)
     solve_kw = {}
     warm_info = dict(x0=False, lam_g0=False, lam_x0=False, ipopt=False, duals=False)
     if warm:

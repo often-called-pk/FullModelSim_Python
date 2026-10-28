@@ -924,6 +924,9 @@ def _precheck_base(src, base_ctx, disc, nh, circuit, label):
     want = str(getattr(base_ctx, "start_state", "matlab"))
     if have != want:
         reasons.append(f"start_state {have!r} != {want!r}")
+    have = str(get_field(src, "between_knots", None) or "matlab").strip()
+    if have != "matlab":
+        reasons.append(f"between_knots {have!r} != 'matlab'")
     c = get_field(src, "circuit", None)
     if c is not None and str(c).strip() != circuit:
         reasons.append(f"circuit {str(c).strip()!r} != {circuit!r}")
@@ -1059,6 +1062,9 @@ class _Sweep:
                           Electric_4Motors=self.Electric_4Motors, vp_overrides=self.base_ov,
                           ipopt_overrides=user_ip or None, **kw)
         self.rewarn(rec)
+        if bc.between_knots != "matlab":
+            raise SweepError(f"The setup sweep does not support between_knots={bc.between_knots!r}. It supports only "
+                             "MATLAB's arithmetic between the knots. Use between_knots='matlab'.")
         self.base_ctx = bc
         self.eATD, self.eEM4 = bc.ATD, bc.Electric_4Motors
         self.config = f"{self.AeroConfig}_ATD{self.eATD}_EM4{self.eEM4}"

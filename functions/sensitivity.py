@@ -36,19 +36,20 @@ def nlp_index(structure):
     The layout copies the packing in build_and_solve_nlp. Change the two together.
     The rows of w are X (nx, N+1), U (nu, N+1), Y (ny, N+1), XC (nx, N*d) and P (n_param,).
     The rows of g are start (nx,), end (nx,), defect (nx, N*d), cont (nx, N), h (nh, N+1),
-    rate (nu, N) and periodic (n_periodic,).
+    rate (nu, N), periodic (n_periodic,) and pathcol (n_pathcol,).
+    The pathcol rows are the B3 path rows at the collocation points, point by point.
     Column c = d*k + j of XC and defect is collocation point j of interval k.
     The dict also holds the ints n_w, n_g and nh.
-    A missing n_param or n_periodic counts as 0.
+    A missing n_param, n_periodic or n_pathcol counts as 0.
     Raise ValueError if the sizes do not fit the packing.
     """
     nx, nu, ny, N, d, n_w, n_g = (int(get_field(structure, k)) for k in
                                   ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g"))
-    n_param, n_per = (int(get_field(structure, k, 0)) for k in ("n_param", "n_periodic"))
-    nh, rest = divmod(n_g - 2 * nx - (d + 1) * N * nx - nu * N - n_per, N + 1)
+    n_param, n_per, n_pc = (int(get_field(structure, k, 0)) for k in ("n_param", "n_periodic", "n_pathcol"))
+    nh, rest = divmod(n_g - 2 * nx - (d + 1) * N * nx - nu * N - n_per - n_pc, N + 1)
     if rest or nh < 0 or n_w != (nx + nu + ny) * (N + 1) + nx * N * d + n_param:
         raise ValueError(f"The NLP sizes do not fit the packing: n_w {n_w}, n_g {n_g}, nx {nx}, "
-                         f"nu {nu}, ny {ny}, N {N}, d {d}, n_param {n_param}, n_periodic {n_per}.")
+                         f"nu {nu}, ny {ny}, N {N}, d {d}, n_param {n_param}, n_periodic {n_per}, n_pathcol {n_pc}.")
     i, j = np.arange(nx)[:, None], np.arange(nu)[:, None]
     k, c = np.arange(N + 1), np.arange(N * d)
     off_h = 2 * nx + (d + 1) * nx * N
@@ -65,6 +66,7 @@ def nlp_index(structure):
         h=off_h + np.arange(nh)[:, None] + nh * k,
         rate=off_r + j + nu * k[:N],
         periodic=off_r + nu * N + np.arange(n_per),
+        pathcol=off_r + nu * N + n_per + np.arange(n_pc),
         n_w=n_w, n_g=n_g, nh=nh)
 
 
@@ -113,6 +115,8 @@ def limit_prices(data, Pmax=None):
     - vi [s per m/s]: the centre of the start speed box. NaN if the start has no speed box.
     Tmax and Pmax are NaN if u_opt has a motor torque below -1e-6 u_s (regen, vp_overrides Preg). Their formulas
     assume no regen. IPOPT's bound relaxation (1e-8 u_s) is not regen.
+    Pmax is NaN too when the result has path rows at the collocation points (n_pathcol > 0, between_knots='linear+power').
+    Those rows carry part of the price, and this function does not sum them.
     ``Pmax`` [W] is the rating that the solve used. None takes the default of Powertrain.
     Raise ValueError if the result has no nlp record or the multipliers do not fit it.
     """
@@ -135,6 +139,8 @@ def limit_prices(data, Pmax=None):
     u = get_field(data, "u_opt")
     if u is not None and (np.asarray(u)[jm] < -1e-6 * r.u_s[jm, None]).any():
         Tmax = power = np.nan           # regen: the -Tmax and P >= -Preg bounds have no price here
+    if r.ix["pathcol"].size:
+        power = np.nan                  # B3: the collocation power rows carry part of the Pmax price, not summed here
     vi = np.nan if r.xi is not None and np.isnan(r.xi[0]) else -r.lg[r.ix["start"][0]] / r.x_s[0]
     prices = dict(W=n_hi - n_lo, n_hi=n_hi, n_lo=n_lo, Tmax=Tmax, Tbrake_max=Tbrake_max,
                   Pmax=power, vi=vi)
@@ -193,6 +199,7 @@ def setup_gradients(data, params, tol=1e-3, **kw):
       mesh or option, or a co-optimisation result that has its own design parameters.
     - the stored point is not an optimum of the rebuilt NLP: the dual residual |grad L| is above
       tol * (1 + max|lam_g|), or a bound is violated by more than tol. The setup differs from the solve.
+    - ``kw`` holds a between_knots value other than 'matlab' (optimise_design refuses it).
     """
     import casadi as ca
     from MLTP_paramOptim import optimise_design

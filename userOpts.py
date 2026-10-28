@@ -171,6 +171,16 @@ START_STATES = ("matlab", "rolling", "periodic")
 ROLL_TOL = 1e-3  # ponytail: fixed chassis start-box half-width, promote to a kwarg when tuning matters
 CLOSED_CIRCUITS = ("BCN", "Jarama", "Spa", "NBR", "Circle")
 
+# userOpts(between_knots=...) sets what the 23-state NLP does between two knots (B3). The check is case-sensitive.
+#   'matlab'       (default) MATLAB's arithmetic. The dynamics at the collocation points see U_k + duk * tau.
+#                  duk is per metre, so the input is a near hold of U_k. The path rows apply at the knots only.
+#   'linear'       the dynamics see the linear input U_k + (U_k+1 - U_k) * tau. Same rows, same variables.
+#   'linear+power' 'linear', plus the motor power rows (and the pack row) at the N * OPT_d collocation points.
+#                  EM4 under physics='matlab' gets no such row, so there it equals 'linear' (n_pathcol 0).
+# The power rows need the linear input. With the near hold they would derate U_k by the speed at the end of the interval.
+# The 7-state init keeps the MATLAB arithmetic in every mode.
+BETWEEN_KNOTS = ("matlab", "linear", "linear+power")
+
 
 def _parse_n_bounds(n_bounds, s):
     """userOpts(n_bounds=...) -> (lo, hi, tag): float arrays on the track stations ``s`` [m]
@@ -412,7 +422,8 @@ def userOpts(ctx,
              Steering="NA",                # 'NA' | 'Ackermann': front steering geometry (vehModel)
              CamberGain="Off",             # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
              start_state="matlab",         # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
-             n_bounds=None):               # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
+             n_bounds=None,                # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
+             between_knots="matlab"):      # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
@@ -426,6 +437,12 @@ def userOpts(ctx,
         raise ValueError(f"start_state='periodic' needs a closed circuit, one of "
                          f"{list(CLOSED_CIRCUITS)}, got {circuit!r}")
     ctx.start_state, ctx.periodic = start_state, start_state == "periodic"
+
+    # ---- between knots (B3): checked before any work. MLTP reads ctx.linear_inputs and ctx.power_at_col.
+    if between_knots not in BETWEEN_KNOTS:
+        raise ValueError(f"between_knots must be one of {list(BETWEEN_KNOTS)}, got {between_knots!r}")
+    ctx.between_knots = between_knots
+    ctx.linear_inputs, ctx.power_at_col = between_knots != "matlab", between_knots == "linear+power"
 
     # ---- vehModel switches (checked here, read by vehModel through ctx)
     if Steering not in STEERING:
@@ -517,7 +534,7 @@ def userOpts(ctx,
     # ---- collocation options ----------------------------------------------
     ctx.OPT_ds = OPT_ds         # collocation step (m)
     ctx.OPT_d = OPT_d           # degree of interpolating polynomials
-    ctx.OPT_uinter = "linear"   # 'linear' or 'constant' inputs (not exposed)
+    ctx.OPT_uinter = "linear"   # MATLAB's name for U_k + duk * tau (a near hold, see between_knots). 'constant' holds U_k (not exposed)
     ctx.OPT_e = OPT_e           # slack for path constraints / initial guesses
     # knot placement for discretise(): 'uniform' = N equal steps of ~OPT_ds;
     # 'curvature' = the same N redistributed by functions/mesh.curvature_mesh

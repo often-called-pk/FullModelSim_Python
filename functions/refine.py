@@ -26,7 +26,8 @@ nodes tau_0 = 0 and the d Legendre points) take the NLP's own degree-d state
 polynomial p_k through [X_k, X_k1..X_kd], the NLP's own in-interval inputs
 u_k(t) = U_k + (U_{k+1} - U_k) / h_k * t (transcription.build_and_solve_nlp's
 arithmetic, MLTP.m line 345 ``Uk + kron(duk, tau)`` with duk = du/ds: a near hold,
-NOT the linear interpolant; U_k for OPT_uinter='constant'; an aux y the same way)
+NOT the linear interpolant, unless userOpts between_knots is not 'matlab' (B3, then the
+true linear input); U_k for OPT_uinter='constant'; an aux y the same way)
 and kappa(s) = interp(track.s, track.k). On n_sub = 2d equal sub-segments of
 [0, 1] with n_quad = d+1 Gauss points each (one f_dyn.map call for the lap):
 
@@ -287,17 +288,18 @@ def eval_states(disc, Z, s, x_end=None):
     return out
 
 
-def _input_affine(V, dsk, OPT_uinter):
+def _input_affine(V, dsk, OPT_uinter, linear_inputs=False):
     """(a, b) with the NLP's in-interval value a[:, k] + b[:, k] * t, t in [0, 1]:
     'linear' -> a = V_k, b = duk = (V_{k+1} - V_k) / h_k (per metre, used with the
-    normalised t: the transcription's arithmetic); 'constant' -> b = 0."""
+    normalised t: the transcription's arithmetic); 'constant' -> b = 0. With linear_inputs (B3)
+    'linear' gives b = V_{k+1} - V_k, the true linear input."""
     V = np.atleast_2d(np.asarray(V, dtype=float))
     N = dsk.size
     if V.shape[1] != N + 1:
         raise ValueError(f"input array has {V.shape[1]} columns for N + 1 = {N + 1} knots")
     a = V[:, :N]
     if OPT_uinter == "linear":
-        b = (V[:, 1:] - V[:, :-1]) / dsk[None, :]
+        b = (V[:, 1:] - V[:, :-1]) / (1.0 if linear_inputs else dsk[None, :])
     elif OPT_uinter == "constant":
         b = np.zeros_like(a)
     else:
@@ -305,16 +307,17 @@ def _input_affine(V, dsk, OPT_uinter):
     return a, b
 
 
-def nlp_inputs(disc, Uk, s, OPT_uinter="linear"):
+def nlp_inputs(disc, Uk, s, OPT_uinter="linear", linear_inputs=False):
     """The NLP's own input values at the points s: inside interval k
     U_k + duk * t with duk = (U_{k+1} - U_k) / h_k and t = (s - s_k) / h_k in [0, 1]
     (transcription.build_and_solve_nlp evaluates f_dyn with exactly this at the
     collocation points: MLTP.m's Uk + kron(duk, tau), a near hold, NOT the linear
-    interpolant interp_inputs / u_full use); U_k held for 'constant'. Exact U at
-    every knot, including U_N at the last one."""
+    interpolant interp_inputs / u_full use); U_k held for 'constant'. With linear_inputs (B3,
+    userOpts between_knots != 'matlab') the NLP uses the true linear input, so the result equals
+    interp_inputs. Exact U at every knot, including U_N at the last one."""
     s_knot, dsk, _, N = _grid(disc)
     U = np.atleast_2d(np.asarray(Uk, dtype=float))
-    a, b = _input_affine(U, dsk, OPT_uinter)
+    a, b = _input_affine(U, dsk, OPT_uinter, linear_inputs)
     s = _vec(s)
     idx, t = _locate(s_knot, dsk, s)
     out = a[:, idx] + b[:, idx] * t[None, :]
@@ -346,7 +349,7 @@ def _np(v):
 
 
 def defect_errors(f_dyn, disc, track, Xk, Xkj, Uk, Yk=None, OPT_uinter="linear",
-                  n_sub=None, n_quad=None):
+                  n_sub=None, n_quad=None, linear_inputs=False):
     """Integrated defect of the converged collocation solution, per state and interval.
 
     f_dyn   : the model Function the NLP used, (x, u, pv) -> (dx, L) or, with an aux
@@ -357,6 +360,8 @@ def defect_errors(f_dyn, disc, track, Xk, Xkj, Uk, Yk=None, OPT_uinter="linear",
               with unit scales); Uk (nu, N+1) and Yk (ny, N+1) scaled inputs / aux
     n_sub, n_quad : sub-segments of each interval (default 2d) and Gauss points per
               sub-segment (default d+1)
+    linear_inputs : True (B3, userOpts between_knots != 'matlab') when the NLP used the true linear
+              input between the knots. False (default) for MATLAB's near hold.
     Returns dict(E (nx, N), dT (N,), n_eval):
       E[i, k] = max over sigma_e = e/n_sub of |p_ik(sigma_e) - X_ik - h_k int_0^sigma_e f_i dt|
       dT[k]   = h_k * (B . L(X_kj) - int_0^1 L(p_k(t)) dt), the lap-time quadrature defect
@@ -388,11 +393,11 @@ def defect_errors(f_dyn, disc, track, Xk, Xkj, Uk, Yk=None, OPT_uinter="linear",
     tt = np.tile(tq, N)
     kc = np.repeat(np.arange(N), d)
     tc = np.tile(tau, N)
-    ua, ub = _input_affine(Uk, dsk, OPT_uinter)
+    ua, ub = _input_affine(Uk, dsk, OPT_uinter, linear_inputs)
     U_all = np.hstack([ua[:, kk] + ub[:, kk] * tt[None, :], ua[:, kc] + ub[:, kc] * tc[None, :]])
     args = [np.hstack([Pq, Xkj]), U_all]
     if has_aux:
-        ya, yb = _input_affine(Yk, dsk, OPT_uinter)
+        ya, yb = _input_affine(Yk, dsk, OPT_uinter, linear_inputs)
         args.append(np.hstack([ya[:, kk] + yb[:, kk] * tt[None, :],
                                ya[:, kc] + yb[:, kc] * tc[None, :]]))
     s_q = s_knot[kk] + dsk[kk] * tt

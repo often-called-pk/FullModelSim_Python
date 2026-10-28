@@ -24,9 +24,10 @@ from .track_qa import xy_from_gps
 from .warmstart import get_field, vec
 
 G = 9.80665
-# EXACT: the states, the near-hold inputs and the channels built from them. The cubic through the NLP nodes of
-# one interval follows them (0.002 % of range). LINEAR: the force balance. On a 30 m mesh it wiggles between
-# the nodes and a cubic overshoots by up to 60 %. Straight lines join the nodes, so the values stay in range.
+# EXACT: the states, the inputs the NLP sees (a near hold, or linear with between_knots) and the channels built from
+# them. The cubic through the NLP nodes of one interval follows them (0.002 % of range). LINEAR: the force balance.
+# On a 30 m mesh it wiggles between the nodes and a cubic overshoots by up to 60 %. Straight lines join the nodes,
+# so the values stay in range.
 EXACT = ("delta", "throttle", "om_gear", "xs_fl", "xs_fr", "xs_rl", "xs_rr")
 LINEAR = ("ax", "ay")
 STATES = ("vx", "vy", "r", "n", "eps")                      # rows 0-4 of x_full
