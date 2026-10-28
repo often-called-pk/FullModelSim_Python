@@ -35,12 +35,14 @@ STATES = ("vx", "vy", "r", "n", "eps")                      # rows 0-4 of x_full
 
 def _cubic(data, rows, s_out):
     """Interpolate rows (n, len(s_full)) per interval through its NLP nodes (the knot and the d collocation
-    points). An input jump at a knot stays a jump. Returns (n, len(s_out))."""
+    points). An input jump at a knot stays a jump. The points are those of data.collocation (absent: 'legendre').
+    Returns (n, len(s_out))."""
     d = int(data.OPT_d)
     s_full = np.asarray(data.s_full, float)
     knot = np.zeros(s_full.size, bool)
     knot[:: d + 1] = True
-    disc = dict(s_knot=s_full[knot], dsk=np.diff(s_full[knot]), tau=collocation_points(d, "legendre"))
+    scheme = str(getattr(data, "collocation", "legendre"))
+    disc = dict(s_knot=s_full[knot], dsk=np.diff(s_full[knot]), tau=collocation_points(d, scheme))
     return eval_states(disc, interval_polynomials(disc, rows[:, knot], rows[:, ~knot]), s_out, x_end=rows[:, -1])
 
 

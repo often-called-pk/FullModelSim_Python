@@ -181,6 +181,16 @@ CLOSED_CIRCUITS = ("BCN", "Jarama", "Spa", "NBR", "Circle")
 # The 7-state init keeps the MATLAB arithmetic in every mode.
 BETWEEN_KNOTS = ("matlab", "linear", "linear+power")
 
+# userOpts(collocation=...) sets the collocation points of the 23-state NLP (B4). The check is case-sensitive.
+#   'legendre' (default) Gauss-Legendre points. The NLP is as MATLAB builds it.
+#   'radau'    Radau IIA points. The last point of each interval is the next knot, so s_full repeats every interior
+#              knot. The scheme damps the fast modes that Gauss-Legendre lets swing from knot to knot.
+#              The NLP has the same variables and rows. With between_knots='linear+power', the point on the next knot
+#              gets no power row, so g has N rows fewer per power row.
+#              Its order is 2 OPT_d - 1, against 2 OPT_d for Gauss-Legendre.
+# The 7-state init always uses 'legendre'.
+COLLOCATION = ("legendre", "radau")
+
 
 def _parse_n_bounds(n_bounds, s):
     """userOpts(n_bounds=...) -> (lo, hi, tag): float arrays on the track stations ``s`` [m]
@@ -423,7 +433,8 @@ def userOpts(ctx,
              CamberGain="Off",             # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
              start_state="matlab",         # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
              n_bounds=None,                # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
-             between_knots="matlab"):      # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
+             between_knots="matlab",       # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
+             collocation="legendre"):      # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
@@ -443,6 +454,11 @@ def userOpts(ctx,
         raise ValueError(f"between_knots must be one of {list(BETWEEN_KNOTS)}, got {between_knots!r}")
     ctx.between_knots = between_knots
     ctx.linear_inputs, ctx.power_at_col = between_knots != "matlab", between_knots == "linear+power"
+
+    # ---- collocation scheme (B4): checked before any work. MLTP passes ctx.collocation to discretise().
+    if collocation not in COLLOCATION:
+        raise ValueError(f"collocation must be one of {list(COLLOCATION)}, got {collocation!r}")
+    ctx.collocation = collocation
 
     # ---- vehModel switches (checked here, read by vehModel through ctx)
     if Steering not in STEERING:

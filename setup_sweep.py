@@ -1073,7 +1073,7 @@ class _Sweep:
         self.cfg = dict(circuit=self.circuit, vi=self.vi, ni=self.ni, AeroConfig=self.AeroConfig,
                         ATD=self.eATD, Electric_4Motors=self.eEM4)
         self.disc = discretise(bc.track, bc.OPT_ds, bc.OPT_d, mesh=getattr(bc, "mesh", "uniform"),
-                               mesh_opts=getattr(bc, "mesh_opts", None))
+                               mesh_opts=getattr(bc, "mesh_opts", None), scheme=bc.collocation)
         self.timings["setup_s"] = time.perf_counter() - t0
 
         # 2. field classification

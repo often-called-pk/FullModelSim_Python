@@ -1,4 +1,4 @@
-"""collocation.py - Legendre collocation helpers.
+"""collocation.py - Legendre and Radau collocation helpers.
 
 Provides ``collocation_points(d, scheme)`` and ``collocation_coeff(tau)``,
 matching MATLAB's CasADi helpers used by the MLTP transcription:
@@ -10,6 +10,9 @@ with the exact shapes the transcription relies on:
     C : (d+1) x d   differentiation matrix      ->  dPi = Z * C      (Z is nx x (d+1))
     D : (d+1) x 1   continuity / end-point row  ->  Xk_end = Z * D
     B : d x 1       quadrature (Gauss) weights   ->  J += Qk * B * ds  (Qk is 1 x d)
+
+With scheme 'radau' (Radau IIA, userOpts collocation, B4) the last point is tau = 1,
+D = [0 ... 0 1] and B holds the Radau weights.
 
 When the installed CasADi exposes the native helpers they are used directly
 (guaranteeing identical numerics to the MATLAB run); otherwise a self-contained
@@ -28,7 +31,7 @@ except Exception:                                       # pragma: no cover
 
 
 def collocation_points(d, scheme="legendre"):
-    """Return the d collocation points in the open interval (0,1)."""
+    """Return the d collocation points. 'legendre' gives points in (0, 1). 'radau' gives points in (0, 1], and the last one is 1.0."""
     if _HAS_CASADI:
         return list(_ca.collocation_points(d, scheme))
     if scheme != "legendre":

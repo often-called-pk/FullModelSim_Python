@@ -38,6 +38,7 @@ def nlp_index(structure):
     The rows of g are start (nx,), end (nx,), defect (nx, N*d), cont (nx, N), h (nh, N+1),
     rate (nu, N), periodic (n_periodic,) and pathcol (n_pathcol,).
     The pathcol rows are the B3 path rows at the collocation points, point by point.
+    On a Radau grid they skip the last point of each interval, so they cover OPT_d - 1 points per interval.
     Column c = d*k + j of XC and defect is collocation point j of interval k.
     The dict also holds the ints n_w, n_g and nh.
     A missing n_param, n_periodic or n_pathcol counts as 0.

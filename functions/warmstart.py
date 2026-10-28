@@ -45,7 +45,7 @@ STRUCT_KEYS = ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g", "n_param", "n_perio
 
 # Setup knobs that change the NLP without always changing its sizes: (name, value of a result that has no such
 # field). plan_full_warm_start refuses the multipliers of a source that has another value (primal only).
-WARM_KNOBS = (("start_state", "matlab"), ("between_knots", "matlab"))
+WARM_KNOBS = (("start_state", "matlab"), ("between_knots", "matlab"), ("collocation", "legendre"))
 
 # neutral seeds for input channels a source result does not have (as in
 # MLTP.warmstart_guesses: equal torque split, wings at 0)
@@ -289,7 +289,9 @@ def guesses_from_full(src, s_knot, s_col, input_keys, x_s, u_s):
     """Scaled primal guesses {x0, u0, xc0} for a new grid (s_knot, s_col) from a
     previous full-model result ``src`` (x_opt, u_opt, s_full, OPT_d, x_full,
     input_keys), interpolated by physical s. Works across N / OPT_d / mesh /
-    config changes; no multipliers (primal-only)."""
+    config changes; no multipliers (primal-only).
+    A Radau source (collocation) repeats every interior knot in s_full.
+    The function drops the repeats before the interpolation."""
     x_opt = np.asarray(get_field(src, "x_opt"), dtype=float)
     u_opt = np.atleast_2d(np.asarray(get_field(src, "u_opt"), dtype=float))
     s_full = vec(get_field(src, "s_full"))
@@ -300,7 +302,8 @@ def guesses_from_full(src, s_knot, s_col, input_keys, x_s, u_s):
     x0 = interp_rows(s_knot_src, x_opt, s_knot)
     x_full = get_field(src, "x_full")
     if x_full is not None and np.shape(x_full) == (x_opt.shape[0], s_full.size):
-        xc = interp_rows(s_full, x_full, s_col)       # source collocation detail kept
+        keep = np.r_[True, np.diff(s_full) != 0]      # a Radau result repeats every interior knot: drop the repeats
+        xc = interp_rows(s_full[keep], np.asarray(x_full)[:, keep], s_col)       # source collocation detail kept
     else:
         d_new = s_col.size // max(s_knot.size - 1, 1)
         xc = np.kron(x0[:, :-1], np.ones((1, d_new)))

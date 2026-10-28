@@ -39,7 +39,7 @@ from .trackLimits import trackLimits
 # ============================================================================
 # 1. Discretisation (pure numpy - testable without casadi)
 # ============================================================================
-def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None):
+def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None, scheme="legendre"):
     """Build the collocation grid and curvature samples. Returns a namespace-like
     dict with N, mesh, s_knot, dsk, s_col, s_full, k_knot, k_col, k_full, pv_*,
     tau, C, D, B, n_bounds. n_bounds is None, or (lo, hi) = track.n_lo / track.n_hi
@@ -52,12 +52,16 @@ def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None
                 ds_max, smooth_window, N, pct, grid_ds); ignored when uniform.
     s_knot    : explicit knot vector (overrides ``mesh``; reported as 'custom'),
                 strictly increasing, normally spanning the track [s[0], s[-1]].
+    scheme    : collocation points, 'legendre' (default) or 'radau' (the CasADi names). A Radau IIA interval
+                ends on the next knot. Then tau[-1] is 1 and the last point of interval k is s_knot[k+1], exactly.
+                s_full repeats every interior knot (N zero steps, no negative step).
+                s_full[::OPT_d+1] stays the knots. C, D and B follow from tau.
     Every output below is computed from s_knot alone, so it holds for any mesh.
     """
     s = np.asarray(track.s, dtype=float).reshape(-1)
     k = np.asarray(track.k, dtype=float).reshape(-1)
 
-    tau = np.asarray(collocation_points(OPT_d, "legendre"), dtype=float)
+    tau = np.asarray(collocation_points(OPT_d, scheme), dtype=float)
     C, D, B = collocation_coeff(tau)
 
     if s_knot is not None:
@@ -81,6 +85,8 @@ def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None
     # sum is kept (offset by s_knot[0]) so the uniform grid stays bit-identical.
     start = s_knot[0] + np.concatenate(([0.0], np.cumsum(dsk[:-1])))
     s_col = np.kron(dsk, tau) + np.kron(start, np.ones(OPT_d))
+    if tau[-1] == 1.0:                  # Radau: the last point is the next knot. The cumulative sum can miss it by 1 ulp.
+        s_col[OPT_d - 1::OPT_d] = s_knot[1:]
 
     # full ordered array of knot + collocation points
     s_col_mat = s_col.reshape(OPT_d, N, order="F")
@@ -201,7 +207,14 @@ def reconstruct_track(track0, s_full, k_full, n_full, n_halfwidth_bound):
     Returns a dict with s, k, x, y, xopt, yopt, Xl, Xr. With n_lo / n_hi on track0,
     Xl / Xr are drawn at those per-point bounds (n_hi left, n_lo right) and the dict
     also holds n_lo, n_hi on s_full.
+    The function solves a grid that repeats stations (Radau repeats every interior knot) once per station,
+    and indexes the answer back. A zero chord makes cartPath and trackLimits divide by zero,
+    and curv2cart loses the heading.
     """
+    u, first, inv = np.unique(s_full, return_index=True, return_inverse=True)
+    if u.size < np.size(s_full):
+        t = reconstruct_track(track0, u, np.asarray(k_full)[first], np.asarray(n_full)[first], n_halfwidth_bound)
+        return {key: (val[inv] if np.ndim(val) and np.shape(val)[0] == u.size else val) for key, val in t.items()}
     if not hasattr(track0, "x") or not hasattr(track0, "y") \
             or getattr(track0, "x", None) is None or getattr(track0, "y", None) is None:
         x, y = curv2cart(s_full, k_full)
@@ -236,6 +249,13 @@ def _pad_last(M, ca):
     """diff along columns then pad the last column (MATLAB [d d(:,end)])."""
     d = M[:, 1:] - M[:, :-1]
     return ca.horzcat(d, d[:, -1])
+
+
+def pathcol_points(tau):
+    """Collocation points per interval that carry a B3 path row. All of them, except a Radau point on the next
+    knot (tau[-1] == 1). That point has the state and the linear input of the next knot, so its row repeats
+    the knot row."""
+    return len(tau) - int(tau[-1] == 1.0)
 
 
 def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
@@ -290,9 +310,12 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
               U_k + (U_k+1 - U_k) * tau_j. False (default) keeps MATLAB's U_k + duk * tau_j with duk per metre,
               a near hold of U_k. No extra row or variable.
     h_col_rows: None or [] (default) adds no row. A list of row indices of h_eq (B3) adds those rows at the
-              N*d collocation points too. The rows use the inputs the dynamics see and the bounds h_lb / h_ub.
+              collocation points too. The rows use the inputs the dynamics see and the bounds h_lb / h_ub.
               The rows go LAST in g, after the periodic rows, point by point.
-              g[off + n_rows * c + i] is row i at collocation point c. structure["n_pathcol"] is n_rows * N * OPT_d.
+              g[off + n_rows * c + i] is row i at point j of interval k, with c = OPT_d * k + j.
+              A Radau grid (B4) has no row at the last point of an interval (tau = 1). There
+              c = (OPT_d - 1) * k + j, with j < OPT_d - 1. structure["n_pathcol"] is n_rows * N * pathcol_points(tau).
+              On a Radau grid, h_col_rows needs linear_inputs=True, else ValueError.
     Returns : dict(sol, solver, N, nx, nu, ny, Xk, Uk, Yk, Xkj, dt_opt,
               sym_type, t_build, w_opt, lam_g, lam_x, n_w, n_g, structure,
               warm_info, linear_solver) -- t_build = NLP construction wall
@@ -300,12 +323,15 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
               creation); w_opt/lam_g/lam_x = numpy primal/dual solution;
               structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic, n_pathcol}
               (what a later solve must match to re-inject them). n_periodic is
-              nx + nu with periodic=True, else 0. n_pathcol is the h_col_rows count * N * OPT_d, else 0. warm_info = which
-              warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
+              nx + nu with periodic=True, else 0. n_pathcol is the h_col_rows count * N * pathcol_points(tau), else 0.
+              warm_info = which warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
               linear_solver = the one actually used (after any HSL fallback).
               With env MLTP_KEEP_NLP=1 also nlp_fg (Function w -> (J, g)) and
               bounds (1-D numpy lbw, ubw, lbg, ubg and w0, the x0 given to IPOPT).
     """
+    if h_col_rows and disc["tau"][-1] == 1.0 and not linear_inputs:
+        raise ValueError("h_col_rows on a Radau grid needs linear_inputs=True. The builder drops the row at tau = 1, "
+                         "and only the linear input makes that row equal to the row of the next knot.")
     t_enter = time.perf_counter()
     if sym_type is None:
         sym_type = os.environ.get("MLTP_SYM_TYPE", "SX")
@@ -468,9 +494,10 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     gpc, lbpc, ubpc = [], [], []
     rows_c = list(h_col_rows or [])
     if rows_c:
-        gpc = [ca.reshape(h_eq.map(nd)(*dyn_args)[rows_c, :], -1, 1)]
-        lbpc = [np.tile(np.asarray(h_lb, float).reshape(-1)[rows_c].reshape(-1, 1), (nd, 1))]
-        ubpc = [np.tile(np.asarray(h_ub, float).reshape(-1)[rows_c].reshape(-1, 1), (nd, 1))]
+        pts = [c for c in range(nd) if c % OPT_d < pathcol_points(tau)]      # B4: none at the Radau point on the next knot
+        gpc = [ca.reshape(h_eq.map(nd)(*dyn_args)[rows_c, pts], -1, 1)]
+        lbpc = [np.tile(np.asarray(h_lb, float).reshape(-1)[rows_c].reshape(-1, 1), (len(pts), 1))]
+        ubpc = [np.tile(np.asarray(h_ub, float).reshape(-1)[rows_c].reshape(-1, 1), (len(pts), 1))]
 
     # assemble g and bounds
     g = ca.vertcat(*gb, *gck, ghk, gduk, *gper, *gpc)
@@ -509,7 +536,7 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     structure = dict(nx=int(nx), nu=int(nu), ny=int(ny), N=int(N), OPT_d=int(OPT_d),
                      n_w=n_w, n_g=n_g, n_param=int(P.numel()) if has_param else 0,
                      n_periodic=int(nx + nu) if periodic else 0,
-                     n_pathcol=len(rows_c) * nd)
+                     n_pathcol=len(rows_c) * N * pathcol_points(tau))
     solve_kw = {}
     warm_info = dict(x0=False, lam_g0=False, lam_x0=False, ipopt=False, duals=False)
     if warm:

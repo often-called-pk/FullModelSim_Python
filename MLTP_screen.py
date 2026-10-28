@@ -64,7 +64,7 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
     t2 = time.perf_counter()
     disc = discretise(ctx.track, ctx.OPT_ds, ctx.OPT_d,         # NLP grid, for schema parity
                       mesh=getattr(ctx, "mesh", "uniform"),
-                      mesh_opts=getattr(ctx, "mesh_opts", None))
+                      mesh_opts=getattr(ctx, "mesh_opts", None), scheme=ctx.collocation)
     t3 = time.perf_counter()
     prof = march(env, ctx.track.s, ctx.track.k, vi, ds_fine=ds_fine, s_out=disc["s_full"])
     t4 = time.perf_counter()

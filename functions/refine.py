@@ -22,7 +22,7 @@ the lap.
 
 Error indicator (defect_errors): the integrated defect of the state polynomial
 (GPOPS-II style integrated residual), in scaled units. For interval k (length h_k,
-nodes tau_0 = 0 and the d Legendre points) take the NLP's own degree-d state
+nodes tau_0 = 0 and the d collocation points, Legendre or Radau) take the NLP's own degree-d state
 polynomial p_k through [X_k, X_k1..X_kd], the NLP's own in-interval inputs
 u_k(t) = U_k + (U_{k+1} - U_k) / h_k * t (transcription.build_and_solve_nlp's
 arithmetic, MLTP.m line 345 ``Uk + kron(duk, tau)`` with duk = du/ds: a near hold,
