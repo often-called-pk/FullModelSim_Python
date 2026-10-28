@@ -583,8 +583,8 @@ def userOpts(ctx,
         ctx.Xi[:] = ctx.Xi_init[:] = nan
         ctx.Xi[3] = ctx.Xi_init[3] = ni
     if ctx.chassis_scale is not None:       # B7: rows 9-22 keep their physical start-box width
-        tol = np.full(23, OPT_e) if ctx.Xi_tol is None else ctx.Xi_tol
-        ctx.Xi_tol = np.r_[tol[:9], tol[9:] / ctx.chassis_scale]
+        box = np.full(23, OPT_e) if ctx.Xi_tol is None else ctx.Xi_tol
+        ctx.Xi_tol = np.r_[box[:9], box[9:] / ctx.chassis_scale]
 
     # ---- collocation options ----------------------------------------------
     ctx.OPT_ds = OPT_ds         # collocation step (m)

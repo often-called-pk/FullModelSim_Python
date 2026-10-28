@@ -65,6 +65,8 @@ ok("typical: preset on the chassis rows, physical start values",
    and np.array_equal(c.Xi, ref.Xi, equal_nan=True))
 ok("typical: start box keeps OPT_e in physical units (rows 9-22 OPT_e / scale)",
    np.array_equal(c.Xi_tol, np.r_[np.full(9, 1e-2), 1e-2 / PRESET]))
+ok("typical: the IPOPT options equal the default options (the start box leaves tol a float)",
+   all(type(c.opts["ipopt"][k]) is type(v) and c.opts["ipopt"][k] == v for k, v in ref.opts["ipopt"].items()))
 c = Ctx()
 quiet(userOpts, c, circuit="Sturn", state_scaling="typical", start_state="rolling")
 ok("typical + rolling: ROLL_TOL / scale on rows 9-22", np.array_equal(c.Xi_tol[9:], ROLL_TOL / PRESET))
