@@ -5,6 +5,7 @@ only describes how each parameter is labelled, ranged, and edited.
 from dataclasses import dataclass
 
 from vehParams import all_vp_defaults  # noqa: F401  (moved to vehParams in E2: userOpts needs it and must not import the app)
+from vehParams import PP_KEYS
 
 
 @dataclass
@@ -44,7 +45,7 @@ PARAM_GROUPS = [
     ("Dimensions", ["A", "t", "l", "wB", "hcg", "huf", "hur", "hw",
                     "hRCf", "hRCr", "hride"]),
     ("Inertias", ["I_z", "I_y", "I_x"]),
-    ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift", "LMUX", "LMUY", "LFZO", "LKX", "LKY"]),
+    ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift", "LMUX", "LMUY", "LFZO", "LKX", "LKY", "INFLPRES", "NOMPRES"]),
     ("Suspension stiffness", ["k_fl", "k_fr", "k_rl", "k_rr", "k_arb_f", "k_arb_r"]),
     ("Suspension damping", ["zeta_fl", "zeta_fr", "zeta_rl", "zeta_rr"]),
     ("Brakes", ["Tbrake_max"]),
@@ -53,6 +54,7 @@ PARAM_GROUPS = [
     ("Numerical", ["eps_x", "eps_y", "eps_K"]),
     ("Pacejka 5.2, longitudinal", _PACEJKA_LONG),
     ("Pacejka 5.2, lateral", _PACEJKA_LAT),
+    ("Pacejka 6.1, pressure", list(PP_KEYS)),
 ]
 
 META = {
@@ -98,6 +100,8 @@ META = {
     "LFZO": ParamMeta("Nominal load scale (LFZO)", "", "MF 5.2 lambda_Fz0. Fz0' = LFZO * Fz0 in dfz and Kya, full model and QSS. Same as a Fz0 override, but the 7-state init ignores it", 0.5, 1.5, 0.01, 4, kind="sci"),
     "LKX": ParamMeta("Slip stiffness scale X (LKX)", "", "MF 5.2 lambda_Kx. Scales Kxk. Peak grip does not change. No QSS effect", 0.5, 1.5, 0.01, 4, kind="sci"),
     "LKY": ParamMeta("Cornering stiffness scale (LKY)", "", "MF 5.2 lambda_Ky. Scales Kya. Peak grip does not change. No QSS effect", 0.5, 1.5, 0.01, 4, kind="sci"),
+    "INFLPRES": ParamMeta("Inflation pressure (INFLPRES)", "Pa", "Running (hot) gauge pressure. MF 6.1 dpi = (INFLPRES - NOMPRES) / NOMPRES. No effect while every ppx and ppy term is 0", 5.0e4, 6.0e5, 1000.0, 1, kind="sci"),
+    "NOMPRES": ParamMeta("Nominal pressure (NOMPRES)", "Pa", "Gauge pressure of the tyre coefficients (the dpi = 0 point), in the unit of INFLPRES. 220000 is a placeholder: the shipped sets have no pressure data", 5.0e4, 6.0e5, 1000.0, 1, kind="sci"),
     # Suspension stiffness
     "k_fl": ParamMeta("Spring rate FL", "N/m", "Front-left spring rate", 0.0, 300000.0, 1000.0, 1),
     "k_fr": ParamMeta("Spring rate FR", "N/m", "Front-right spring rate", 0.0, 300000.0, 1000.0, 1),

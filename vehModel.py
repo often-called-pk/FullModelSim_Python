@@ -6,7 +6,8 @@ unsprung-mass and four tyre-deflection states, full Pacejka 5.2 Magic Formula
 single-motor / ATD / four-motor (EM4) powertrain branches.
 
 The tyre set ``ctx.mf`` comes from vehParams' ``tyre_set`` (default "MF205"; legacy
-"CopyB" has pKy4=0); the model is tyre-set agnostic. The DATA_AA aero polynomials
+"CopyB" has pKy4=0, "file:<path>" reads a .tir); the model is tyre-set agnostic. The MF 6.1 pressure
+terms (``vehParams.mf_pressure``) act at the mu and stiffness sites only. The DATA_AA aero polynomials
 come from ``ctx.aero`` and the linear camber-gain coefficients from ``ctx.cg``.
 Hard-coded model switches in the MATLAB (``Steering='NA'``, ``CamberGain='Off'``,
 ``TyreModel='CombinedSlip'``) are exposed as arguments. Steering and CamberGain default to None,
@@ -28,6 +29,8 @@ intermediate signals for path constraints and post-processing) is stored on
 import numpy as np
 import casadi as ca
 from types import SimpleNamespace
+
+from vehParams import mf_pressure
 
 
 def _poly(coeffs, x, powers):
@@ -371,6 +374,12 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
 
     # MF 5.2 (PAC2002 eq 16): dfz = (Fz - Fz0') / Fz0' with Fz0' = LFZO * Fz0. Fz0' also sets Kya below.
     Fz0p = _mf_scale(vp.Fz0, mf.LFZO)
+    # MF 6.1 pressure (Besselink et al. 2010). A factor is a plain 1.0 for dpi = 0 or zero ppx and ppy terms, and _mf_scale
+    # skips it, so the default graph stays the same. MF 6.1 puts the pressure in mu, Kxk, Kya and the camber stiffness
+    # only: SVx and SVy keep the plain LMUX and LMUY.
+    px_mu, px_k, py_mu, py_k, py_loc, py_g = mf_pressure(mf)
+    Lmux_mu, Lkx_k, Lmuy_mu, Lky_k = (_mf_scale(mf.LMUX, px_mu), _mf_scale(mf.LKX, px_k),
+                                      _mf_scale(mf.LMUY, py_mu), _mf_scale(mf.LKY, py_k))
     dfz_fl = (fz_fl - Fz0p) / Fz0p
     dfz_fr = (fz_fr - Fz0p) / Fz0p
     dfz_rl = (fz_rl - Fz0p) / Fz0p
@@ -409,10 +418,10 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     # ===================== Pacejka 5.2: longitudinal (Fx) =================
     Cx = mf.pCx1
     # MF 5.2 mu_x = (pDx1 + pDx2 dfz) lambda_mux. Kxk does not change, so Bx = Kxk/(Cx Dx) falls as Dx rises.
-    mu_fl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fl, mf.LMUX)
-    mu_fr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fr, mf.LMUX)
-    mu_rl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rl, mf.LMUX)
-    mu_rr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rr, mf.LMUX)
+    mu_fl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fl, Lmux_mu)
+    mu_fr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_fr, Lmux_mu)
+    mu_rl_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rl, Lmux_mu)
+    mu_rr_x = _mf_scale(mf.pDx1 + mf.pDx2 * dfz_rr, Lmux_mu)
     Dx_fl = mu_fl_x * fz_fl_shift; Dx_fr = mu_fr_x * fz_fr_shift
     Dx_rl = mu_rl_x * fz_rl_shift; Dx_rr = mu_rr_x * fz_rr_shift
 
@@ -425,7 +434,7 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     Ex_rl = _ex(dfz_rl, kx_rl); Ex_rr = _ex(dfz_rr, kx_rr)
 
     # MF 5.2 Kxk = Fz (pKx1 + pKx2 dfz) exp(pKx3 dfz) lambda_Kx. Dx does not change, so Bx = Kxk/(Cx Dx) scales with LKX.
-    def _kxk(fzs, dfz): return _mf_scale(fzs * (mf.pKx1 + mf.pKx2*dfz) * ca.exp(mf.pKx3*dfz), mf.LKX)
+    def _kxk(fzs, dfz): return _mf_scale(fzs * (mf.pKx1 + mf.pKx2*dfz) * ca.exp(mf.pKx3*dfz), Lkx_k)
     Kxk_fl = _kxk(fz_fl_shift, dfz_fl); Kxk_fr = _kxk(fz_fr_shift, dfz_fr)
     Kxk_rl = _kxk(fz_rl_shift, dfz_rl); Kxk_rr = _kxk(fz_rr_shift, dfz_rr)
     Bx_fl = Kxk_fl / (Cx*Dx_fl + vp.eps_x); Bx_fr = Kxk_fr / (Cx*Dx_fr + vp.eps_x)
@@ -460,10 +469,10 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
 
     # ===================== Pacejka 5.2: lateral (Fy) ======================
     # MF 5.2 mu_y = (pDy1 + pDy2 dfz) (camber term) lambda_muy. Kya does not change, so By = Kya/(Cy Dy) falls as Dy rises.
-    mu_fl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fl) / (1 + mf.pDy3*dynamic_camber_fl**2), mf.LMUY)
-    mu_fr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fr) / (1 + mf.pDy3*dynamic_camber_fr**2), mf.LMUY)
-    mu_rl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rl) / (1 + mf.pDy3*dynamic_camber_rl**2), mf.LMUY)
-    mu_rr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rr) / (1 + mf.pDy3*dynamic_camber_rr**2), mf.LMUY)
+    mu_fl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fl) / (1 + mf.pDy3*dynamic_camber_fl**2), Lmuy_mu)
+    mu_fr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_fr) / (1 + mf.pDy3*dynamic_camber_fr**2), Lmuy_mu)
+    mu_rl_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rl) / (1 + mf.pDy3*dynamic_camber_rl**2), Lmuy_mu)
+    mu_rr_y = _mf_scale((mf.pDy1 + mf.pDy2*dfz_rr) / (1 + mf.pDy3*dynamic_camber_rr**2), Lmuy_mu)
     Dy_fl = mu_fl_y * fz_fl_shift; Dy_fr = mu_fr_y * fz_fr_shift
     Dy_rl = mu_rl_y * fz_rl_shift; Dy_rr = mu_rr_y * fz_rr_shift
     Cy = mf.pCy1
@@ -483,13 +492,14 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     # MF 5.2 Kya = pKy1 Fz0' sin(pKy4 atan(Fz / ((pKy2 + pKy5 gamma^2) Fz0'))) / (1 + pKy3 gamma^2) * lambda_Ky, Fz0' = LFZO * Fz0.
     # By = Kya/(Cy Dy) and the camber part of Shy both use the scaled Kya.
     def _kya(fzs, gam):
-        return _mf_scale(mf.pKy1 * Fz0p * ca.sin(mf.pKy4 * ca.atan(fzs / ((mf.pKy2 + mf.pKy5*gam**2)*Fz0p))) / (1 + mf.pKy3*gam**2), mf.LKY)
+        loc = _mf_scale((mf.pKy2 + mf.pKy5*gam**2)*Fz0p, py_loc)
+        return _mf_scale(mf.pKy1 * Fz0p * ca.sin(mf.pKy4 * ca.atan(fzs / loc)) / (1 + mf.pKy3*gam**2), Lky_k)
     Kya_fl = _kya(fz_fl_shift, dynamic_camber_fl); Kya_fr = _kya(fz_fr_shift, dynamic_camber_fr)
     Kya_rl = _kya(fz_rl_shift, dynamic_camber_rl); Kya_rr = _kya(fz_rr_shift, dynamic_camber_rr)
     By_fl = Kya_fl / (Cy*Dy_fl + vp.eps_y); By_fr = Kya_fr / (Cy*Dy_fr + vp.eps_y)
     By_rl = Kya_rl / (Cy*Dy_rl + vp.eps_y); By_rr = Kya_rr / (Cy*Dy_rr + vp.eps_y)
 
-    def _kyg0(fzs, dfz): return fzs * (mf.pKy6 + mf.pKy7*dfz)
+    def _kyg0(fzs, dfz): return _mf_scale(fzs * (mf.pKy6 + mf.pKy7*dfz), py_g)
     Ky_gamma0_fl = _kyg0(fz_fl_shift, dfz_fl); Ky_gamma0_fr = _kyg0(fz_fr_shift, dfz_fr)
     Ky_gamma0_rl = _kyg0(fz_rl_shift, dfz_rl); Ky_gamma0_rr = _kyg0(fz_rr_shift, dfz_rr)
 

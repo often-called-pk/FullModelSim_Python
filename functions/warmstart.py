@@ -222,17 +222,18 @@ def default_source(path):
     Raise ValueError if:
 
       - the file is missing
-      - data.provenance.setup lists knobs (the file is not a default-setup result)
+      - data.provenance.setup lists knobs other than tyre_file (the file is not a default-setup result)
       - nlp.return_status is not in GOOD_STATUS
 
-    A result saved before E2 has no data.provenance. Its file name is then the only check. The caller checks
-    that the result fits the new NLP."""
+    The default result of a tyre file holds the knob tyre_file. Its tag is in the file name. A result saved
+    before E2 has no data.provenance. Its file name is then the only check. The caller checks that the result
+    fits the new NLP."""
     from functions.importfile import load_solution
     if not os.path.isfile(path):
         raise ValueError(f"continue_from='auto' found no stored default result {path}. Solve the default setup "
                          "of this circuit, config, tyre set, physics, mesh and start state first.")
     data = load_solution(path)
-    knobs = sorted(as_dict(get_field(get_field(data, "provenance"), "setup")))
+    knobs = sorted(set(as_dict(get_field(get_field(data, "provenance"), "setup"))) - {"tyre_file"})
     if knobs:
         raise ValueError(f"continue_from='auto': {path} is not a default-setup result. It holds the knobs {knobs}.")
     status = str(get_field(get_field(data, "nlp"), "return_status", "unknown"))

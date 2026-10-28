@@ -10,20 +10,23 @@ Tyre set: ``vehParams(ctx, tyre_set=...)`` selects the Pacejka coefficient set.
 "MF205" (default) is the MATLAB-run lateral set: the lateral values of the case
 vehParams.m actually selects ('MF_205_60R15_V91'). "CopyB" is the legacy
 shipped set with MATLAB 'Test'-case lateral coefficients (pKy4 = 0, i.e. zero
-cornering stiffness), kept for reproducing old results. ``vp_overrides`` are
-applied last, on top of either set.
+cornering stiffness), kept for reproducing old results. ``tyre_set="file:<path>"`` reads a .tir file
+(MF 6.1 coefficients, FNOMIN, NOMPRES, INFLPRES) as written, in the sign convention of the model. An MF 5.2
+file can lack coefficients that the model reads (for example pKy4 to pKy7, rBx3 and rBy4). Then vehParams
+raises ValueError and names them. ``vp_overrides`` are applied last, on top of any set.
 ``ctx.mf_overrides``: sorted mf keys ``vp_overrides`` changed vs the base set ([] if none).
 ``ctx.physics`` (set by userOpts, default "matlab"): "corrected" adds m_u_fl..rr and m_c_fl..rr,
 re-derives Wfl0..Wrr0, xsi_*, xti_*, lsi_* by the lever rule and c_* = 2 zeta sqrt(k m_c);
 "matlab" keeps the MATLAB values.
 ``vp_overrides`` also takes the powertrain keys PT_KEYS (gear, Tmax, Pmax, Preg, Ppack), with physics="corrected" only.
 """
+import math
 import os
 import warnings
 import numpy as np
 from types import SimpleNamespace
 
-from functions.importfile import mat_to_namespace
+from functions.importfile import mat_to_namespace, read_tir
 
 
 def default_primaries():
@@ -95,11 +98,26 @@ def _default_mf():
         # slip stiffness lambda_Kx and lambda_Ky. 1.0 leaves the set as it is. MATLAB has no counterpart.
         # vehModel.py applies all five. functions/ggv.py applies LMUX, LMUY and LFZO.
         LMUX=1.0, LMUY=1.0, LFZO=1.0, LKX=1.0, LKY=1.0,
+        # MF 6.1 inflation pressure: dpi = (INFLPRES - NOMPRES) / NOMPRES. Give both pressures in one unit and on one basis
+        # (Pa, hot gauge, as in a .tir). ppx1 ppx2: Kxk. ppx3 ppx4: mu_x. ppy1: Kya. ppy2: load peak of Kya.
+        # ppy3 ppy4: mu_y. ppy5: camber stiffness. The shipped sets have no pressure data, so every pp term is 0 and the
+        # 220000 Pa placeholders have no effect. MATLAB has no counterpart. mf_pressure() turns them into factors.
+        ppx1=0.0, ppx2=0.0, ppx3=0.0, ppx4=0.0, ppy1=0.0, ppy2=0.0, ppy3=0.0, ppy4=0.0, ppy5=0.0,
+        NOMPRES=220000.0, INFLPRES=220000.0,
     )
 
 
 PRIMARY_KEYS = frozenset(default_primaries())
 MF_KEYS = frozenset(vars(_default_mf()))
+# A .tir file may leave these out: the five scales, the nine pressure terms and the two pressures (an MF 5.2 file has none).
+PP_KEYS = tuple(sorted(k for k in MF_KEYS if k.startswith("pp")))        # ppx1..ppx4, ppy1..ppy5
+MF_OPTIONAL = frozenset({"LMUX", "LMUY", "LFZO", "LKX", "LKY", "NOMPRES", "INFLPRES", *PP_KEYS})
+_TIR2MF = {k.upper(): k for k in MF_KEYS}        # a .tir name is the mf key in upper case: PCX1 -> pCx1, LMUX -> LMUX
+# .tir entries that no model line reads, each with its neutral value. A file that sets one to another value gets a warning.
+# LMUV is 0 for no friction decay: MF 6.1 divides LMUX and LMUY by (1 + LMUV Vs/V0).
+_TIR_UNMODELLED = {**dict.fromkeys(("PDX3", "PHY3", "LMUV"), 0.0),
+                   **dict.fromkeys(("LCX", "LEX", "LHX", "LVX", "LCY", "LEY", "LHY", "LVY", "LKYC", "LXAL", "LYKA",
+                                    "LVYKA"), 1.0)}
 # A5 powertrain knobs for vp_overrides (physics='corrected' only). They are not primaries, so the GUI table and
 # the setup sweeps do not see them. gear sets vp.gear. Tmax and Pmax set the ratings of ONE motor in ctx.pt.
 # Preg (regen power per motor, W) and Ppack (limit on the sum of the motor powers, W) exist in ctx.pt only when given.
@@ -127,19 +145,89 @@ _MF205_OVERRIDES = {
 }
 
 
-def all_vp_defaults(tyre_set="MF205"):
-    """Full adjustable parameter set (primaries + Pacejka mf for `tyre_set`) as a flat dict."""
+def mf_pressure(mf):
+    """Return the six MF 6.1 pressure factors for dpi = (INFLPRES - NOMPRES) / NOMPRES: mu_x, Kxk, mu_y, Kya,
+    the load peak of Kya, and the camber stiffness. A factor is the plain float 1.0 when dpi or its terms are 0.
+    INFLPRES can be a casadi symbol (optimise_design)."""
+    d = (mf.INFLPRES - mf.NOMPRES) / mf.NOMPRES
+    return (1 + mf.ppx3 * d + mf.ppx4 * d * d, 1 + mf.ppx1 * d + mf.ppx2 * d * d, 1 + mf.ppy3 * d + mf.ppy4 * d * d,
+            1 + mf.ppy1 * d, 1 + mf.ppy2 * d, 1 + mf.ppy5 * d)
+
+
+def _read_tyre_file(path, warn=True):
+    """Return ({mf key: value}, FNOMIN, PRESMIN, PRESMAX) of a .tir file. PRESMIN and PRESMAX are None when the file
+    has no number for them. A file with one pressure sets both. ValueError if a coefficient or FNOMIN is missing or
+    not a number, or if a unit is not SI. A nonzero entry that no model line reads gives a warning if warn is True."""
+    raw = read_tir(path)
+    mf = {_TIR2MF[k]: v for k, v in raw.items() if k in _TIR2MF}
+    num = lambda v: isinstance(v, float) and math.isfinite(v)
+    bad = sorted(k for k, v in mf.items() if not num(v))
+    miss = sorted(MF_KEYS - MF_OPTIONAL - set(mf))
+    fz0 = raw.get("FNOMIN")
+    if fz0 is None:
+        miss.append("FNOMIN")
+    elif not (num(fz0) and fz0 > 0):
+        bad.append("FNOMIN")
+    if bad or miss:
+        raise ValueError(f"Tyre file {path} has bad entries. Not a number: {bad}. Missing: {miss}.")
+    units = {k: raw[k] for k, si in (("LENGTH", "meter"), ("FORCE", "newton"), ("ANGLE", "radians"))
+             if str(raw.get(k, si)).lower() != si}
+    if units:
+        raise ValueError(f"Tyre file {path} uses the units {units}. The model needs meter, newton and radians.")
+    off = {k: raw[k] for k, neutral in _TIR_UNMODELLED.items() if k in raw and raw[k] != neutral}
+    if off and warn:
+        warnings.warn(f"Tyre file {path}: the entries {off} are not modelled. The model ignores them.")
+    if "NOMPRES" in mf or "INFLPRES" in mf:     # a file with one pressure: the other follows it
+        mf.setdefault("NOMPRES", mf.get("INFLPRES"))
+        mf.setdefault("INFLPRES", mf["NOMPRES"])
+    p_lo, p_hi = (raw[k] if num(raw.get(k)) else None for k in ("PRESMIN", "PRESMAX"))
+    return mf, fz0, p_lo, p_hi
+
+
+def _tyre_base(tyre_set, warn=True):
+    """Return ({mf key: value}, FNOMIN, PRESMIN, PRESMAX): what a tyre set puts on top of the default coefficients.
+    The last three are None for a named set. ValueError for an unknown set."""
+    if isinstance(tyre_set, str) and tyre_set.startswith("file:"):
+        return _read_tyre_file(tyre_set[5:], warn)
     if tyre_set not in TYRE_SETS:
-        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
-    mf = dict(vars(_default_mf()))
-    if tyre_set == "MF205":
-        mf.update(_MF205_OVERRIDES)
-    return {**default_primaries(), **mf}
+        raise ValueError(f"Unknown tyre_set {tyre_set!r}. Use one of {list(TYRE_SETS)} or 'file:<path to a .tir file>'.")
+    return (_MF205_OVERRIDES if tyre_set == "MF205" else {}), None, None, None
+
+
+def _check_tyre(mf, tyre_set, p_lo, p_hi):
+    """Check the final mf: the pressure unit, the pressure factors, the pressure range, and for a file set the sign
+    of the cornering stiffness. ValueError, or a warning for a pressure that has no effect or is out of range."""
+    d = (mf.INFLPRES - mf.NOMPRES) / mf.NOMPRES if mf.NOMPRES > 0 else math.inf
+    if abs(d) >= 0.9:
+        raise ValueError(f"INFLPRES {mf.INFLPRES:g} and NOMPRES {mf.NOMPRES:g} give dpi {d:.3g}. "
+                         "Give both in one unit. NOMPRES must be above 0.")
+    if min(mf_pressure(mf)) <= 0:
+        raise ValueError(f"An MF 6.1 pressure factor is 0 or less at INFLPRES {mf.INFLPRES:g} and NOMPRES {mf.NOMPRES:g}. "
+                         "Check the ppx and ppy terms.")
+    if mf.INFLPRES != mf.NOMPRES and not any(getattr(mf, k) for k in PP_KEYS):
+        warnings.warn("INFLPRES differs from NOMPRES, but every ppx and ppy term is 0. The pressure has no effect.")
+    if p_lo is not None and p_hi is not None and not p_lo <= mf.INFLPRES <= p_hi:
+        warnings.warn(f"INFLPRES {mf.INFLPRES:g} is outside the file range PRESMIN {p_lo:g} to PRESMAX {p_hi:g}.")
+    if tyre_set.startswith("file:"):
+        k0 = mf.pKy1 * math.sin(mf.pKy4 * math.atan2(1.0, mf.pKy2))       # Kya / Fz0 at Fz0 and zero camber
+        if not k0 > 0:
+            raise ValueError(f"{tyre_set}: the cornering stiffness at Fz0 is not positive (pKy1 {mf.pKy1:g}, "
+                             f"pKy4 {mf.pKy4:g}). The model gives a positive lateral force for a positive slip angle. "
+                             "A file in ISO signs has pKy1 < 0. Change the signs by hand or with vp_overrides.")
+
+
+def all_vp_defaults(tyre_set="MF205"):
+    """Full adjustable parameter set (primaries + Pacejka mf for `tyre_set`) as a flat dict. A file set gives the
+    coefficients of the file, and its FNOMIN as Fz0."""
+    mf_set, fz0, _, _ = _tyre_base(tyre_set, warn=False)
+    p = default_primaries()
+    if fz0 is not None:
+        p["Fz0"] = fz0
+    return {**p, **vars(_default_mf()), **mf_set}
 
 
 def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
-    if tyre_set not in TYRE_SETS:
-        raise ValueError(f"Unknown tyre_set {tyre_set!r}; expected one of {list(TYRE_SETS)}")
+    mf_set, tir_fz0, p_lo, p_hi = _tyre_base(tyre_set)
 
     if not hasattr(ctx, "vp") or ctx.vp is None:
         ctx.vp = SimpleNamespace()
@@ -156,6 +244,8 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
 
     # ---- phase 1: primaries (+ overrides) ---------------------------------
     p = default_primaries()
+    if tir_fz0 is not None:
+        p["Fz0"] = tir_fz0                          # the coefficients of a file refer to its own nominal load
     p.update(overrides)
     for k, v in p.items():
         setattr(vp, k, v)
@@ -250,13 +340,13 @@ def vehParams(ctx, data_dir="Data", vp_overrides=None, tyre_set="MF205"):
 
     # ---- Pacejka 5.2 coefficients: tyre set, then mf overrides on top ------
     ctx.mf = _default_mf()
-    if tyre_set == "MF205":
-        for k, v in _MF205_OVERRIDES.items():
-            setattr(ctx.mf, k, v)
+    for k, v in mf_set.items():
+        setattr(ctx.mf, k, v)
     ctx.mf_overrides = sorted(k for k, v in mf_over.items() if v != getattr(ctx.mf, k))
     for k, v in mf_over.items():
         setattr(ctx.mf, k, v)
     ctx.tyre_set = tyre_set
+    _check_tyre(ctx.mf, tyre_set, p_lo, p_hi)
 
     # ---- simplified Pacejka used by the 7-state init model ----------------
     vp.tyre = SimpleNamespace(

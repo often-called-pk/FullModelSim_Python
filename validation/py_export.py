@@ -32,6 +32,7 @@ from MLTP import MLTP, build_path_constraints           # noqa: E402
 import MLTP as _mltp                                    # noqa: E402  (the module: the line above binds the function)
 from userOpts import userOpts, _REAL_CIRCUITS           # noqa: E402
 from vehModel import vehModel                           # noqa: E402
+from vehParams import PP_KEYS                           # noqa: E402
 
 # the parity tier of docs section 3 (the rest of MATLAB as shipped is Python's default or passed by the caller)
 PARITY = dict(tol=1e-8, linear_solver="mumps", ipopt_overrides={"acceptable_tol": 1e-6, "mu_strategy": "monotone"},
@@ -119,6 +120,11 @@ def params(circuit, opt_ds, mesh="uniform"):
     # MATLAB has no MF scaling factors, and 1.0 changes nothing: leave all five out while all are 1.0 (gate 1 flags Python-only keys).
     if all(getattr(ctx.mf, k) == 1.0 for k in MF_SCALES):
         for k in MF_SCALES:
+            del out["mf"][k]
+    # MATLAB has no MF 6.1 pressure either: leave the nine pp terms and both pressures out while INFLPRES == NOMPRES and
+    # every pp term is 0, export all eleven otherwise.
+    if ctx.mf.INFLPRES == ctx.mf.NOMPRES and not any(getattr(ctx.mf, k) for k in PP_KEYS):
+        for k in (*PP_KEYS, "NOMPRES", "INFLPRES"):
             del out["mf"][k]
     # MATLAB has no Cd_scale or Cl_scale either: leave both out at 1.0, export both when one of them is not 1.0.
     if ctx.vp.Cd_scale == ctx.vp.Cl_scale == 1.0:

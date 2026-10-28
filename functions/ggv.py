@@ -55,7 +55,8 @@ Tyres     Peak friction from the Pacejka 5.2 set in ctx.mf, same expressions
             mu_x = (pDx1 + pDx2*dfz)*LMUX,
             mu_y = (pDy1 + pDy2*dfz)/(1 + pDy3*gamma^2)*LMUY,
             dfz  = (Fz - Fz0')/Fz0',   Fz0' = LFZO*Fz0,   peak force D = mu*Fz/Fz0_shift,
-          LMUX, LMUY = MF 5.2 peak-grip scales lambda_mux, lambda_muy (default 1).
+          LMUX, LMUY = MF 5.2 peak-grip scales lambda_mux, lambda_muy (default 1). The MF 6.1 pressure
+          factors of mu_x and mu_y (vehParams.mf_pressure) multiply them. The stiffness terms have no site here.
           gamma = static camber (CamberGain='Off'). The slip shape (B, C, E)
           and vertical shifts Sv are ignored. NOTE: with the legacy
           tyre_set='CopyB' (mf.pKy4 = 0) vehModel's cornering stiffness, and so
@@ -82,8 +83,11 @@ Speed     v <= pt.Vmax (the NLP's vx state bound).
 
 import math
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import numpy as np
+
+from vehParams import mf_pressure
 
 LOAD_MODELS = ("vehModel", "nominal")
 _V_FLOOR = 0.1          # [m/s] numerical floor for the march (never reached on a sane track)
@@ -335,6 +339,11 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     docstring for every modelling choice. Cost ~5 ms (numpy, vectorised in v).
     """
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
+    # MF 6.1 pressure (Besselink et al. 2010): the screen reads the peak friction only, so the two mu factors fold into
+    # the copy of the grip scales. vehModel cannot do this, because LMUX and LMUY also scale SVx and SVy there.
+    # A plain 1.0 factor leaves the default lap bit for bit the same.
+    px_mu, _, py_mu, *_ = mf_pressure(mf)
+    mf = SimpleNamespace(**{**vars(mf), "LMUX": mf.LMUX * px_mu, "LMUY": mf.LMUY * py_mu})
     aero_c = aero_coefficients(vp, getattr(ctx, "aero", None))
     EM4 = int(getattr(pt, "EM4", 0))
     ATD = int(getattr(pt, "ATD", 0))

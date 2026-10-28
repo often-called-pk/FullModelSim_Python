@@ -9,12 +9,13 @@ Solves the full Minimum Lap Time Problem with the 23-state model:
     -> IPOPT (ma57 by default, MUMPS fallback) -> postprocess -> save .mat
 
 The optimal solution is written to Results/<circuit>_<config>.mat (a non-default
-tyre set / physics / start state / lateral band / mesh request appends _<tyre_set> /
-_physCorrected / _start<State> / _hw<W> or _nbCustom / _mesh<Mesh>, see
-functions.importfile.result_stem;
+tyre set / physics / start state / lateral band / mesh request appends _<tyre_set> (or
+_tir_<name> for tyre_set='file:<dir>/<name>.tir') / _physCorrected / _start<State> /
+_hw<W> or _nbCustom / _mesh<Mesh>, see functions.importfile.result_stem;
 an adaptively refined solve, refine=..., saves as _meshAdaptive). Any other setup knob
 that differs from its default, such as vp_overrides, vi or OPT_ds, appends _<8 hex
-digits> (userOpts.setup_knobs), and data['provenance'] lists the knobs. The saved
+digits> (userOpts.setup_knobs), and data['provenance'] lists the knobs. A tyre file
+always adds the knob tyre_file (its absolute path), so its stem always has the digits. The saved
 struct is self-contained (states, inputs, time, the cartesian racing line,
 boundaries, per-tyre forces, lap time) so the racing line can be redrawn without
 re-solving. Plotly figures are produced by plotSDI.py.
@@ -427,13 +428,15 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     ``continue_from`` (default None: nothing changes) = 'auto' starts the solve from the stored DEFAULT
     result, with its primal and dual values (primal only with warm_start_duals=False). MLTP reads that
     file in results_dir. Its stem is the stem of this call without the n_bounds band and without the setup
-    tag. Use it for one off-default solve (vp_overrides, n_bounds, vi, ni ...): a cold solve there can end
-    on a slower local optimum. There is no fallback. MLTP raises ValueError before the solve if:
+    tag. A tyre file is the exception. Its default result holds the knob tyre_file, so the stem keeps the
+    tag of that one knob. Use it for one off-default solve (vp_overrides, n_bounds, vi, ni ...): a cold
+    solve there can end on a slower local optimum. There is no fallback. MLTP raises ValueError before the
+    solve if:
 
       - the value is neither None nor 'auto'
       - warm_start or homotopy is also set
       - the default result is missing
-      - the default result holds setup knobs (data.provenance.setup)
+      - the default result holds setup knobs other than tyre_file (data.provenance.setup)
       - its IPOPT status is not Solve_Succeeded or Solved_To_Acceptable_Level
       - it does not fit this NLP (other N, mesh grid, input channels, path rows, tyre set, start_state,
         between_knots, collocation or state_scaling)
@@ -466,8 +469,10 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             raise ValueError(f"continue_from must be None or 'auto'. It is {continue_from!r}.")
         if warm_start is not None or sched is not None:
             raise ValueError("continue_from='auto' replaces warm_start and homotopy. Pass only one of them.")
+        # The default result of a tyre file holds one knob, tyre_file, so its stem keeps the tag of that knob.
+        file_tag = knob_tag({"tyre_file": knobs["tyre_file"]}) if "tyre_file" in knobs else ""
         path = os.path.join(results_dir, result_stem(circuit, cfg, ctx.tyre_set, ctx.mesh_requested,
-                                                     ctx.physics, ctx.start_state) + ".mat")
+                                                     ctx.physics, ctx.start_state, setup_tag=file_tag) + ".mat")
         warm_start, src_name = default_source(path), os.path.basename(path)
         print(f"[MLTP] continue_from=auto: {path}")
     elif isinstance(warm_start, (str, os.PathLike)):

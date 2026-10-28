@@ -12,6 +12,8 @@ Typical use mirrors the MATLAB ``importfile('Static_MidDF.mat'); data.init = dat
     ctx.data = vars['data']            # the saved result struct
 """
 
+import re
+
 import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
@@ -39,6 +41,25 @@ def importfile(file_to_read):
     raw = sio.loadmat(file_to_read, squeeze_me=True, struct_as_record=False)
     return {k: mat_to_namespace(v) for k, v in raw.items()
             if not k.startswith("__")}
+
+
+def read_tir(path):
+    """Read a tyre property file (.tir). Return {NAME: float}, or {NAME: str} for a text value.
+    Names are upper case. A section line such as [MODEL] adds no key. A '$' or '!' starts a comment.
+    A D exponent reads as E. The function reads one line at a time."""
+    out = {}
+    with open(path, encoding="ascii", errors="replace") as fh:
+        for line in fh:
+            line = re.split(r"[$!]", line, maxsplit=1)[0]
+            if "=" not in line:
+                continue
+            key, val = (s.strip() for s in line.split("=", 1))
+            val = val.strip("'\"")
+            try:
+                out[key.upper()] = float(re.sub("[dD]", "E", val))
+            except ValueError:
+                out[key.upper()] = val
+    return out
 
 
 def load_solution(path):
@@ -76,7 +97,8 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
     the GUI build the same name.
 
     Rule: ``<circuit>_<cfg>``, plus ``_<tyre_set>`` when tyre_set != "MF205"
-    (e.g. ``_CopyB``), plus ``_physCorrected`` when physics == "corrected", plus
+    (e.g. ``_CopyB``, or ``_tir_<name>`` for ``file:<dir>/<name>.tir``: the base name only, so userOpts.setup_knobs
+    adds the full path as the knob ``tyre_file``), plus ``_physCorrected`` when physics == "corrected", plus
     ``_start<State>`` when start_state != "matlab" (``_startRolling``,
     ``_startPeriodic``), plus ``_<n_tag>`` when n_tag is not empty (userOpts
     ``ctx.n_tag``: ``_hw3p5`` for n_bounds=3.5, ``_nbCustom`` for a (lo, hi) pair),
@@ -91,6 +113,8 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
     overwriting the default one."""
     stem = f"{circuit}_{cfg}"
     if tyre_set != "MF205":
+        if tyre_set.startswith("file:"):
+            tyre_set = "tir_" + re.sub(r"\W+", "_", re.split(r"[\\/]", tyre_set[5:])[-1].rsplit(".", 1)[0])
         stem += f"_{tyre_set}"
     if physics == "corrected":
         stem += "_physCorrected"

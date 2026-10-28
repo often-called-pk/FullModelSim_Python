@@ -283,7 +283,8 @@ def setup_knobs(kw):
     arguments, TyreModel, load_model and ds_fine are read, so save, plot, warm_start, ladder and the like never
     count. vp_overrides keeps the A5 keys and the entries that differ from the default of the tyre set. A (lo, hi)
     n_bounds pair is hashed by value (the stem says only 'nbCustom'). A number W is in the stem (hw<W>), so it is
-    not a knob."""
+    not a knob. A file tyre set (C5) adds the knob ``tyre_file``, the absolute path. The stem has the base name
+    only, so the tag tells two files with one name apart."""
     defaults = {k: p.default for k, p in inspect.signature(userOpts).parameters.items()
                 if p.default is not p.empty and k not in _NOT_SETUP}
     defaults.update(TyreModel="CombinedSlip", load_model="vehModel", ds_fine=1.0)
@@ -301,6 +302,9 @@ def setup_knobs(kw):
             keep = not _is_default(v, d)
         if keep:
             out[k] = v
+    ts = kw.get("tyre_set", "MF205")
+    if isinstance(ts, str) and ts.startswith("file:"):
+        out["tyre_file"] = os.path.abspath(ts[5:])
     return out
 
 
@@ -428,7 +432,7 @@ def userOpts(ctx,
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
              hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
              vp_overrides=None,            # dict of vehParams primary/mf overrides (+ PT_KEYS if physics='corrected')
-             tyre_set="MF205",             # 'MF205' (default, MATLAB-run lateral set) | 'CopyB' (legacy shipped set, pKy4=0)
+             tyre_set="MF205",             # 'MF205' (default, MATLAB-run lateral set) | 'CopyB' (legacy shipped set, pKy4=0) | 'file:<path to a .tir>'
              OPT_ds=30,                    # collocation step (m)
              OPT_d=3,                      # degree of interpolating polynomials
              OPT_e=1e-2,                   # slack for path constraints / guesses
