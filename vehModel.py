@@ -38,6 +38,13 @@ def _poly(coeffs, x, powers):
     return out
 
 
+def _arb(k, xs_l, xs_r):
+    """C3: return the force [N] that a bar of rate k adds to the left strut, k*(xs_l - xs_r). The right strut gets
+    the opposite force. Return None when k is a plain 0, so the default graph stays the same. A symbolic k
+    (optimise_design) always adds the force."""
+    return None if isinstance(k, (int, float)) and k == 0.0 else k * (xs_l - xs_r)
+
+
 def _mf_scale(v, f):
     """Apply the MF 5.2 scaling factor f to v. Skip the multiplication when f is a plain number equal to
     1.0, so the default graph stays the same. A symbolic f always multiplies."""
@@ -316,6 +323,14 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
         fzs_fr = ca.if_else(xs_fr >= 0.075, 0, fzs_fr)
         fzs_rl = ca.if_else(xs_rl >= 0.075, 0, fzs_rl)
         fzs_rr = ca.if_else(xs_rr >= 0.075, 0, fzs_rr)
+
+    # C3: the anti-roll bars act in both physics, after the strut force and the MATLAB bump cut. A bar twists with
+    # the travel difference of its two struts, so it adds no heave or pitch force.
+    d_f, d_r = _arb(vp.k_arb_f, xs_fl, xs_fr), _arb(vp.k_arb_r, xs_rl, xs_rr)
+    if d_f is not None:
+        fzs_fl, fzs_fr = fzs_fl + d_f, fzs_fr - d_f
+    if d_r is not None:
+        fzs_rl, fzs_rr = fzs_rl + d_r, fzs_rr - d_r
 
     fzt_fl = zt_fl * vp.kt
     fzt_fr = zt_fr * vp.kt

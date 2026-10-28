@@ -52,6 +52,8 @@ def default_primaries():
         "Fz0": 4905.0, "Fz0_shift": 1.0,
         # suspension
         "k_fl": 75000.0, "k_fr": 75000.0, "k_rl": 80000.0, "k_rr": 80000.0,
+        # C3: anti-roll bar rate per axle [N/m at the wheel], 0 = no bar. MATLAB has none.
+        "k_arb_f": 0.0, "k_arb_r": 0.0,
         "zeta_fl": 0.7, "zeta_fr": 0.7, "zeta_rl": 0.7, "zeta_rr": 0.7,
         # brakes
         "Tbrake_max": 4000.0,

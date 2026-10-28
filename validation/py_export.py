@@ -123,6 +123,9 @@ def params(circuit, opt_ds, mesh="uniform"):
     # MATLAB has no Cd_scale or Cl_scale either: leave both out at 1.0, export both when one of them is not 1.0.
     if ctx.vp.Cd_scale == ctx.vp.Cl_scale == 1.0:
         del out["vp"]["Cd_scale"], out["vp"]["Cl_scale"]
+    # MATLAB has no anti-roll bar: leave k_arb_f and k_arb_r out at 0, export both when one of them is not 0.
+    if ctx.vp.k_arb_f == ctx.vp.k_arb_r == 0.0:
+        del out["vp"]["k_arb_f"], out["vp"]["k_arb_r"]
     out.update(
         circuit=ctx.circuit, tire=TIRE[ctx.tyre_set], N=N,
         n_w=(m.nx + m.nu) * (N + 1) + m.nx * N * d,

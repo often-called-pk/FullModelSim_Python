@@ -45,9 +45,11 @@ Transfer  First order, from the vehModel moment balances. Longitudinal:
           dFz = Fx_tyre*h_x/L (h_x = the model's My lever arm Rw - zt + ls at
           static, ~0.555 m; 'nominal' uses vp.hcg). Lateral, per axle:
           dFz = [phi*sum(Mx) + Fy_axle*hRC_axle]/t, with roll-stiffness share
-          phi = (k_fl+k_fr)/sum(k) and sum(Mx) = sum Fy_axle*(hcg - hRC_axle)
-          (elastic + jacking terms of vehModel). Axle lateral forces follow yaw
-          balance, Fy_f = M*ay*l_r/L. Combined (ax + ay) transfer is ignored.
+          phi = (k_fl+k_fr+4 k_arb_f)/(sum(k)+4 k_arb_f+4 k_arb_r) (C3: a bar
+          adds 2 k_arb to each wheel in roll) and sum(Mx) = sum Fy_axle*(hcg -
+          hRC_axle) (elastic + jacking terms of vehModel). Axle lateral forces
+          follow yaw balance, Fy_f = M*ay*l_r/L. Combined (ax + ay) transfer is
+          ignored.
 Tyres     Peak friction from the Pacejka 5.2 set in ctx.mf, same expressions
           and scaling as vehModel.py:
             mu_x = (pDx1 + pDx2*dfz)*LMUX,
@@ -260,8 +262,10 @@ def lateral_load_transfer(vp, Fy_f, Fy_r):
     outer-minus-inner corner load difference, for axle lateral forces Fy_f, Fy_r.
     Exactly the vehModel roll balance: the elastic moment
     sum(Fy_axle*(hcg - hRC_axle)) is shared by roll stiffness
-    phi_f = (k_fl+k_fr)/sum(k), plus the jacking (roll-centre) term Fy_axle*hRC/t."""
-    k_f, k_r = vp.k_fl + vp.k_fr, vp.k_rl + vp.k_rr
+    phi_f = (k_fl+k_fr+4 k_arb_f)/(sum(k)+4 k_arb_f+4 k_arb_r), plus the jacking (roll-centre) term Fy_axle*hRC/t.
+    C3: a bar of rate k_arb adds 2 k_arb to the roll rate of each wheel of its axle. The split is exact for
+    physics='matlab'. With physics='corrected' the strut sits in series with the tyre, so the split is approximate."""
+    k_f, k_r = vp.k_fl + vp.k_fr + 4.0 * vp.k_arb_f, vp.k_rl + vp.k_rr + 4.0 * vp.k_arb_r
     phi_f = k_f / (k_f + k_r)
     Mx = Fy_f * (vp.hcg - vp.hRCf) + Fy_r * (vp.hcg - vp.hRCr)
     return (phi_f * Mx + Fy_f * vp.hRCf) / vp.t, ((1.0 - phi_f) * Mx + Fy_r * vp.hRCr) / vp.t

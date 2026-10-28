@@ -1,4 +1,4 @@
-"""MainWindow constructs headlessly (offscreen Qt); Setup tab exposes all 117
+"""MainWindow constructs headlessly (offscreen Qt); Setup tab exposes all 119
 vehicle params; collect_runconfig + reset behave correctly; the Tyre set / Mesh
 combos reach RunConfig / cfg.json and the Setup table (defaults, reset,
 changed-value highlighting) follows the selected tyre set."""
@@ -21,10 +21,10 @@ def ok(name, cond):
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
 
-ok("vp_spins covers all 117 keys", set(win.vp_spins) == (PRIMARY_KEYS | MF_KEYS))
+ok("vp_spins covers all 119 keys", set(win.vp_spins) == (PRIMARY_KEYS | MF_KEYS))
 
 rc = win.collect_runconfig()
-ok("collect vp has 117 keys", set(rc.vp) == (PRIMARY_KEYS | MF_KEYS))
+ok("collect vp has 119 keys", set(rc.vp) == (PRIMARY_KEYS | MF_KEYS))
 ok("collect vp equals defaults (no rounding loss)",
    all(rc.vp[k] == float(all_vp_defaults()[k]) for k in rc.vp))
 ok("no spurious overrides at startup", rc.vp_overrides() == {})

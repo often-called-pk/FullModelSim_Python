@@ -45,7 +45,7 @@ PARAM_GROUPS = [
                     "hRCf", "hRCr", "hride"]),
     ("Inertias", ["I_z", "I_y", "I_x"]),
     ("Tyre & Wheel", ["Rw", "Jw", "f", "kt", "Fz0", "Fz0_shift", "LMUX", "LMUY", "LFZO", "LKX", "LKY"]),
-    ("Suspension stiffness", ["k_fl", "k_fr", "k_rl", "k_rr"]),
+    ("Suspension stiffness", ["k_fl", "k_fr", "k_rl", "k_rr", "k_arb_f", "k_arb_r"]),
     ("Suspension damping", ["zeta_fl", "zeta_fr", "zeta_rl", "zeta_rr"]),
     ("Brakes", ["Tbrake_max"]),
     ("Camber & Toe", ["gamma_fl", "gamma_rl", "toe_front", "toe_rear"]),
@@ -59,7 +59,7 @@ META = {
     # Balance & Aero
     "brkB": ParamMeta("Brake bias (front)", "", "Front brake-torque fraction", 0.0, 1.0, 0.01, 4),
     "Tdist": ParamMeta("Torque dist (rear)", "", "Rear drive-torque fraction", 0.0, 1.0, 0.01, 4),
-    "ksD": ParamMeta("Roll stiffness (rear)", "", "Rear roll-stiffness distribution", 0.0, 1.0, 0.01, 4),
+    "ksD": ParamMeta("Roll stiffness (rear) (unused)", "", "No model reads this value. MATLAB does not read it either. Use the anti-roll bar rates k_arb_f and k_arb_r", 0.0, 1.0, 0.01, 4),
     "alpha_FL": ParamMeta("Front wing L", "deg", "Front wing angle of attack, left", 0.0, 10.0, 0.5, 2),
     "alpha_FR": ParamMeta("Front wing R", "deg", "Front wing angle of attack, right", 0.0, 10.0, 0.5, 2),
     "alpha_RW": ParamMeta("Rear wing", "deg", "Rear wing angle of attack", 0.0, 30.0, 0.5, 2),
@@ -103,6 +103,8 @@ META = {
     "k_fr": ParamMeta("Spring rate FR", "N/m", "Front-right spring rate", 0.0, 300000.0, 1000.0, 1),
     "k_rl": ParamMeta("Spring rate RL", "N/m", "Rear-left spring rate", 0.0, 300000.0, 1000.0, 1),
     "k_rr": ParamMeta("Spring rate RR", "N/m", "Rear-right spring rate", 0.0, 300000.0, 1000.0, 1),
+    "k_arb_f": ParamMeta("Anti-roll bar front", "N/m", "Front anti-roll bar rate at the wheel. It adds k*(xs_left - xs_right) to the left strut and the opposite to the right strut. 0 = no bar", 0.0, 300000.0, 1000.0, 1),
+    "k_arb_r": ParamMeta("Anti-roll bar rear", "N/m", "Rear anti-roll bar rate at the wheel. It adds k*(xs_left - xs_right) to the left strut and the opposite to the right strut. 0 = no bar", 0.0, 300000.0, 1000.0, 1),
     # Suspension damping
     "zeta_fl": ParamMeta("Damping ratio FL", "", "Front-left damping ratio", 0.0, 2.0, 0.05, 3),
     "zeta_fr": ParamMeta("Damping ratio FR", "", "Front-right damping ratio", 0.0, 2.0, 0.05, 3),
