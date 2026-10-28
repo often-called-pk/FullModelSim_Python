@@ -277,6 +277,9 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
               n bound at the knots, at the collocation points and in the start / end box
               of n (knot values for the box). A start or end box with lower > upper (a vi
               or ni outside the state bounds or the band) raises ValueError, always.
+              On a Radau grid (tau[-1] == 1), the last collocation state of each interval has the
+              bounds -inf / +inf, also with a band. Its continuity row makes it equal to the next
+              knot, and the knot bounds hold it.
     guesses : dict with x0,u0,xc0[,y0]  (already scaled, shapes match)
     reg     : dict with ru,rdu,rdu2[,rdy,rdy2]  (column vectors)
     param   : optional static design parameters dict(sym, lb, ub, x0); appended
@@ -527,6 +530,10 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
         e3 = np.broadcast_to(e0, (nx,))[3]
         lbg[3, 0] = np.fmax(lo[0] * sc, Xi[3] / x_s[3] - e3); ubg[3, 0] = np.fmin(hi[0] * sc, Xi[3] / x_s[3] + e3)
         lbg[nx + 3, 0] = np.fmax(lo[-1] * sc, Xf[3] / x_s[3] - OPT_e); ubg[nx + 3, 0] = np.fmin(hi[-1] * sc, Xf[3] / x_s[3] + OPT_e)
+    if tau[-1] == 1.0:      # B4 Radau: the last point of interval k is a copy of knot k+1 (continuity row Xkj - Xk = 0).
+        # The knot bounds hold the copy. Its own equal bounds give 3 active constraints on 2 variables (a degenerate KKT).
+        iE = ((nx + nu + ny) * (N + 1) + nx * np.arange(OPT_d - 1, nd, OPT_d)[:, None] + np.arange(nx)).ravel()
+        lbw[iE, 0], ubw[iE, 0] = -np.inf, np.inf
     bad = np.flatnonzero(lbg[:2 * nx, 0] > ubg[:2 * nx, 0])
     if bad.size:
         raise ValueError(f"empty start/end box at g rows {bad.tolist()} (lower > upper): check vi, ni and n_bounds")

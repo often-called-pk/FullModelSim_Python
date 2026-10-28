@@ -56,6 +56,8 @@ def fake_ipopt(rec=None, status="Fake"):
             info["linear_solver"] = "fake"
 
         def solver(**k):
+            if rec is not None:
+                rec.update(lbx=np.ravel(k["lbx"]), ubx=np.ravel(k["ubx"]))
             return {"x": k["x0"], "f": 0.0, "lam_g": np.zeros(nlp["g"].numel()),
                     "lam_x": np.zeros(nlp["x"].numel())}
 
@@ -287,6 +289,20 @@ if MODEL:
 
     ok("continuity rows: 5 nonzeros for Legendre, 2 for Radau (X_end - X_next)",
        cont_nnz(rl_rec, dl).tolist() == [5] and cont_nnz(rr_rec, dr).tolist() == [2])
+    m23 = leg.m23
+    box = {b: np.concatenate([np.tile(np.ravel(getattr(m23, f"x_{b}")), Nn + 1),
+                              np.tile(np.ravel(getattr(m23, f"u_{b}")), Nn + 1),
+                              np.tile(np.ravel(getattr(m23, f"x_{b}")), Nn * D)]) for b in ("min", "max")}
+    end = np.zeros(box["min"].size, bool)           # the last point of each interval (on Radau, the next knot)
+    end[((m23.nx + m23.nu) * (Nn + 1) + m23.nx * np.arange(D - 1, Nn * D, D)[:, None] + np.arange(m23.nx)).ravel()] = True
+    band_rec = {}
+    run(band_rec, collocation="radau", n_bounds=3.5)
+    ok("lbx / ubx: Legendre = the model box everywhere. Radau = the same, but -inf / +inf at the last point of each "
+       "interval (the copy of the next knot), also with an n band",
+       np.array_equal(rl_rec["lbx"], box["min"]) and np.array_equal(rl_rec["ubx"], box["max"])
+       and np.array_equal(rr_rec["lbx"][~end], box["min"][~end]) and np.array_equal(rr_rec["ubx"][~end], box["max"][~end])
+       and np.all(rr_rec["lbx"][end] == -np.inf) and np.all(rr_rec["ubx"][end] == np.inf)
+       and np.all(band_rec["lbx"][end] == -np.inf) and np.all(band_rec["ubx"][end] == np.inf))
     with tempfile.TemporaryDirectory() as tmp:
         f_mat = os.path.join(tmp, "sturn_radau.mat")
         sio.savemat(f_mat, {"data": dict(vars(dr))}, do_compression=True)
