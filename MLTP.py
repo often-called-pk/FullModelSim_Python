@@ -40,7 +40,7 @@ from functions.refine import (refine_options, run_refinement, defect_errors, sta
                               interval_polynomials, eval_states, nlp_inputs, refine_record,
                               pass_accepted, lap_rise)
 from functions.warmstart import (resolve_source, guesses_from_full, nlp_structure,
-                                 plan_full_warm_start, nlp_record, GOOD_STATUS)
+                                 plan_full_warm_start, nlp_record, default_source, GOOD_STATUS)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       interp_inputs, compute_time, time_at_points,
@@ -215,14 +215,16 @@ def warmstart_guesses_full(ctx, m, src, disc):
                              m.x_s, m.u_s)
 
 
-def warmstart_full(ctx, m, src, disc, nh, use_duals=True):
+def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False):
     """Warm start from a previous full 23-state result: (guesses, warm, mode).
     Identical NLP structure (sizes, input_keys, collocation grid; setup / tyre
     values may differ, that is the sweep case) -> warm carries the saved w_opt
     (+ lam_g/lam_x and the IPOPT warm-start recipe unless use_duals=False);
     otherwise warm=None and the s-interpolated guesses are the (primal-only)
     start. A source solved with another tyre set is no start at all:
-    (None, None, "cold"), the caller falls back to the 7-state init."""
+    (None, None, "cold"), the caller falls back to the 7-state init.
+    ``strict`` (set by MLTP(continue_from='auto')): raise ValueError with the reasons
+    if the planned mode is not full+duals or full-primal. There is no fallback."""
     n_per = (m.nx + m.nu) if ctx.periodic else 0
     expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh, n_periodic=n_per),
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
@@ -230,6 +232,8 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True):
                     start_state=ctx.start_state)
     warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
                                             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
+    if strict and warm is None:
+        raise ValueError(f"continue_from='auto': the stored default result does not fit this NLP. {note}")
     if mode == "cold":
         print(f"[MLTP] warm start ignored: {note}; running the 7-state init")
         return None, None, mode
@@ -279,7 +283,8 @@ def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
 def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
          AeroConfig="Static", ATD="On", Electric_4Motors="Off", TyreModel="CombinedSlip",
          save=True, plot=True, results_dir="Results", plots_dir="Plots",
-         warm_start_duals=True, refine=None, ladder="auto", homotopy=None, **useropts_kwargs):
+         warm_start_duals=True, refine=None, ladder="auto", homotopy=None, continue_from=None,
+         **useropts_kwargs):
     """Solve the full 23-state MLTP. ``warm_start`` may be None (solve the 7-state
     init first), a path to an init file (data.init), a path to a previous full
     result .mat, or the ctx / ctx.data of an earlier MLTP() call (chain without
@@ -345,7 +350,24 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     userOpts._NOT_SETUP (userOpts.setup_knobs). A number n_bounds is in the stem already, so only a (lo, hi)
     pair is a knob. data['setup_tag'] holds the digits (absent for the default setup). data['provenance'] holds the
     code version (git describe), the knobs, how the solve ran (warm start source, linear solver, IPOPT
-    overrides as JSON text) and the parameter values of the model. ctx.out_path is the file that save=True wrote."""
+    overrides as JSON text) and the parameter values of the model. ctx.out_path is the file that save=True wrote.
+
+    ``continue_from`` (default None: nothing changes) = 'auto' starts the solve from the stored DEFAULT
+    result, with its primal and dual values (primal only with warm_start_duals=False). MLTP reads that
+    file in results_dir. Its stem is the stem of this call without the n_bounds band and without the setup
+    tag. Use it for one off-default solve (vp_overrides, n_bounds, vi, ni ...): a cold solve there can end
+    on a slower local optimum. There is no fallback. MLTP raises ValueError before the solve if:
+
+      - the value is neither None nor 'auto'
+      - warm_start or homotopy is also set
+      - the default result is missing
+      - the default result holds setup knobs (data.provenance.setup)
+      - its IPOPT status is not Solve_Succeeded or Solved_To_Acceptable_Level
+      - it does not fit this NLP (other N, mesh grid, input channels, path rows, tyre set or start_state)
+
+    Then solve the default setup first, or pass warm_start. A result saved before E2 has no provenance:
+    MLTP trusts its file name. A solve that does not converge gives a warning. The result saves under its
+    own setup tag, and data.provenance.run.source names the default file."""
     t0 = time.time()
     elapsed = {}
     hom_steps = useropts_kwargs.pop("_homotopy_steps", None)    # set by a homotopy's last step
@@ -357,6 +379,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     vp, pt = ctx.vp, ctx.pt
     knobs = setup_knobs(dict(useropts_kwargs, vi=vi, ni=ni, TyreModel=TyreModel))
     setup_tag = knob_tag(knobs)
+    cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
     ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
     lname, chain = resolve_ladder(ladder)       # cold-start ladder (ValueError if unknown)
     sched = None if homotopy is None or homotopy is False else homotopy_schedule(homotopy)
@@ -365,7 +388,16 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
 
     # ---- warm start: data.init (7-state) or a previous full result -------
     src_name = "none"                   # provenance: where the warm start came from
-    if isinstance(warm_start, (str, os.PathLike)):
+    if continue_from is not None:
+        if continue_from != "auto":
+            raise ValueError(f"continue_from must be None or 'auto'. It is {continue_from!r}.")
+        if warm_start is not None or sched is not None:
+            raise ValueError("continue_from='auto' replaces warm_start and homotopy. Pass only one of them.")
+        path = os.path.join(results_dir, result_stem(circuit, cfg, ctx.tyre_set, ctx.mesh_requested,
+                                                     ctx.physics, ctx.start_state) + ".mat")
+        warm_start, src_name = default_source(path), os.path.basename(path)
+        print(f"[MLTP] continue_from=auto: {path}")
+    elif isinstance(warm_start, (str, os.PathLike)):
         src_name = os.path.basename(os.fspath(warm_start))
     elif warm_start is not None:
         src_name = "memory"
@@ -512,7 +544,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     warm = None                         # primal/dual seeds from a full result
     if src_full is not None:
         guesses, warm, ws_mode = warmstart_full(ctx, m, src_full, disc, len(hnames),
-                                                use_duals=warm_start_duals)
+                                                use_duals=warm_start_duals,
+                                                strict=continue_from is not None)
         if ws_mode == "cold":
             src_full = None
     if src_full is None:                # cold start through the ladder (or the given init)
@@ -543,6 +576,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     elapsed["ipopt_iters"] = int(ctx.solve_stats.get("iter_count", -1))
     elapsed["warm_start"] = ws_mode
     elapsed["duals"] = bool(winfo["duals"])
+    status = str(ctx.solve_stats.get("return_status", "unknown"))
+    if continue_from is not None and status not in GOOD_STATUS:
+        warnings.warn(f"continue_from='auto': the solve ended {status} after {elapsed['ipopt_iters']} iterations "
+                      "from the default result. The setup change may be too large for one hop. "
+                      "setup_sweep bridges a hop in 2 or 4 steps.")
 
     # ---- adaptive mesh refinement (refine=...; functions/refine.py) --------
     if ropts is not None:
@@ -749,7 +787,6 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
 
     if save:
         os.makedirs(results_dir, exist_ok=True)
-        cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
         stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
                            getattr(ctx, "mesh_requested", "auto"),
                            getattr(ctx, "physics", "matlab"), ctx.start_state, n_tag=ctx.n_tag,

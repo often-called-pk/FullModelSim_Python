@@ -17,6 +17,8 @@ of O(1000). Everything here is casadi-free (unit-tested by tests/test_warmstart.
   resolve_source()         classify a warm_start argument: 7-state init (file or
                            MLTP_initial ctx) vs full 23-state result (file, MLTP
                            ctx, or its data namespace / dict).
+  default_source()         load and check the stored default result that
+                           MLTP(continue_from='auto') starts from.
   knots_from_full(), interp_rows(), map_input_rows(), guesses_from_full()
                            primal-only fallback when the structure differs: a
                            previous 23-state result interpolated by physical s.
@@ -202,6 +204,32 @@ def resolve_source(warm_start, loader=None, nx=23):
         return "init", init
     raise ValueError("warm_start must be an init file / MLTP_initial ctx (data.init) or a "
                      f"full {nx}-state result (data.x_opt with {nx} rows); got {type(warm_start).__name__}")
+
+
+def default_source(path):
+    """Load the stored default result at ``path`` for MLTP(continue_from='auto'). Return its data namespace.
+
+    Raise ValueError if:
+
+      - the file is missing
+      - data.provenance.setup lists knobs (the file is not a default-setup result)
+      - nlp.return_status is not in GOOD_STATUS
+
+    A result saved before E2 has no data.provenance. Its file name is then the only check. The caller checks
+    that the result fits the new NLP."""
+    from functions.importfile import load_solution
+    if not os.path.isfile(path):
+        raise ValueError(f"continue_from='auto' found no stored default result {path}. Solve the default setup "
+                         "of this circuit, config, tyre set, physics, mesh and start state first.")
+    data = load_solution(path)
+    knobs = sorted(as_dict(get_field(get_field(data, "provenance"), "setup")))
+    if knobs:
+        raise ValueError(f"continue_from='auto': {path} is not a default-setup result. It holds the knobs {knobs}.")
+    status = str(get_field(get_field(data, "nlp"), "return_status", "unknown"))
+    if status not in GOOD_STATUS:
+        raise ValueError(f"continue_from='auto': the stored default result {path} "
+                         f"ended with the IPOPT status {status}.")
+    return data
 
 
 def knots_from_full(s_full, OPT_d, n_knots=None):
