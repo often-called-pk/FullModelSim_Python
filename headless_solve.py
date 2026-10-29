@@ -18,8 +18,9 @@ FORWARD = {
     "n_bounds": None, "Steering": "NA", "CamberGain": "Off",
     "between_knots": "matlab", "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,
 }
-# MLTP_screen has no NLP and no plots. It takes none of these (userOpts raises TypeError on them).
-NLP_ONLY = ("warm_start", "plots_dir", "ladder", "homotopy", "refine", "continue_from")
+# MLTP_screen has no NLP and no plots. The qss call drops these keys. userOpts raises TypeError on all of them
+# except TyreModel. MLTP_screen accepts TyreModel and ignores it, so TyreModel is no knob of a qss file name.
+NLP_ONLY = ("warm_start", "plots_dir", "ladder", "homotopy", "refine", "continue_from", "TyreModel")
 
 
 def run_mode(cfg):

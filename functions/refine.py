@@ -288,7 +288,7 @@ def eval_states(disc, Z, s, x_end=None):
     return out
 
 
-def _input_affine(V, dsk, OPT_uinter, linear_inputs=False):
+def input_affine(V, dsk, OPT_uinter, linear_inputs=False):
     """(a, b) with the NLP's in-interval value a[:, k] + b[:, k] * t, t in [0, 1]:
     'linear' -> a = V_k, b = duk = (V_{k+1} - V_k) / h_k (per metre, used with the
     normalised t: the transcription's arithmetic); 'constant' -> b = 0. With linear_inputs (B3)
@@ -317,7 +317,7 @@ def nlp_inputs(disc, Uk, s, OPT_uinter="linear", linear_inputs=False):
     interp_inputs. Exact U at every knot, including U_N at the last one."""
     s_knot, dsk, _, N = _grid(disc)
     U = np.atleast_2d(np.asarray(Uk, dtype=float))
-    a, b = _input_affine(U, dsk, OPT_uinter, linear_inputs)
+    a, b = input_affine(U, dsk, OPT_uinter, linear_inputs)
     s = _vec(s)
     idx, t = _locate(s_knot, dsk, s)
     out = a[:, idx] + b[:, idx] * t[None, :]
@@ -393,11 +393,11 @@ def defect_errors(f_dyn, disc, track, Xk, Xkj, Uk, Yk=None, OPT_uinter="linear",
     tt = np.tile(tq, N)
     kc = np.repeat(np.arange(N), d)
     tc = np.tile(tau, N)
-    ua, ub = _input_affine(Uk, dsk, OPT_uinter, linear_inputs)
+    ua, ub = input_affine(Uk, dsk, OPT_uinter, linear_inputs)
     U_all = np.hstack([ua[:, kk] + ub[:, kk] * tt[None, :], ua[:, kc] + ub[:, kc] * tc[None, :]])
     args = [np.hstack([Pq, Xkj]), U_all]
     if has_aux:
-        ya, yb = _input_affine(Yk, dsk, OPT_uinter, linear_inputs)
+        ya, yb = input_affine(Yk, dsk, OPT_uinter, linear_inputs)
         args.append(np.hstack([ya[:, kk] + yb[:, kk] * tt[None, :],
                                ya[:, kc] + yb[:, kc] * tc[None, :]]))
     s_q = s_knot[kk] + dsk[kk] * tt

@@ -177,7 +177,8 @@ ok("every key of the full NLP call is an MLTP or userOpts argument", set(kwn) <=
 ok("every key of the qss call is an MLTP_screen or userOpts argument", set(kq) <= screen_ok)
 ok("that check can fail: a made-up key is no argument, and no NLP-only key is an MLTP_screen argument",
    "bogus_key" not in mltp_ok and not (NLP_ONLY_KEYS & screen_ok))
-ok("the qss call drops every NLP-only key", not (NLP_ONLY_KEYS & set(kq)))
+ok("the qss call drops every NLP-only key, and TyreModel (MLTP_screen ignores it, so it is no knob)",
+   not (NLP_ONLY_KEYS & set(kq)) and "TyreModel" not in kq and "TyreModel" in kwn)
 mltp_def = sig_defaults("MLTP.py", "MLTP")
 uo_def = {k: p.default for k, p in inspect.signature(userOpts).parameters.items()}
 ok("FORWARD defaults equal the MLTP / userOpts signature defaults",

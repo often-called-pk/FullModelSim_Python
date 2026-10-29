@@ -115,17 +115,17 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_aero_scale.py`: E3 `Cd_scale` / `Cl_scale`: defaults, registry, `Cd` / `Cl` placeholders inert with DATA_AA. f_drag and the five lifts scale, the side force does not (both physics). QSS == vehModel, parity export joint filter. Section 5, A4: the corrected drag pitch moment (closed form at 20 / 60 m/s, none under matlab, `Cd_scale` on it). QSS axle shift == coast equilibrium, QSS lap moves < 0.01%. Casadi + `Data/DATA_AA.mat`, no solve
 - `test_power_a5.py`: A5 `vp_overrides` keys `gear, Tmax, Pmax, Preg, Ppack`. Defaults change nothing. Keys refused under matlab and by value. Regen bounds, pack row last in [0, inf] (n_g + N + 1). QSS regen anchored to vehModel wheel torques, QSS pack cap. Energy motor by motor on a stand-in solve, NLP sizes with a fake IPOPT. Casadi + `Data/DATA_AA.mat`, no IPOPT
 - `test_telemetry.py`: E1 stage M. `time_at_points` exact. `resample` keeps input jumps, ax / ay stay inside the node range. Monster file (11 tab columns, no header, distance = integral of speed) and CSV. Stored Sturn point, fake IPOPT: `vehicle[k] == vehicle_full[k][::4]` and `t_full[::4] == t_opt` bitwise. ax / ay at the nodes == state-polynomial kinematics (pins `nlp_inputs`). EM4 and corrected stubs, `.mat` round trip
-- `test_provenance.py`: E2. `userOpts.setup_knobs` and `knob_tag`: the default setup is empty, a value equal to the default is no knob, and 45 == 45.0. The tyre set decides the defaults, and A5 keys, n_bounds, `load_model` and `ds_fine` count. Keys that never count, and every userOpts argument classified by rule. `result_stem` puts the tag last. `code_version` and `provenance_record`: savemat round trip, `ipopt_overrides` as JSON text, an option name over 31 characters. GUI tag == MLTP tag. Fake IPOPT: the names and fields of MLTP, MLTP_initial, MLTP_screen and optimise_design. A knob run leaves the default file untouched
+- `test_provenance.py`: E2. `userOpts.setup_knobs` and `knob_tag`: the default setup is empty, a value equal to the default is no knob, and 45 == 45.0. The tyre set decides the defaults, and A5 keys, n_bounds, `load_model` and `ds_fine` count. Keys that never count, and every userOpts argument classified by rule. `result_stem` puts the tag last. `code_version` and `provenance_record`: savemat round trip, `ipopt_overrides` as JSON text, an option name over 31 characters. GUI tag == MLTP tag. Fake IPOPT: the names and fields of MLTP, MLTP_initial, MLTP_screen and optimise_design, a vi run of each and a `ds_fine` 0.5 screen run, and `ctx.out_path` of each. A knob run leaves the default file untouched
 - `test_continue_from.py`: B5. `warmstart.default_source` gates: missing, knobs, unconverged, legacy, acceptable. Argument errors before any build. Fake IPOPT: LMUY 0.95, n_bounds 4.2 and vi 65 with ni 0.5 give full+duals. `warm_start_duals=False` gives full-primal. Another start_state needs its own default. OPT_ds 45, PureSlip and a default without `data.tyre_set` raise with the reason, and so does a knob file at the default name. A hop that does not converge warns. `continue_from=None` reads nothing
-- `test_between_knots.py`: B3. Values and errors, `nlp_structure` and the planner guard, `refine.nlp_inputs` / `_input_affine`, `nlp_index` pathcol rows, rpm cap gear*Vmax/Rw = 0.885 OMmax. Fake-solver Sturn: only the defect rows differ. The defect rows match a numpy f_dyn (1e-9), and the tail rows match (Pmax - T Om_motor)/Pmax (1e-12). EM4, regen, pack and periodic rows. Warm-start modes, saved fields, Pmax NaN and refusals. The refine reseed and indicator follow the flag (sections 6-9 need casadi + `Data/DATA_AA.mat`)
-- `test_radau.py`: B4. Radau points, D, B and stability. `discretise(scheme='radau')` gives exact duplicates, including a 1-ulp case. `reconstruct_track` gives one answer per station, and `guesses_from_full` takes a Radau source. The telemetry nodes follow `data.collocation`. userOpts errors, and the builder ValueError for collocation path rows without linear inputs. Fake-solver Sturn: sizes equal Legendre, N zero steps, end-point input, continuity nnz 2 vs 5. Warm starts Radau -> Radau full+duals, Radau -> Legendre full-interp. Refine keeps the scheme
+- `test_between_knots.py`: B3. Values and errors, `nlp_structure` and the planner guard, `refine.nlp_inputs` / `input_affine`, `nlp_index` pathcol rows, rpm cap gear*Vmax/Rw = 0.885 OMmax. Fake-solver Sturn: only the defect rows differ. The defect rows match a numpy f_dyn (1e-9), and the tail rows match (Pmax - T Om_motor)/Pmax (1e-12). EM4, regen, pack and periodic rows. Warm-start modes, saved fields, Pmax NaN and refusals. The refine reseed and indicator follow the flag (sections 6-9 need casadi + `Data/DATA_AA.mat`)
+- `test_radau.py`: B4. Radau points, D, B and stability. `discretise(scheme='radau')` gives exact duplicates, including a 1-ulp case. `reconstruct_track` gives one answer per station, and `guesses_from_full` takes a Radau source. Both keep the knot, not the end-point copy. The telemetry nodes follow `data.collocation`. userOpts errors (Radau needs OPT_d >= 2), and the builder ValueError for collocation path rows without linear inputs. Fake-solver Sturn: sizes equal Legendre, N zero steps, end-point input, continuity nnz 2 vs 5. Warm starts Radau -> Radau full+duals, Radau -> Legendre full-interp. Refine keeps the scheme
 - `test_mesh_report.py`: B6. `mesh.mesh_report` text. The speed term: speed 0 bit for bit, ValueError without v, more knots in braking, a constant speed drops it. The userOpts `track.v_qss` hook. `vehModel.vertical_eigs` vs AD (both physics). MLTP prints 3 lines and survives a failing report (fake IPOPT)
 - `test_state_scaling.py`: B7. Boxes for default, typical, rolling and periodic (physical width kept), and ValueError. The planner refuses duals across scalings. build_only equivalence: f equal, g' = R g, J' = R J C, bounds. The IPOPT options of 'typical' equal the default ones (the tol bug of 6451820). Fake-IPOPT records and `.mat` round trip
 - `test_atd_tbr.py`: C4. Defaults, k and ValueErrors. Row names, bounds and values on hand splits, and the wheel-torque identity. Sizes 1904 / 1942 / 1980. The planner compares path-row names (PureSlip 8 rows vs TBR 8 rows: full-interp). QSS lap unchanged, fake-IPOPT records
 - `test_arb.py`: C3. Registry and defaults, and a plain 0 = default graph. Force sign and shape (both physics), roll stiffness -k t^2 / I_x. Steady transfer vs QSS, and the QSS lap. `classify_fields`, RunConfig and the parity export. The zero-solve gradient on the stored Sturn optimum
-- `test_tir.py`: C5. Reader: sections, comments, quotes, D exponent, CRLF. `tyre_set='file:'` round trip of MF205 (graph hash equal), FNOMIN, overrides win. Errors and warnings, and no `.tir` tracked by git. `mf_pressure` floats and the MF 6.1 factors at +10%. Full-model sites: SVx / SVy unmoved, camber stiffness, INFLPRES as a symbol. QSS lap at +10% == lap at the mu factors. Two same-name files get two tags. Parity export
-- `test_telemetry_logs.py`: E5. `read_monster` round trip and sign pair. `read_csv`: map forms, JSON map, units-row check, metadata rows, beacons, streaming peak. `split_laps`. `project` on BCN / Sturn: |s err| < 0.3 m, |n err| < 0.03 m, centreline guard. `time_delta`. `overlay_report`: lap pick, panels, sign warning. Synthetic data, no solve, no `Data/DATA_AA.mat`
-- `test_correlate.py`: E6-E8. `gamma`, and `identifiable` (it refuses LFZO and Fz0_shift). `grip_fit` on QSS logs: LMUY within 0.01, LMUX within 0.03 noise free. `check_ax` and NaN dropouts. `drag_fit`: exact with ax, torque-scale error. `lift_fit`: matlab refused, corrected equilibria. `run_stage` + ledger: frozen stages, stale marks. Import without casadi. `nlp_forecast` vs V9
+- `test_tir.py`: C5. Reader: sections, comments, quotes, D exponent, CRLF. `tyre_set='file:'` round trip of MF205 (graph hash equal), FNOMIN, overrides win. Errors and warnings (FNOMIN missing, 0 or text). Git with core.ignorecase=false: no `.tir` of any case tracked, and the ignore rule takes `.TIR`. `mf_pressure` floats and the MF 6.1 factors at +10%. Full-model sites: SVx / SVy unmoved, camber stiffness, INFLPRES as a symbol. QSS lap at +10% == lap at the mu factors. Two same-name files get two tags. Parity export
+- `test_telemetry_logs.py`: E5. `read_monster` round trip and sign pair. `read_csv`: map forms, JSON map, units-row check, metadata rows, beacons (also in ms), streaming peak. `split_laps`. `project` on BCN / Sturn: |s err| < 0.3 m, |n err| < 0.03 m, centreline guard. `time_delta`. `overlay_report`: lap pick, panels, sign warning. Synthetic data, no solve, no `Data/DATA_AA.mat`
+- `test_correlate.py`: E6-E8. `gamma`, and `identifiable` (it refuses LFZO and Fz0_shift). `grip_fit` on QSS logs: LMUY within 0.01, LMUX within 0.03 noise free. `check_ax` and NaN dropouts. `drag_fit`: exact with ax, torque-scale error. `lift_fit`: matlab refused, corrected equilibria, a NaN dropout. A fit model at Cd_scale or Cl_scale 1.2 gives the same absolute value. `run_stage` + ledger: frozen stages, stale marks, another physics or config refused. Import without casadi. `nlp_forecast`: old values from the model (INFLPRES, alpha_FL), and V9
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6). F2: `FORWARD` sends a key only when set and not default, and `mode='qss'` drops the NLP-only keys and runs `MLTP_screen`. `RunConfig` folds `pt_overrides` into `vp_overrides`, and `setup_tag()` == the MLTP tag. `result_paths`, `freeze_support` first in `__main__`, the Advanced-tab combos and the More options box. 4 Motors ticks Homotopy
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -465,19 +465,21 @@ merged last so it beats every default, the screening preset and the warm-start r
   `tests/test_telemetry_logs.py`): `read_monster(path, step=0.02, sign=(-1, -1))` (whitespace columns, t = row * step, the
   sign pair of `export_monster`). `read_csv(path, channel_map=None, beacons='Beacon Markers', chunk=1 << 14)` streams in
   chunks and keeps the mapped columns only. Its map is `{channel: column}`, `{channel: [column, unit, factor]}` or a JSON
-  file of either. A units row must show the unit of the map. The beacon row gives the channel `lap`. Then
+  file of either. A units row must show the unit of the map. The beacon row gives the channel `lap` (its times take the
+  factor of the t column). Then
   `split_laps(t, dist, beacon, gap, drop)` and `project(log, track)`: s and n on the centreline, n left positive, no shift
   or rotation estimate. `project` warns when the median |n| of the moving samples is above 8 m. Last, `time_delta(sim, lap)`
   and `overlay_report(data, log, path, lap=None, step=1.0)`: 5 panels on s, and a warning when the `corr` of ay or delta is
   below 0. No AiM channel map ships (signs unverified). `correlate.py` (E6 to E8, 2026-10-28, pinned by
   `tests/test_correlate.py`) uses numpy and scipy, and casadi only in `nlp_forecast`. `STAGES` = grip, drag, downforce.
   `run_stage(stage, log, circuit, ledger=None, link=True, lap=None, tags=None, **useropts_kwargs)` fits one stage with the
-  QSS. It appends a record to a JSON ledger. One ledger holds one car (circuit, physics, tyre_set), and a re-run marks the
-  later stages stale. `grip_fit` (E7a) fits LMUY and LMUX from ax and ay, and `grip_from_lap` sets LMUX = LMUY from a lap
+  QSS. It appends a record to a JSON ledger. One ledger holds one car (circuit, config such as Static_ATDOn_EM4Off,
+  physics, tyre_set), and a re-run marks the later stages stale. A record keeps its userOpts kwargs (`useropts`). `grip_fit` (E7a) fits LMUY and LMUX from ax and ay, and `grip_from_lap` sets LMUX = LMUY from a lap
   ratio. `drag_fit` (E8a) fits Cd_scale and f from a power balance on straights. `lift_fit` (E8b, physics='corrected'
   only) fits Cl_scale from the damper travel. `identifiable` is the gate: `gamma` <= 15, and no name of `NEVER` (LFZO,
   Fz0_shift, LKX, LKY). `check_ax` raises ValueError when ax does not follow d vx/dt. `nlp_forecast` gives the first-order
-  NLP change via `setup_gradients`. The fits give effective QSS values and apply to the QSS only. On NLP data, VE7 (Sturn)
+  NLP change via `setup_gradients`, from the old values of the model (vehParams of the same options). The fits give
+  effective QSS values and apply to the QSS only. On NLP data, VE7 (Sturn)
   finds an LMUY step of -0.10 within 0.01, but an LMUX step of -0.10 as -0.027. VE8 (BCN): ax at the collocation points
   rings, so `drag_fit` on a straight fails. A whole-lap fit without ax finds +0.315 for a +0.30 step.
 - **Post-processing only** (reached via `reconstruct_track` *after* the solve): `curv2cart.py`
@@ -491,7 +493,8 @@ PySide6 GUI (`python -m app.main`) around the same solve: `MainWindow` collects 
 cfg.json`) as a subprocess. `headless_solve.build_solve_kwargs(cfg, resource_root)` maps cfg ->
 `MLTP(**kwargs)`, or `MLTP_screen(**kwargs)` for the cfg key `"mode": "qss"`. F2 (2026-10-28): its `FORWARD` table sends a
 key only when it is set and not default, so an old cfg makes the old call. Add a new option to `FORWARD` and add the matching
-`RunConfig` field.
+`RunConfig` field. In mode qss it drops the keys of `headless_solve.NLP_ONLY`, TyreModel included (MLTP_screen ignores it),
+so `RunConfig.setup_tag()` gets the qss tag from the same kwargs.
 The Advanced tab has a Tyre set combo (`MF205` default, `CopyB`) and a Mesh combo (`auto` default,
 `uniform`, `curvature`); `mesh_opts` and `screening` still have no widget. The Setup table's Pacejka
 defaults, Reset and changed-value highlighting follow the Tyre set combo: on a switch, the
@@ -768,13 +771,15 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   7-state init keeps MATLAB's arithmetic. `data['between_knots']` only when not 'matlab'. Another value seeds the primal
   only. `optimise_design`, `setup_gradients` and `setup_sweep` refuse a value other than 'matlab'. `limit_prices` gives NaN
   for Pmax when n_pathcol > 0. Measured (Linux, MUMPS, cold): Sturn 'linear' 143 iterations, 18.05249 s (+0.188%). Sturn
-  'linear+power' 125, 18.05521 s (+0.203%). BCN 'linear+power' 117, 116.47793 s (+0.029%, first-order forecast +0.33% to
-  +0.45%).
+  'linear+power' 125, 18.05521 s (+0.203%). BCN 'linear+power' 117, 116.47793 s (+0.029%, first-order forecast +0.4% to
+  +0.45%, of which 'linear' alone +0.33%).
 - **Radau collocation (B4, 2026-10-28, pinned by `tests/test_radau.py`).** `userOpts(collocation='legendre' | 'radau')`,
   23-state NLP only (the 7-state init stays Legendre). `discretise(..., scheme=)` takes the Radau IIA points from casadi. There
   is no numpy fallback, so a Radau result or a Radau QSS screen needs casadi. The last point of each interval is the next
   knot, so `s_full` repeats every interior knot (N zero steps). n_w and n_g equal Legendre: each interval keeps the end-point
-  copy and its trivial continuity row (Choice A). The copy has free bounds (fc611ac). Equal bounds on the copy and the knot
+  copy and its trivial continuity row (Choice A). The copy has free bounds (fc611ac), so `reconstruct_track` and the
+  `guesses_from_full` seed keep the knot of a repeated station. Radau needs OPT_d >= 2: for d = 1, casadi gives B = [0.5]
+  and the lap time halves (userOpts raises ValueError). Equal bounds on the copy and the knot
   gave 3 active constraints on 2 variables: 5325 iterations and a lap +5.3% on Sturn. With 'linear+power', the point on the
   next knot gets no power row, so n_pathcol counts OPT_d - 1 points per interval. `h_col_rows` on a Radau grid needs linear
   inputs (else ValueError). At a Radau end point, `vehicle_full` holds the left limit (input U_k + b_k), and the next entry is
@@ -791,8 +796,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `data['state_scaling']` only for 'typical'. A result of the other scaling seeds the primal only (no dual map). Stop rule:
   the IPOPT tolerances act on scaled errors. Under 'typical' the largest physical chassis defect is 8-18x smaller, so
   iteration counts across scalings are exploration only. Measured (MUMPS, cold, Sturn): the median of 5 starts is 207
-  against 178 iterations. One start per scaling ends on a slow branch (typical vi 60.002: 19.11574 s, default vi 59.998:
-  18.70993 s). MUMPS scaling off: 170 against 157. Corrected: 860 against 392. Never the default. Open: the Windows MA57 arm
+  against 178 iterations. One default start and two typical starts end on a slower branch. Default: vi 59.998
+  (18.70993 s). Typical: vi 60.002 (19.11574 s) and vi 59.999 (18.08485 s, 0.07 s above the other three typical starts at
+  18.015 to 18.019 s). MUMPS scaling off: 170 against 157. Corrected: 860 against 392. Never the default. Open: the Windows MA57 arm
   (`ipopt_overrides={'ma57_automatic_scaling': 'no'}`), owner. Commit 6451820 removed a bug: the start-box code reused the
   name `tol`, so IPOPT got an array for tol under 'typical'.
 - **Torque-bias rows (C4, 2026-10-28, pinned by `tests/test_atd_tbr.py`).** `userOpts(atd_tbr=None | TBR >= 1)`, ATD On and EM4
@@ -811,9 +817,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   adds the term (`optimise_design`). QSS (`ggv.lateral_load_transfer`): 4 k_arb added to the axle spring sum, exact for matlab
   physics. Under corrected the QSS keeps the spring-only split (error up to 9%, series law skipped). GUI rows in "Suspension
   stiffness" (max 3e5). `ksD` stays, labelled "(unused)". The parity export drops both at 0. QSS Sturn: front 2e4 +0.119%,
-  rear 2e4 +0.494%, both -0.026%. QSS BCN over front shares 0.3 to 0.7: -0.10% to +1.20%, optimum 0.52 (default 0.48). NLP
+  rear 2e4 +0.494%, both -0.026%. QSS BCN over front shares 0.3 to 0.7: -0.21% to +1.20%, optimum 0.52 (default 0.48). NLP
   (`setup_gradients`, Sturn, ATD On): -5.96e-8 / +1.12e-8 s per N/m (front / rear), about 100x below the QSS slope. ATD Off:
-  +6.35e-8 / -7.95e-8, so the gap stays. Warm hops (full+duals): 2e3 N/m steps match first order within 4%, and 2 of 3 hops of
+  +6.35e-8 / -7.95e-8, so the gap stays. Warm hops (full+duals): 2e3 N/m steps match first order within 5%, and 2 of 3 hops of
   2e4 N/m reach another local optimum. A hop back reaches 1.444 ms of objective below the stored Sturn default. Bars lower the
   roll damping ratio (c from the spring k only: 0.56 -> 0.48 at a 2e4 front bar, corrected).
 - **Tyre files and pressure (C5, 2026-10-28, pinned by `tests/test_tir.py`).** `functions/importfile.read_tir(path)` reads a .tir

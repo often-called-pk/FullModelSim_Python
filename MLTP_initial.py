@@ -11,8 +11,8 @@ The optimal solution is written to Results/init_<circuit>.mat as a struct
 A start_state other than 'matlab' (userOpts) adds _startRolling or _startPeriodic to the
 name, and an n_bounds band adds _hw<W> or _nbCustom after it. Any other setup knob that
 differs from its default (userOpts.setup_knobs: vp_overrides, vi, OPT_ds ...) appends
-_<8 hex digits>, so a knob run does not overwrite the default init. data.init.start_state and
-data.init.Xi record the start box, data.init.provenance the knobs.
+_<8 hex digits>, so a knob run does not overwrite the default init. ctx.out_path holds the path of
+the saved file. data.init.start_state and data.init.Xi record the start box, data.init.provenance the knobs.
 
 ``seed`` picks the rung below this one (functions/ladder.py): 'const' (default, the
 constant guesses of MLTP_initial.m: vx = vi, T_drive 0.85 Tmax, zero steer) or 'qss'
@@ -203,6 +203,7 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
                              n_tag=ctx.n_tag, setup_tag=knob_tag(knobs))[len(circuit) + 2:]
         save_path = os.path.join(results_dir, f"init_{circuit}{suffix}.mat")
         sio.savemat(save_path, {"data": {"init": init}}, do_compression=True)
+        ctx.out_path = save_path
         print(f"Saved warm start -> {save_path}")
 
     print(f"[MLTP_initial] circuit={circuit}  N={N}  "

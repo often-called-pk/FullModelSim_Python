@@ -125,12 +125,9 @@ class RunConfig:
     def setup_tag(self):
         """The tag that MLTP puts at the end of the result stem for this run. It comes from the same function
         (userOpts.setup_knobs) of the same kwargs (headless_solve.build_solve_kwargs). "" for the default setup.
-        In mode 'qss', MLTP_screen ignores TyreModel, so TyreModel is no knob there."""
+        In mode 'qss', build_solve_kwargs drops TyreModel (headless_solve.NLP_ONLY), so TyreModel is no knob there."""
         from headless_solve import build_solve_kwargs
-        kw = build_solve_kwargs(self._cfg(), "")
-        if self.mode == "qss":
-            kw.pop("TyreModel", None)
-        return knob_tag(setup_knobs(kw))
+        return knob_tag(setup_knobs(build_solve_kwargs(self._cfg(), "")))
 
     def write_cfg(self, path):
         cfg = self._cfg()

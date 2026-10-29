@@ -38,10 +38,10 @@ from functions.ladder import (quasi_static_states, resolve_ladder, qss_profile, 
                               homotopy_record, MA57_PRE_ALLOC)
 from functions.mesh import solution_knots, mesh_opts_record, mesh_report
 from functions.refine import (refine_options, run_refinement, defect_errors, state_rows,
-                              interval_polynomials, eval_states, nlp_inputs, _input_affine, refine_record,
+                              interval_polynomials, eval_states, nlp_inputs, input_affine, refine_record,
                               pass_accepted, lap_rise)
 from functions.warmstart import (resolve_source, guesses_from_full, nlp_structure,
-                                 plan_full_warm_start, nlp_record, default_source, GOOD_STATUS)
+                                 plan_full_warm_start, nlp_record, default_source, GOOD_STATUS, WARM_KNOBS)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       interp_inputs, compute_time, time_at_points,
@@ -804,7 +804,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         # Radau (B4): the entry on the next knot is the point t = 1 of interval k. There the dynamics saw U_k + b_k
         # (the arithmetic inside an interval, see nlp_inputs). With between_knots='matlab' that is not the input of
         # the next knot.
-        ua, ub = _input_affine(u_opt, disc["dsk"], ctx.OPT_uinter, ctx.linear_inputs)
+        ua, ub = input_affine(u_opt, disc["dsk"], ctx.OPT_uinter, ctx.linear_inputs)
         u_nlp[:, ctx.OPT_d::ctx.OPT_d + 1] = ua + ub
     vv = f_veh(x_full / m.x_s[:, None], u_nlp / m.u_s[:, None], disc["pv_full"])
     vehicle_full = {labels[i]: np.array(vv[i]).reshape(-1) for i in range(len(labels))}
@@ -855,12 +855,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     }
     if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
         data["n_tag"] = ctx.n_tag
-    if ctx.between_knots != "matlab":   # B3: a result without the field is 'matlab'
-        data["between_knots"] = ctx.between_knots
-    if ctx.collocation != "legendre":   # B4: the scheme of the grid in s_full. A result without the field is 'legendre'.
-        data["collocation"] = ctx.collocation
-    if ctx.state_scaling != "matlab":   # B7: the units of w and the multipliers. A result without the field is 'matlab'.
-        data["state_scaling"] = ctx.state_scaling
+    for key, default in WARM_KNOBS[1:]:  # B3, B4, B7: a result without the field has the default of WARM_KNOBS
+        if getattr(ctx, key) != default:
+            data[key] = getattr(ctx, key)
     if ctx.atd_tbr is not None:         # C4: the torque-bias rows. A result without the field has none.
         data["atd_tbr"] = float(ctx.atd_tbr)
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)

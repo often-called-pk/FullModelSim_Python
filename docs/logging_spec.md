@@ -72,7 +72,7 @@ Status of the signs:
 
 ## Channel map of `read_csv`
 
-`read_csv(path, channel_map)` takes `{channel: column}` or `{channel: [column, unit, factor]}`, or the path of a JSON file with the same content. The channel is the factor times the column value. If the file has a units row, it must show the unit of the map. The factor holds the unit change and the sign. For example, a lateral acceleration in g that is right positive has the factor -9.80665. The repo ships no map file, because the signs of the sample logger are not verified for this car.
+`read_csv(path, channel_map)` takes `{channel: column}` or `{channel: [column, unit, factor]}`, or the path of a JSON file with the same content. The channel is the factor times the column value. If the file has a units row, it must show the unit of the map. The factor holds the unit change and the sign. For example, a lateral acceleration in g that is right positive has the factor -9.80665. The lap end times of the beacon row take the factor of the channel t. So a time column in ms (factor 1e-3) also gives the laps. The repo ships no map file, because the signs of the sample logger are not verified for this car.
 
 ## Rates
 

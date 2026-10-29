@@ -273,10 +273,11 @@ ok("provenance.params holds the values the model was built with (default and kno
    and set(vars(d1.provenance.params)) >= PRIMARY_KEYS | MF_KEYS)
 
 OV2 = {"max_wall_time": 99.0, "nlp_scaling_constr_target_gradient": 1.0}
-c2 = quiet(mltp_mod.MLTP, **dict(base, warm_start=default_path, vi=65.0, ipopt_overrides=dict(OV2),
+c2 = quiet(mltp_mod.MLTP, **dict(base, warm_start=default_path, vi=65.0, ni=0.5, ipopt_overrides=dict(OV2),
                                  linear_solver="mumps"))
-ok("vi 65 + route knobs: tag of vi alone, ipopt_overrides (JSON text, in the file too) and linear_solver only recorded",
-   os.path.basename(c2.out_path) == f"Sturn_Static_ATDOn_EM4Off_{tag_of(vi=65.0)}.mat"
+ok("vi 65, ni 0.5 + route knobs: tag of vi and ni only, ipopt_overrides (JSON text, in the file too) and "
+   "linear_solver only recorded",
+   os.path.basename(c2.out_path) == f"Sturn_Static_ATDOn_EM4Off_{tag_of(vi=65.0, ni=0.5)}.mat"
    and json.loads(c2.data.provenance["run"]["ipopt_overrides"]) == OV2
    and json.loads(str(load_solution(c2.out_path).provenance.run.ipopt_overrides)) == OV2
    and c2.data.provenance["run"]["linear_solver"] == "mumps")
@@ -305,12 +306,20 @@ ok("GUI: result_mat_path(..., rc.setup_tag()) names the file MLTP wrote",
                                                      rcg.setup_tag())))))
 
 # MLTP_initial, MLTP_screen, optimise_design
-quiet(mi_mod.MLTP_initial, circuit="Sturn", save=True, results_dir=RES)
+ci0 = quiet(mi_mod.MLTP_initial, circuit="Sturn", save=True, results_dir=RES)
 quiet(mi_mod.MLTP_initial, circuit="Sturn", save=True, results_dir=RES, vp_overrides={"LMUY": 0.95})
 ok("MLTP_initial: init_Sturn.mat, and the tag for a knob run",
    os.path.isfile(os.path.join(RES, "init_Sturn.mat")) and os.path.isfile(os.path.join(RES, f"init_Sturn_{t1}.mat")))
 ok("MLTP_initial: provenance in data.init",
    float(load_solution(os.path.join(RES, f"init_Sturn_{t1}.mat")).provenance.setup.vp_overrides.LMUY) == 0.95)
+with open(ci0.out_path, "rb") as fh:
+    init_bytes = fh.read()
+ci = quiet(mi_mod.MLTP_initial, circuit="Sturn", save=True, results_dir=RES, vi=65.0, ni=0.5)
+with open(ci0.out_path, "rb") as fh:
+    ok("MLTP_initial vi 65, ni 0.5: the tag of both, ctx.out_path names each file, the default init is untouched",
+       ci0.out_path == os.path.join(RES, "init_Sturn.mat")
+       and ci.out_path == os.path.join(RES, f"init_Sturn_{tag_of(vi=65.0, ni=0.5)}.mat") and os.path.isfile(ci.out_path)
+       and fh.read() == init_bytes)
 cs = quiet(MLTP_screen, "Sturn", save=True, results_dir=RES, verbose=False, vp_overrides={"LMUY": 0.95})
 quiet(MLTP_screen, "Sturn", save=True, results_dir=RES, verbose=False)
 ds_ = load_solution(cs.out_path)
@@ -326,13 +335,22 @@ with open(qss_default, "rb") as fh:
     ok("MLTP_screen load_model='nominal': its own file, the default QSS file is untouched (bytes)",
        os.path.basename(cn.out_path) == f"Sturn_Static_ATDOn_EM4Off_{tag_of(load_model='nominal')}_qss.mat"
        and fh.read() == qss_bytes)
+cv = quiet(MLTP_screen, "Sturn", save=True, results_dir=RES, verbose=False, vi=65.0)
+cf = quiet(MLTP_screen, "Sturn", save=True, results_dir=RES, verbose=False, ds_fine=0.5)
+with open(qss_default, "rb") as fh:
+    ok("MLTP_screen vi 65 and ds_fine 0.5: the tag of each, the default QSS file is untouched (bytes)",
+       os.path.basename(cv.out_path) == f"Sturn_Static_ATDOn_EM4Off_{tag_of(vi=65.0)}_qss.mat"
+       and os.path.basename(cf.out_path) == f"Sturn_Static_ATDOn_EM4Off_{tag_of(ds_fine=0.5)}_qss.mat"
+       and fh.read() == qss_bytes)
 cp = quiet(po_mod.MLTP_paramOptim, warm_start=default_path, save=True, results_dir=RES,
-           vp_overrides={"mb": 1900.0})
+           vp_overrides={"mb": 1900.0}, vi=65.0, ni=0.5)
 dp = load_solution(cp.out_path)
-tag_mb = tag_of(vp_overrides={"mb": 1900.0})
-ok("optimise_design: Sturn_paramOptim_<tag>.mat for a knob run, setup_tag and provenance.setup in the file",
+tag_mb = tag_of(vp_overrides={"mb": 1900.0}, vi=65.0, ni=0.5)
+ok("optimise_design: Sturn_paramOptim_<tag>.mat for a knob run (vp_overrides, vi, ni), setup_tag and "
+   "provenance.setup in the file",
    os.path.basename(cp.out_path) == f"Sturn_paramOptim_{tag_mb}.mat" and str(dp.setup_tag) == tag_mb
-   and float(dp.provenance.setup.vp_overrides.mb) == 1900.0 and set(vars(dp.provenance.setup)) == {"vp_overrides"})
+   and float(dp.provenance.setup.vp_overrides.mb) == 1900.0
+   and set(vars(dp.provenance.setup)) == {"vp_overrides", "vi", "ni"})
 
 # plotSDI names its folder from the record
 PLOTS = os.path.join(TMP, "Plots")

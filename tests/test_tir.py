@@ -182,6 +182,10 @@ msg = value_error(vehParams, Ctx(), tyre_set="file:" + write_tir(T("nan.tir"), M
 ok("a coefficient that is not a number raises and is named", msg is not None and "pKx1" in msg)
 msg = value_error(vehParams, Ctx(), tyre_set="file:" + write_tir(T("nofz.tir"), MF0, fz0=None))
 ok("a missing FNOMIN raises", msg is not None and "FNOMIN" in msg)
+for fz_bad in (0.0, "abc"):
+    msg = value_error(vehParams, Ctx(), tyre_set="file:" + write_tir(T("badfz.tir"), MF0, fz0=fz_bad))
+    ok(f"FNOMIN = {fz_bad!r} raises and names FNOMIN (no Fz0 = 0 and no NaN downstream)",
+       msg is not None and "FNOMIN" in msg)
 msg = value_error(vehParams, Ctx(), tyre_set="file:" + write_tir(T("iso.tir"), {**MF0, "pKy1": -MF0["pKy1"]}))
 ok("pKy1 < 0 (ISO signs) raises and names pKy1", msg is not None and "pKy1" in msg)
 c3 = Ctx()
@@ -215,14 +219,25 @@ ok("INFLPRES above the file's PRESMAX warns and names PRESMAX",
 msg = value_error(vehParams, Ctx(), vp_overrides={"ppy2": -3.0, "INFLPRES": 330000.0})
 ok("a pressure factor <= 0 raises (ppy2 -3 at +50 %)", msg is not None and "factor" in msg)
 
-try:
-    git = subprocess.run(["git", "ls-files", "*.tir"], capture_output=True, text=True, cwd=_bootstrap.ROOT)
-except OSError:
-    git = None
-if git is not None and git.returncode == 0:
-    ok("no .tir file is tracked by git: licensed tyre data stays out of the repo", git.stdout.split() == [])
+def git(*args):
+    """Run git with case-sensitive paths (core.ignorecase=false, as on a Linux clone). None without a checkout."""
+    try:
+        r = subprocess.run(["git", "-c", "core.ignorecase=false", *args], capture_output=True, text=True,
+                           cwd=_bootstrap.ROOT)
+    except OSError:
+        return None
+    return r if r.returncode in (0, 1) else None                 # check-ignore: 1 = no path is ignored
+
+
+TIR_NAMES = ["Tyre.TIR", "Tyre.tir", "Data/Tyre.Tir"]
+tracked, ignored = git("ls-files", ":(icase)*.tir"), git("check-ignore", *TIR_NAMES)
+if tracked is not None and ignored is not None:
+    ok("no .tir file (any case) is tracked by git: licensed tyre data stays out of the repo",
+       tracked.stdout.split() == [])
+    ok("the ignore rule takes .TIR, .tir and .Tir with core.ignorecase=false",
+       sorted(ignored.stdout.split()) == sorted(TIR_NAMES))
 else:
-    print("  SKIP tracked-file check: not a git checkout")
+    print("  SKIP git checks: not a git checkout")
 
 # =============================================================================
 print("3. mf_pressure")

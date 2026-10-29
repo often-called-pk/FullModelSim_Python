@@ -77,8 +77,10 @@ def export_monster(data, path, step=0.02, sign=(-1.0, -1.0)):
     row every `step` s (50 Hz). Columns: lap distance [m], rpm, ay [g], ax [g], damper FL FR RL RR [mm],
     steering at the tyre [deg], throttle [%], speed [km/h] (CSim_monster_file_creation.pdf).
     The lap distance is the integral of the speed, as a logger gives it. The throttle is the motor torque in % of
-    Tmax. A negative torque (regen) gives 0 %. sign = (ay, steer). The model is left positive. ChassisSim is
-    ASSUMED right positive, because the vendor document does not say."""
+    Tmax. A negative torque (regen) gives 0 %. sign = (ay, steer). The model is left positive, and the default
+    (-1, -1) makes the file right positive. Five ChassisSim manuals say that import flag 1 takes a right turn as
+    positive, so set both flags to 1. The monster-file manual states no sign, and no file went through a ChassisSim
+    import yet (docs/logging_spec.md, Table C)."""
     v = resample(data, "time", step)
     dist = np.concatenate(([0.0], np.cumsum(0.5 * (v["vx"][1:] + v["vx"][:-1]) * np.diff(v["t"]))))
     out = np.column_stack([dist, v["om_gear"] * 30.0 / np.pi, sign[0] * v["ay"] / G, v["ax"] / G,
@@ -121,7 +123,7 @@ def read_csv(path, channel_map=None, beacons="Beacon Markers", chunk=1 << 14):
     The reader skips the rows above the header (metadata). A units row can follow the header.
     beacons is the metadata row with the lap end times (the "Beacon Markers" row of an AiM file). If the file has
     this row and the map has a channel t, the result gets the channel lap. Lap 0 ends at the first time, lap 1 at
-    the second time, and so on.
+    the second time, and so on. The times have the unit of the time column, so the factor of t applies to them.
     The first data row must lie in the first 1000 rows. The reader raises ValueError for a file without data,
     a missing column, a wrong unit or an empty cell. Only "," separates the cells."""
     if isinstance(channel_map, (str, os.PathLike)):
@@ -167,7 +169,7 @@ def read_csv(path, channel_map=None, beacons="Beacon Markers", chunk=1 << 14):
     out = {k: f * a[:, cols.index(head.index(c))] for k, (c, _, f) in ent.items()}
     ends = next((r[1:] for r in pre if r[0] == beacons), None)
     if ends and "t" in out:
-        out["lap"] = np.searchsorted([float(c) for c in ends if c.strip()], out["t"], side="left")
+        out["lap"] = np.searchsorted([ent["t"][2] * float(c) for c in ends if c.strip()], out["t"], side="left")
     return out
 
 

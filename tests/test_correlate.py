@@ -302,6 +302,10 @@ for cd in (0.8, 1.2, 1.5):
     r = C.drag_fit(straight_log(car, 0.0, 75.0, 25.0, down=True, sv=0.05, sa=0.05, seed=2), model,
                    win=0.2, coast=True)
     ok(f"Cd_scale {cd}, coast-down with noise: fit {r['Cd_scale']:.3f} within 0.03", abs(r["Cd_scale"] - cd) < 0.03)
+r = C.drag_fit(straight_log(make_ctx("BCN", Cd_scale=1.5), 1.0, 30.0, 75.0, sa=0.0), make_ctx("BCN", Cd_scale=1.2),
+               win=0.2)
+ok(f"the fit model at Cd_scale 1.2: fit {r['Cd_scale']:.5f} within 1e-4 of the truth 1.5 (an absolute value)",
+   abs(r["Cd_scale"] - 1.5) < 1e-4)
 
 lg = straight_log(model, 1.0, 30.0, 75.0, sa=0.0)
 lg["Tm"] = lg["Tm"] / 0.95                             # logged torque 5 % high
@@ -415,6 +419,15 @@ if HAVE_CA:
         r = C.lift_fit(log, make_ctx("Sturn", physics="corrected"))              # the fit model at Cl_scale 1
         ok(f"corrected equilibria, truth Cl_scale {cl}: front {r['front']:.3f}, rear {r['rear']:.3f}, "
            f"mean {r['mean']:.3f} within 4 %", abs(r["mean"] - cl) < 0.04 * cl)
+    r12 = C.lift_fit(log, make_ctx("Sturn", physics="corrected", Cl_scale=1.2))
+    ok(f"the fit model at Cl_scale 1.2: mean {r12['mean']:.3f}, the same absolute value as with the model at 1",
+       abs(r12["mean"] - r["mean"]) < 1e-9)
+    big = {k: np.tile(x, 20) for k, x in log.items()}              # 100 samples
+    big["xs_fl"][7] = np.nan                                       # a 1 % dropout in one damper channel
+    r_nan = C.lift_fit(big, make_ctx("Sturn", physics="corrected"))
+    r_cut = C.lift_fit({k: np.delete(x, 7) for k, x in big.items()}, make_ctx("Sturn", physics="corrected"))
+    ok(f"1 % NaN in xs_fl: the fit drops that sample (mean {r_nan['mean']:.3f}, the fit without the sample)",
+       np.isfinite(r_nan["mean"]) and abs(r_nan["mean"] - r_cut["mean"]) < 1e-12)
     with quiet():                                       # the log of truth 1.3, with and without ax noise
         rec = C.run_stage("downforce", dict(log, ax=0.2 * np.random.default_rng(3).standard_normal(5)), "Sturn",
                           physics="corrected")
@@ -459,6 +472,11 @@ with tempfile.TemporaryDirectory() as tmp:
        g3["apply"] == {} and C._frozen(led, "drag") == {})
     ok("a ledger of one car refuses another physics mode (ValueError)",
        raises(ValueError, C.run_stage, "grip", lg_grip, "BCN", ledger=led, physics="corrected"))
+    ok("a ledger of one car refuses four motors, another config (ValueError: drag_fit reads 4 x throttle there)",
+       raises(ValueError, C.run_stage, "grip", lg_grip, "BCN", ledger=led, Electric_4Motors="On", ATD="Off"))
+    ok("the record keeps config and the userOpts kwargs, and the ledger key holds config",
+       g["config"] == "Static_ATDOn_EM4Off" and g["useropts"] == {}
+       and load_strict(led)["key"] == ["BCN", "Static_ATDOn_EM4Off", "matlab", "MF205"])
     led2 = os.path.join(tmp, "refused.json")
     with quiet():
         d0 = C.run_stage("drag", dict(t=np.arange(100) * 0.02, vx=np.full(100, 50.0), Tm=np.zeros(100),
@@ -515,14 +533,18 @@ finally:
 # =============================================================================================
 print("7. nlp_forecast: stand-in gradients, then run V9 (Sturn, LMUX = LMUY = 0.95: +0.22377 s solved), no solve")
 import functions.sensitivity as SE
-real_sg, SE.setup_gradients = SE.setup_gradients, lambda data, params, **kw: {"LMUY": -3.0, "LMUX": -1.0}
+real_sg, SE.setup_gradients = SE.setup_gradients, lambda data, params, **kw: {
+    "LMUY": -3.0, "LMUX": -1.0, "INFLPRES": 1.5e-6, "alpha_FL": -4.6e-4}
 try:
     f0 = C.nlp_forecast("stored.mat", {"LMUY": 0.9, "LMUX": 0.9})
     f1 = C.nlp_forecast("stored.mat", {"LMUY": 0.9, "LMUX": 0.9}, vp_overrides={"LMUY": 0.95})
+    f2 = C.nlp_forecast("stored.mat", {"INFLPRES": 242000.0, "alpha_FL": 11.0})
 finally:
     SE.setup_gradients = real_sg
 ok(f"gradients -3 and -1 s: forecast {f0:+.2f} s from 1.0, {f1:+.2f} s with LMUY 0.95 in vp_overrides",
    abs(f0 - 0.4) < 1e-12 and abs(f1 - 0.25) < 1e-12)
+ok(f"knobs with a default other than 1: INFLPRES 220000 -> 242000 Pa, alpha_FL 10 -> 11 deg give {f2:+.5f} s "
+   "(the steps from the model values)", abs(f2 - (1.5e-6 * 22000.0 - 4.6e-4)) < 1e-12)
 if HAVE_CA:
     import functions.transcription as T
 

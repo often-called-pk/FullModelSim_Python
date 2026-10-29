@@ -210,13 +210,17 @@ def reconstruct_track(track0, s_full, k_full, n_full, n_halfwidth_bound):
     Xl / Xr are drawn at those per-point bounds (n_hi left, n_lo right) and the dict
     also holds n_lo, n_hi on s_full.
     The function solves a grid that repeats stations (Radau repeats every interior knot) once per station,
-    and indexes the answer back. A zero chord makes cartPath and trackLimits divide by zero,
-    and curv2cart loses the heading.
+    and indexes the answer back. It keeps the last copy of a station, the knot. The Radau end-point copy before
+    the knot has no bounds, so it can lie outside the track in a result that did not converge.
+    A zero chord makes cartPath and trackLimits divide by zero, and curv2cart loses the heading.
     """
-    u, first, inv = np.unique(s_full, return_index=True, return_inverse=True)
-    if u.size < np.size(s_full):
-        t = reconstruct_track(track0, u, np.asarray(k_full)[first], np.asarray(n_full)[first], n_halfwidth_bound)
-        return {key: (val[inv] if np.ndim(val) and np.shape(val)[0] == u.size else val) for key, val in t.items()}
+    s_full = np.asarray(s_full, float).reshape(-1)
+    keep = np.r_[np.diff(s_full) != 0, True]                   # the last copy of each station
+    if not keep.all():
+        t = reconstruct_track(track0, s_full[keep], np.asarray(k_full)[keep], np.asarray(n_full)[keep],
+                              n_halfwidth_bound)
+        inv, n_u = np.cumsum(keep) - keep, int(keep.sum())     # the station of each point
+        return {key: (val[inv] if np.ndim(val) and np.shape(val)[0] == n_u else val) for key, val in t.items()}
     if not hasattr(track0, "x") or not hasattr(track0, "y") \
             or getattr(track0, "x", None) is None or getattr(track0, "y", None) is None:
         x, y = curv2cart(s_full, k_full)

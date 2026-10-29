@@ -142,6 +142,11 @@ for name, trk in (("synthetic (curv2cart)", syn), ("x, y given", circ)):
        np.array_equal(t["s"], s_f) and all(
            np.all(np.isfinite(t[k])) and np.shape(t[k])[0] == s_f.size and np.array_equal(t[k], tu[k][idx])
            for k in keys))
+    n_off = n_f.copy()
+    n_off[3::4] += 0.5                                  # no convergence: each end-point copy is off its knot
+    t_off = reconstruct_track(trk, s_f, g["k_full"], n_off, 8.0)
+    ok(f"{name}: a repeated station takes the knot (the last copy), not the end-point copy without bounds",
+       all(np.array_equal(t_off[k], t[k]) for k in keys))
 
 # ---- 4. guesses_from_full takes a Radau result as the source ------------------------------
 print("4. guesses_from_full: a Radau result is a valid source, interp_rows stays strict")
@@ -155,6 +160,12 @@ out = guesses_from_full(src, new["s_knot"], new["s_col"], ["T_motor", "T_brake"]
 ok("x0 and xc0 equal the linear source on the new knots and points",
    np.allclose(out["x0"], f(new["s_knot"]), rtol=0, atol=1e-12)
    and np.allclose(out["xc0"], f(new["s_col"]), rtol=0, atol=1e-12))
+x_off = src.x_full.copy()
+x_off[:, 3::4] += 1.0                                   # no convergence: each end-point copy is off its knot
+out_off = guesses_from_full(SimpleNamespace(**dict(vars(src), x_full=x_off)), new["s_knot"], new["s_col"],
+                            ["T_motor", "T_brake"], np.ones(3), np.ones(2))
+ok("xc0 takes the knot of a repeated station (the last copy), not the end-point copy",
+   np.array_equal(out_off["xc0"], out["xc0"]))
 try:
     interp_rows(g["s_full"], src.x_full, new["s_col"])
     refused = False
@@ -212,6 +223,17 @@ for bad in ("Radau", "gauss", "chebyshev", None):
     except ValueError as exc:
         named = "legendre" in str(exc) and "radau" in str(exc)
     ok(f"collocation={bad!r} raises ValueError that names both schemes", named)
+msg = None
+try:
+    quiet(userOpts, Ctx(), circuit="Sturn", collocation="radau", OPT_d=1)
+except ValueError as exc:
+    msg = str(exc)
+ok("radau with OPT_d 1 raises ValueError that names OPT_d (CasADi gives B = [0.5], half the lap time)",
+   msg is not None and "OPT_d" in msg and float(np.sum(collocation_coeff(collocation_points(1, "radau"))[2])) == 0.5)
+c2, c3 = Ctx(), Ctx()
+quiet(userOpts, c2, circuit="Sturn", collocation="radau", OPT_d=2)
+quiet(userOpts, c3, circuit="Sturn", OPT_d=1)
+ok("radau with OPT_d 2 and legendre with OPT_d 1 are accepted", (c2.OPT_d, c3.OPT_d) == (2, 1))
 
 
 # ---- 6b. build_and_solve_nlp: path rows on a Radau grid need the linear input -------------

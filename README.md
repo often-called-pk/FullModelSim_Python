@@ -151,12 +151,18 @@ stem, in this order:
 6. `_<8 hex digits>` for any other setup knob that differs from its default, such as
    `vp_overrides`, `vi` or `OPT_ds`.
 
-The 8 hex digits are the first 8 digits of a sha256 hash of the knob values. So each setup
-gets its own file, and a knob run never overwrites the default result. `data['provenance']`
-in the file records the code version (`git describe`) and the knobs. It also records the
-run (warm start, linear solver, IPOPT overrides) and every parameter value of the model.
-After a solve, `ctx.out_path` holds the path of the file that it wrote. `ipopt_overrides`
-is not a knob, so two runs that differ only in their IPOPT overrides share one file name.
+The 8 hex digits are the first 8 digits of a sha256 hash of the knob values. So a knob run
+never overwrites the default result. `data['provenance']` in the file records the code
+version (`git describe`) and the knobs. It also records the run (warm start, linear solver,
+IPOPT overrides) and every parameter value of the model. After a solve, `ctx.out_path`
+holds the path of the file that it wrote. These inputs are not knobs, so two runs that
+differ only in them share one file name:
+
+- `ipopt_overrides`.
+- The promoted parameters of `optimise_design`: `params` of `MLTP_paramOptim` (one
+  `<circuit>_paramOptim.mat`) and `Fz0_shift_bounds` of `MLTP_TyreOptim`.
+- The `refine` options of `MLTP`: every refined result gets the one `_meshAdaptive` stem.
+
 The QSS screen writes `<stem>_qss.mat`.
 
 ## Defaults that move the lap
@@ -166,7 +172,9 @@ change of the lap objective per unit of the knob. The stored default results giv
 18.01633 s, BCN 116.44407 s). A row with "solves" gives the measured change of the lap.
 The objective includes the input regularisation (0.27% of the Sturn lap, 0.12% of the BCN
 lap). "NLP" marks a value from `limit_prices`, `setup_gradients` or a solve. "QSS estimate"
-marks a value of the QSS screen, which overstates changes by 1.2 to 1.5 times.
+marks a value of the QSS screen. On Sturn, the QSS mass slope is 1.1 times the NLP slope.
+For other knobs the QSS can be far off. Its anti-roll-bar slope is about 100 times larger
+than the NLP slope. Its ATD Off cost is 17 times too small.
 
 | Knob | Default | Price or effect, Sturn / BCN | Source |
 |---|---|---|---|

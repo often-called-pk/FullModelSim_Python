@@ -10,7 +10,7 @@ Plain script, no pytest. Each check prints PASS or FAIL. The first FAIL stops th
 
   1. userOpts: values, flags and errors
   2. nlp_structure, structure_mismatch and the between_knots guard of the warm start
-  3. refine.nlp_inputs and _input_affine: the inputs inside an interval
+  3. refine.nlp_inputs and input_affine: the inputs inside an interval
   4. nlp_index: the pathcol rows
   5. rpm cap: gear * Vmax / Rw < OMmax, so B3 adds no rpm row
   6. NLP rows through MLTP (Sturn, fake solver)
@@ -36,7 +36,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from functions.context import Ctx
-from functions.refine import _input_affine, nlp_inputs
+from functions.refine import input_affine, nlp_inputs
 from functions.sensitivity import nlp_index
 from functions.transcription import discretise, interp_inputs
 from functions.warmstart import STRUCT_KEYS, nlp_record, nlp_structure, plan_full_warm_start, structure_mismatch
@@ -137,8 +137,8 @@ ok("linear+power source into a linear+power target: full+duals",
 ok("a target without a between_knots key skips the check (sweeps, old callers)",
    mode(src_m, target(st)) == "full+duals")
 
-# ---- 3. refine.nlp_inputs and _input_affine: the inputs inside an interval ----------------
-print("3. refine.nlp_inputs and _input_affine: the inputs inside an interval")
+# ---- 3. refine.nlp_inputs and input_affine: the inputs inside an interval ----------------
+print("3. refine.nlp_inputs and input_affine: the inputs inside an interval")
 tr = SimpleNamespace(s=np.linspace(0.0, 540.0, 301), k=np.zeros(301))
 disc = discretise(tr, 30, 3)
 N, s_knot, s_col, dsk, tau = disc["N"], disc["s_knot"], disc["s_col"], disc["dsk"], disc["tau"]
@@ -157,9 +157,9 @@ ok("linear_inputs: equals np.interp at any s, the last knot included",
 ok("both modes are exact at every knot, U_N included",
    np.array_equal(nlp_inputs(disc, U, s_knot, "linear", linear_inputs=True), U)
    and np.array_equal(nlp_inputs(disc, U, s_knot), U))
-a0, b0 = _input_affine(U, dsk, "linear")
-a1, b1 = _input_affine(U, dsk, "linear", True)
-ok("_input_affine: same a, and b is the increment (the per-metre slope times dsk)",
+a0, b0 = input_affine(U, dsk, "linear")
+a1, b1 = input_affine(U, dsk, "linear", True)
+ok("input_affine: same a, and b is the increment (the per-metre slope times dsk)",
    np.array_equal(a0, a1) and np.allclose(b0 * dsk, b1, rtol=0, atol=1e-13))
 
 # ---- 4. sensitivity.nlp_index: the pathcol rows -------------------------------------------

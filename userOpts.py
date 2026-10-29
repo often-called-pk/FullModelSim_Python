@@ -187,7 +187,7 @@ BETWEEN_KNOTS = ("matlab", "linear", "linear+power")
 #              knot. The scheme damps the fast modes that Gauss-Legendre lets swing from knot to knot.
 #              The NLP has the same variables and rows. With between_knots='linear+power', the point on the next knot
 #              gets no power row, so g has N rows fewer per power row.
-#              Its order is 2 OPT_d - 1, against 2 OPT_d for Gauss-Legendre.
+#              Its order is 2 OPT_d - 1, against 2 OPT_d for Gauss-Legendre. It needs OPT_d >= 2 (ValueError).
 # The 7-state init always uses 'legendre'.
 COLLOCATION = ("legendre", "radau")
 
@@ -476,6 +476,9 @@ def userOpts(ctx,
     # ---- collocation scheme (B4): checked before any work. MLTP passes ctx.collocation to discretise().
     if collocation not in COLLOCATION:
         raise ValueError(f"collocation must be one of {list(COLLOCATION)}, got {collocation!r}")
+    if collocation == "radau" and OPT_d < 2:        # casadi gives B = [0.5] for the one Radau point tau = 1
+        raise ValueError(f"collocation='radau' needs OPT_d >= 2, got OPT_d={OPT_d!r}. With one point, the CasADi "
+                         "quadrature weight is 0.5, not 1. Then the lap time is half of the true value.")
     ctx.collocation = collocation
 
     # ---- state scaling (B7): checked before any work. vehModel reads ctx.chassis_scale (None = MATLAB's 1.0).

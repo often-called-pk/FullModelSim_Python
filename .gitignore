@@ -203,6 +203,7 @@ Results/sweeps/
 # validation run matrix (docs/validation_matlab_vs_python.md): result .mat/.json/.log and the reference bundles
 Results/validation/
 
-# tyre property files are licensed data (tyre_set='file:<path>'): keep them, and the private folder for them, out of the repo
-*.tir
+# tyre property files are licensed data (tyre_set='file:<path>'): keep them, and the private folder for them, out of the repo.
+# The pattern ignores the case of the extension, also on a clone with core.ignorecase=false.
+*.[tT][iI][rR]
 Data/tyres/

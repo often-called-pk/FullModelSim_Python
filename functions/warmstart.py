@@ -297,7 +297,7 @@ def guesses_from_full(src, s_knot, s_col, input_keys, x_s, u_s):
     input_keys), interpolated by physical s. Works across N / OPT_d / mesh /
     config changes; no multipliers (primal-only).
     A Radau source (collocation) repeats every interior knot in s_full.
-    The function drops the repeats before the interpolation."""
+    The function keeps the knot (the last copy) and drops the end-point copy before the interpolation."""
     x_opt = np.asarray(get_field(src, "x_opt"), dtype=float)
     u_opt = np.atleast_2d(np.asarray(get_field(src, "u_opt"), dtype=float))
     s_full = vec(get_field(src, "s_full"))
@@ -308,7 +308,7 @@ def guesses_from_full(src, s_knot, s_col, input_keys, x_s, u_s):
     x0 = interp_rows(s_knot_src, x_opt, s_knot)
     x_full = get_field(src, "x_full")
     if x_full is not None and np.shape(x_full) == (x_opt.shape[0], s_full.size):
-        keep = np.r_[True, np.diff(s_full) != 0]      # a Radau result repeats every interior knot: drop the repeats
+        keep = np.r_[np.diff(s_full) != 0, True]      # a Radau result repeats every interior knot: keep the knot
         xc = interp_rows(s_full[keep], np.asarray(x_full)[:, keep], s_col)       # source collocation detail kept
     else:
         d_new = s_col.size // max(s_knot.size - 1, 1)

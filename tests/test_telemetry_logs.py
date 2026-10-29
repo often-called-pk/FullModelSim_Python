@@ -257,6 +257,11 @@ with tempfile.TemporaryDirectory() as tmp:
     mk = P.read_csv(f_mk, AIM_MAP)["lap"]
     ok("a sample at a marker time belongs to the lap that the marker ends (samples 40 and 41)",
        mk[40] == 0 and mk[41] == 1)
+    f_ms = os.path.join(tmp, "aim_ms.csv")                      # a logger that writes the time in ms
+    write_aim_like(f_ms, dict(ses, t=1e3 * ses["t"]), lat, lon, [1e3 * b for b in beacons])
+    ms = P.read_csv(f_ms, dict(AIM_MAP, t=("Time", None, 1e-3)))
+    ok("time and beacons in ms, map factor 1e-3: t in s and the same laps as the file in s",
+       np.allclose(ms["t"], log["t"], atol=1e-4) and np.array_equal(ms["lap"], log["lap"]))
     ok("beacons=None gives no lap channel", "lap" not in P.read_csv(f_aim, AIM_MAP, beacons=None))
     ok("a map without t gives no lap channel, although the file has the Beacon Markers row",
        list(P.read_csv(f_aim, {"vx": "GPS Speed"})) == ["vx"])

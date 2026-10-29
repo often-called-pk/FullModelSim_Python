@@ -33,7 +33,7 @@ from functions.context import Ctx
 from functions.importfile import load_solution, result_stem
 from functions.mesh import solution_knots, mesh_opts_record
 from functions.warmstart import (nlp_record, get_field, is_full_result, nlp_structure,
-                                 plan_design_warm_start)
+                                 plan_design_warm_start, WARM_KNOBS)
 from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       compute_time, reconstruct_track)
@@ -269,10 +269,9 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     }
     if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
         data["n_tag"] = ctx.n_tag
-    if ctx.collocation != "legendre":   # B4: the scheme of the grid in s_full. A result without the field is 'legendre'.
-        data["collocation"] = ctx.collocation
-    if ctx.state_scaling != "matlab":   # B7: the units of w and the multipliers. A result without the field is 'matlab'.
-        data["state_scaling"] = ctx.state_scaling
+    for key, default in WARM_KNOBS[1:]:  # B4, B7 (B3 raises above): a result without the field has the default
+        if getattr(ctx, key) != default:
+            data[key] = getattr(ctx, key)
     if ctx.atd_tbr is not None:         # C4: the torque-bias rows. A result without the field has none.
         data["atd_tbr"] = float(ctx.atd_tbr)
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)

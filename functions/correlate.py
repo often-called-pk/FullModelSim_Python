@@ -16,11 +16,11 @@ import numpy as np
 from scipy.optimize import brentq
 
 from functions.context import Ctx
-from functions.ggv import aero_coefficients, build_envelope, march
-from functions.ladder import lon_model
+from functions.ggv import aero_coefficients, build_envelope
+from functions.ladder import lon_model, qss_profile
 from functions.sweep import array_sha, read_json, write_json_atomic
 from userOpts import userOpts
-from vehParams import MF_KEYS
+from vehParams import MF_KEYS, vehParams
 
 # ponytail: a fit keeps the whole log in memory (6.4 MB for 30 laps at 50 Hz). Stream or decimate above 1e7 samples.
 STAGES = ("grip", "drag", "downforce")      # the order of Canopy: apex speed, end-of-straight speed, fast corners
@@ -44,7 +44,14 @@ def _lerp(e, tab, x):
 
 
 def _lap(ctx):
-    return march(build_envelope(ctx), ctx.track.s, ctx.track.k, ctx.vi)["lap_time"]
+    return qss_profile(ctx)["lap_time"]
+
+
+def _movavg(x, t, win):
+    """Return (the moving average of x over win [s], its sample count w). The step is the median step of t.
+    np.convolve keeps the length of x, so the average is wrong for w / 2 samples at each end."""
+    w = max(1, min(int(round(win / np.median(np.diff(t)))), len(t)))
+    return np.convolve(x, np.ones(w) / w, mode="same"), w
 
 
 def _decel(e, v, a):
@@ -101,8 +108,8 @@ def check_ax(log, win=0.5, floor=0.3):
     if "t" not in log or "ax" not in log:
         return np.nan
     t, v, ax = (np.asarray(log[k], float) for k in ("t", "vx", "ax"))
-    w = max(1, min(int(round(win / np.median(np.diff(t)))), t.size))     # np.convolve keeps the log length
-    dv = np.gradient(np.convolve(v, np.ones(w) / w, mode="same"), t)
+    vs, w = _movavg(v, t, win)
+    dv = np.gradient(vs, t)
     ok = np.isfinite(dv) & np.isfinite(ax)
     ok[:w], ok[-w:] = False, False                                      # the average is wrong at both ends
     if ok.sum() < 20 or np.std(dv[ok]) < 1e-6:
@@ -132,10 +139,9 @@ def grip_fit(log, ctx, q=0.98, u_min=0.6, ax_tol=3.0, smooth=0.25, lam=(0.3, 2.0
     In a straight line the brake torque limits the QSS (11.4 to 12.8 m/s^2 for the default car, against 15.5 to 17.6
     for the tyre). So only trail braking shows the tyre. Fewer than 20 such samples give nan."""
     check_ax(log)
-    v0, ax0, ay0 = (np.asarray(log[k], float) for k in ("vx", "ax", "ay"))
-    dt = float(np.median(np.diff(log["t"])))
-    w = max(1, min(int(round(smooth / dt)), v0.size))                   # np.convolve keeps the log length
-    v, ax, ay = (np.convolve(x, np.ones(w) / w, mode="same") for x in (v0, ax0, ay0)) if w > 1 else (v0, ax0, ay0)
+    t, v0, ax0, ay0 = (np.asarray(log[k], float) for k in ("t", "vx", "ax", "ay"))
+    dt = float(np.median(np.diff(t)))
+    v, ax, ay = (_movavg(x, t, smooth)[0] for x in (v0, ax0, ay0))
     a, a0 = np.abs(ay), np.abs(ay0)
     ly0, lx0 = ctx.mf.LMUY, ctx.mf.LMUX
     out = dict(LMUY=np.nan, LMUX=np.nan, n_y=0, n_x=0, n_events=0, why_y="", why_x="", rms_before=np.nan,
@@ -242,8 +248,7 @@ def drag_fit(log, ctx, eta=1.0, win=1.0, ay_tol=0.5, v_min=20.0, coast=False):
     if "brake" in log:
         brake = np.asarray(log["brake"], float) != 0
     else:                                   # ponytail: one constant -3 m/s^2 threshold. Log brake for light braking.
-        w = max(1, min(int(round(0.5 / np.median(np.diff(t)))), t.size))
-        brake = np.convolve(np.gradient(v, t), np.ones(w) / w, mode="same") < -3.0
+        brake = _movavg(np.gradient(v, t), t, 0.5)[0] < -3.0
     straight = fin & (np.abs(ay) < ay_tol) & ~brake & (v > v_min)
     if coast:
         straight &= np.abs(Tm) < 1e-6
@@ -321,10 +326,10 @@ def _frozen(ledger, stage):
 
 def ledger_add(path, rec):
     """Append the record rec of a stage to the JSON ledger at path. Return the ledger.
-    One ledger holds one car. The circuit, physics and tyre_set must match the first record, else ValueError.
-    A fitted value has a meaning only with the model that it came from.
+    One ledger holds one car. The circuit, config (AeroConfig, ATD, Electric_4Motors), physics and tyre_set must
+    match the first record, else ValueError. A fitted value has a meaning only with the model that it came from.
     A stored stage that comes after rec in STAGES becomes stale, because rec can change the values that it used."""
-    key = [rec["circuit"], rec["physics"], rec["tyre_set"]]
+    key = [rec["circuit"], rec["config"], rec["physics"], rec["tyre_set"]]
     led = read_json(path) if os.path.exists(path) else dict(version=1, key=key, stages=[])
     if led["key"] != key:
         raise ValueError(f"{path} holds {led['key']}, not {key}. Use another ledger file.")
@@ -348,10 +353,11 @@ def run_stage(stage, log, circuit, ledger=None, link=True, lap=None, tags=None, 
     With link=True, LMUX takes the value of LMUY (one effective grip), and the gate tests LMUY alone.
     With link=False, LMUX keeps its fitted value, and the gate tests the two knobs.
     If the log does not identify LMUX, LMUX keeps its base value.
-    The record has stage, method, fit, apply, identifiable (gamma, se, never, ok), detail,
-    and qss_ratio = lap(apply) / lap(base).
+    The record has stage, method, config, useropts (the userOpts kwargs except vp_overrides), fit, apply,
+    identifiable (gamma, se, never, ok), detail, and qss_ratio = lap(apply) / lap(base).
     apply holds vp_overrides for the QSS only. A fit that the gate refuses (identifiable["ok"] False) gives no values.
-    The full model keeps 1 until a study gives its own elasticity."""
+    In the grip stage, the lap ratio can then give the values (method 'lap'). identifiable then keeps the refused
+    test of the accelerations. The full model keeps 1 until a study gives its own elasticity."""
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}, got {stage!r}")
     kw = dict(useropts_kwargs)
@@ -396,8 +402,10 @@ def run_stage(stage, log, circuit, ledger=None, link=True, lap=None, tags=None, 
             _set(ctx, k, val)                                           # ctx is local: no need to restore it
         ratio = _lap(ctx) / t_base
     vx = None if log is None else np.asarray(log["vx"], float)
-    rec = dict(stage=stage, method=method, circuit=circuit, physics=ctx.physics, tyre_set=ctx.tyre_set,
-               base_overrides=base, tags=tags or {}, log_sha=None if vx is None else array_sha(vx),
+    rec = dict(stage=stage, method=method, circuit=circuit,
+               config=f"{ctx.AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}", physics=ctx.physics,
+               tyre_set=ctx.tyre_set, useropts=kw, base_overrides=base, tags=tags or {},
+               log_sha=None if vx is None else array_sha(vx),
                n_samples=0 if vx is None else int(len(vx)), fit=fit, apply=apply, identifiable=idn, detail=detail,
                qss_ratio=ratio, wall_s=time.perf_counter() - t0)
     if ledger:
@@ -409,8 +417,13 @@ def nlp_forecast(data, fit, **kw):
     """Return the first-order change [s] of the NLP objective of a stored full result. No solve.
     fit maps each knob to its new value. The change is the sum over the knobs of
     dJ/dp (setup_gradients) times (new value - old value).
-    The old value is the one in kw['vp_overrides'], or 1.0. kw are the options of setup_gradients."""
+    The old value is the value of the knob in the model of kw. That model is vehParams with the vp_overrides,
+    tyre_set, physics and data_dir of kw. So a knob with a default other than 1 (INFLPRES, alpha_FL) gets its true step.
+    kw are the options of setup_gradients."""
     from functions.sensitivity import setup_gradients
     g = setup_gradients(data, list(fit), **kw)
-    old = kw.get("vp_overrides") or {}
-    return float(sum(g[k] * (v - old.get(k, 1.0)) for k, v in fit.items()))
+    c = Ctx()
+    c.physics = kw.get("physics", "matlab")                     # vehParams reads it, as in userOpts
+    vehParams(c, data_dir=kw.get("data_dir", "Data"), vp_overrides=kw.get("vp_overrides"),
+              tyre_set=kw.get("tyre_set", "MF205"))
+    return float(sum(g[k] * (v - _get(c, k)) for k, v in fit.items()))
