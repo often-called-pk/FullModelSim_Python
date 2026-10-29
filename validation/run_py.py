@@ -8,8 +8,11 @@ tier ``par``  = the parity call of doc section 3 (py_export.PARITY: uniform mesh
 tier ``prod`` = Python defaults, MLTP(track) with nothing set (OPT_ds 30, mesh auto, tol 1e-4, ma57, adaptive mu).
 tier ``prod8`` = ``prod`` plus MATLAB's stopping rule: tol 1e-8 (userOpts kwarg), acceptable_tol 1e-6 (ipopt_overrides).
 All add the runner cap IPOPT max_wall_time 1800 s and run with save=False, plot=False (the results go to --out).
-``--results-dir DIR`` sets save=True, results_dir=DIR: MLTP also writes its normal result file there (standard stem, e.g.
-BCN_Static_ATDOn_EM4Off.mat, full data incl. data.vehicle and data.nlp; the save counts in mltp_wall_s).
+``--results-dir DIR`` sets save=True, results_dir=DIR: MLTP also writes its normal result file there, with the full data
+incl. data.vehicle and data.nlp. The save counts in mltp_wall_s. The file name is the result stem of the call (E2). Tier
+``prod`` without ``--opt-ds`` and ``--max-iter`` keeps the default stem, e.g. BCN_Static_ATDOn_EM4Off.mat. Tiers ``par``
+and ``prod8``, ``--opt-ds`` and ``--max-iter`` set setup knobs (tol, OPT_ds, max_iter), so the stem ends in 8 hex digits.
+Tier ``par`` also adds _meshUniform.
 ``--opt-ds`` is for the failure-policy retry (doc section 10, 20 m), ``--max-iter`` for the smoke test only
 (0 = everything is built, nothing is solved).
 

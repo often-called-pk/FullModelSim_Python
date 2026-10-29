@@ -69,7 +69,7 @@ default because the SX graph is large (peak commit ~8 GB at BCN N=465).
 Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (44 today) are plain scripts whose assertions run at module top level (no
+files (55 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -115,7 +115,18 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_aero_scale.py`: E3 `Cd_scale` / `Cl_scale`: defaults, registry, `Cd` / `Cl` placeholders inert with DATA_AA. f_drag and the five lifts scale, the side force does not (both physics). QSS == vehModel, parity export joint filter. Section 5, A4: the corrected drag pitch moment (closed form at 20 / 60 m/s, none under matlab, `Cd_scale` on it). QSS axle shift == coast equilibrium, QSS lap moves < 0.01%. Casadi + `Data/DATA_AA.mat`, no solve
 - `test_power_a5.py`: A5 `vp_overrides` keys `gear, Tmax, Pmax, Preg, Ppack`. Defaults change nothing. Keys refused under matlab and by value. Regen bounds, pack row last in [0, inf] (n_g + N + 1). QSS regen anchored to vehModel wheel torques, QSS pack cap. Energy motor by motor on a stand-in solve, NLP sizes with a fake IPOPT. Casadi + `Data/DATA_AA.mat`, no IPOPT
 - `test_telemetry.py`: E1 stage M. `time_at_points` exact. `resample` keeps input jumps, ax / ay stay inside the node range. Monster file (11 tab columns, no header, distance = integral of speed) and CSV. Stored Sturn point, fake IPOPT: `vehicle[k] == vehicle_full[k][::4]` and `t_full[::4] == t_opt` bitwise. ax / ay at the nodes == state-polynomial kinematics (pins `nlp_inputs`). EM4 and corrected stubs, `.mat` round trip
-- App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6)
+- `test_provenance.py`: E2. `userOpts.setup_knobs` and `knob_tag`: the default setup is empty, a value equal to the default is no knob, and 45 == 45.0. The tyre set decides the defaults, and A5 keys, n_bounds, `load_model` and `ds_fine` count. Keys that never count, and every userOpts argument classified by rule. `result_stem` puts the tag last. `code_version` and `provenance_record`: savemat round trip, `ipopt_overrides` as JSON text, an option name over 31 characters. GUI tag == MLTP tag. Fake IPOPT: the names and fields of MLTP, MLTP_initial, MLTP_screen and optimise_design. A knob run leaves the default file untouched
+- `test_continue_from.py`: B5. `warmstart.default_source` gates: missing, knobs, unconverged, legacy, acceptable. Argument errors before any build. Fake IPOPT: LMUY 0.95, n_bounds 4.2 and vi 65 with ni 0.5 give full+duals. `warm_start_duals=False` gives full-primal. Another start_state needs its own default. OPT_ds 45, PureSlip and a default without `data.tyre_set` raise with the reason, and so does a knob file at the default name. A hop that does not converge warns. `continue_from=None` reads nothing
+- `test_between_knots.py`: B3. Values and errors, `nlp_structure` and the planner guard, `refine.nlp_inputs` / `_input_affine`, `nlp_index` pathcol rows, rpm cap gear*Vmax/Rw = 0.885 OMmax. Fake-solver Sturn: only the defect rows differ. The defect rows match a numpy f_dyn (1e-9), and the tail rows match (Pmax - T Om_motor)/Pmax (1e-12). EM4, regen, pack and periodic rows. Warm-start modes, saved fields, Pmax NaN and refusals. The refine reseed and indicator follow the flag (sections 6-9 need casadi + `Data/DATA_AA.mat`)
+- `test_radau.py`: B4. Radau points, D, B and stability. `discretise(scheme='radau')` gives exact duplicates, including a 1-ulp case. `reconstruct_track` gives one answer per station, and `guesses_from_full` takes a Radau source. The telemetry nodes follow `data.collocation`. userOpts errors, and the builder ValueError for collocation path rows without linear inputs. Fake-solver Sturn: sizes equal Legendre, N zero steps, end-point input, continuity nnz 2 vs 5. Warm starts Radau -> Radau full+duals, Radau -> Legendre full-interp. Refine keeps the scheme
+- `test_mesh_report.py`: B6. `mesh.mesh_report` text. The speed term: speed 0 bit for bit, ValueError without v, more knots in braking, a constant speed drops it. The userOpts `track.v_qss` hook. `vehModel.vertical_eigs` vs AD (both physics). MLTP prints 3 lines and survives a failing report (fake IPOPT)
+- `test_state_scaling.py`: B7. Boxes for default, typical, rolling and periodic (physical width kept), and ValueError. The planner refuses duals across scalings. build_only equivalence: f equal, g' = R g, J' = R J C, bounds. The IPOPT options of 'typical' equal the default ones (the tol bug of 6451820). Fake-IPOPT records and `.mat` round trip
+- `test_atd_tbr.py`: C4. Defaults, k and ValueErrors. Row names, bounds and values on hand splits, and the wheel-torque identity. Sizes 1904 / 1942 / 1980. The planner compares path-row names (PureSlip 8 rows vs TBR 8 rows: full-interp). QSS lap unchanged, fake-IPOPT records
+- `test_arb.py`: C3. Registry and defaults, and a plain 0 = default graph. Force sign and shape (both physics), roll stiffness -k t^2 / I_x. Steady transfer vs QSS, and the QSS lap. `classify_fields`, RunConfig and the parity export. The zero-solve gradient on the stored Sturn optimum
+- `test_tir.py`: C5. Reader: sections, comments, quotes, D exponent, CRLF. `tyre_set='file:'` round trip of MF205 (graph hash equal), FNOMIN, overrides win. Errors and warnings, and no `.tir` tracked by git. `mf_pressure` floats and the MF 6.1 factors at +10%. Full-model sites: SVx / SVy unmoved, camber stiffness, INFLPRES as a symbol. QSS lap at +10% == lap at the mu factors. Two same-name files get two tags. Parity export
+- `test_telemetry_logs.py`: E5. `read_monster` round trip and sign pair. `read_csv`: map forms, JSON map, units-row check, metadata rows, beacons, streaming peak. `split_laps`. `project` on BCN / Sturn: |s err| < 0.3 m, |n err| < 0.03 m, centreline guard. `time_delta`. `overlay_report`: lap pick, panels, sign warning. Synthetic data, no solve, no `Data/DATA_AA.mat`
+- `test_correlate.py`: E6-E8. `gamma`, and `identifiable` (it refuses LFZO and Fz0_shift). `grip_fit` on QSS logs: LMUY within 0.01, LMUX within 0.03 noise free. `check_ax` and NaN dropouts. `drag_fit`: exact with ax, torque-scale error. `lift_fit`: matlab refused, corrected equilibria. `run_stage` + ledger: frozen stages, stale marks. Import without casadi. `nlp_forecast` vs V9
+- App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6). F2: `FORWARD` sends a key only when set and not default, and `mode='qss'` drops the NLP-only keys and runs `MLTP_screen`. `RunConfig` folds `pt_overrides` into `vp_overrides`, and `setup_tag()` == the MLTP tag. `result_paths`, `freeze_support` first in `__main__`, the Advanced-tab combos and the More options box. 4 Motors ticks Homotopy
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
 `test_paramoptim_warmstart.py` (section 4) and `test_ladder.py` (section 9), both capped at
@@ -148,7 +159,8 @@ conditions), and the result models `ctx.m7` / `ctx.m23` / `ctx.data`.
    `ctx.m7`, nx=7/nu=3/ny=1, lumped Magic-Formula tyre) and solves a reduced OCP to produce a
    warm start, saved as `Results/init_<circuit>.mat` (`data.init`).
 2. **`MLTP.py`** builds the **full 23-state model** (`vehModel` -> `ctx.m23`) and solves the real
-   problem, saving `Results/<circuit>_<config>.mat`. If `warm_start=None`, `MLTP()` calls
+   problem, saving `Results/<circuit>_<config>.mat`. A non-default setup adds stem parts and a setup tag (see the
+   result-names bullet). If `warm_start=None`, `MLTP()` calls
    `MLTP_initial(save=False)` itself and interpolates the 7-state solution onto the 23-state grid
    **by arc length** via `warmstart_guesses()` (the two grids may differ in N and mesh). That is
    the default `ladder='legacy'`; `ladder='qss7'` / `'qss23'` seed from the QSS speed profile
@@ -170,7 +182,9 @@ may differ, which is the sweep case) the saved primal AND duals are re-injected 
 warm-start recipe (`warmstart.warm_start_ipopt_opts()`, used only on a dual-seeded resolve, never
 cold; explicit `ipopt_overrides` still win; `warm_start_duals=False` seeds the primal only).
 Otherwise (N, `OPT_d`, mesh or config changed) the old result is interpolated onto the new knots by
-arc length (primal only). The mode (`cold | init7 | full+duals | full-primal | full-interp`) is
+arc length (primal only). `warmstart.WARM_KNOBS` (`start_state`, `between_knots`, `collocation`, `state_scaling`, absent =
+default) also refuse the duals when they differ (full-interp). So do the path-row names (`hnames` against the keys of
+`data.constraints`). The mode (`cold | init7 | full+duals | full-primal | full-interp`) is
 printed and stored in `data.nlp.warm_start`. Measured on Sturn (N=18, ma57; five-coefficient MF205
 proxy; pre-fix NLP, see the constraint-set bullet): a cold solve takes 257 iterations / 32.5 s; an
 identical resolve with duals 0 iterations / 4.7 s (primal-only 30); +3% `alpha_RW` takes 11 iterations warm vs 364 cold, +3% `mb` 32 vs 327.
@@ -182,6 +196,17 @@ the appended P block (`warmstart.plan_design_warm_start`) it starts from `[w_opt
 default params, ma57, pi/8 steering (2026-10-08 baseline): 5 iterations to 18.016 s from the 174-iteration 18.016 s result. Pre-pi/8: 5 to
 18.0080 s from the 179-iteration 18.0086 s result (primal-only 26, same point) vs 220 to 18.2439 s from the 7-state init. All other numbers
 in this subsection are pre-pi/8 (and pre-fix where stated).
+
+**`MLTP(continue_from='auto')` (B5, 2026-10-28, pinned by `tests/test_continue_from.py`).** It seeds one off-default solve from the
+stored DEFAULT result `results_dir/<stem>.mat`, with primal and duals (`warm_start_duals=False`: primal only). The stem is the one of
+the call without the n_bounds band and without the setup tag. A tyre file keeps the tag of its knob `tyre_file`. Strict, no
+fallback: ValueError before the solve. It raises for another value, or with `warm_start` or `homotopy`. It raises for a missing
+default, or for knobs in `data.provenance.setup` other than `tyre_file`. It raises for an IPOPT status outside `GOOD_STATUS`. It
+raises for a source that does not fit: other N, mesh grid, input channels, path rows, tyre set or a `WARM_KNOBS` value. A default
+saved before E2 (no provenance) is trusted by its name. A hop that does not converge warns. The result saves under its own tag,
+and `data.provenance.run.source` names the default file. Not checked: the linear solver, the IPOPT options and the code version
+of the source. Measured (Linux, MUMPS): LMUX = LMUY = 0.95 takes 20 iterations to 18.24010 s (= V9), 4.1 s wall. `mb` +3% takes
+15 iterations to 18.16919 s, 3.9 s wall. Its cold solve takes 500 iterations to 19.17591 s (a slow branch), 79.6 s wall.
 
 ### Multi-fidelity ladder (`functions/ladder.py`)
 `MLTP(ladder=...)` builds every cold start (no or a refused `warm_start`, refine's cold retry) from a chain of
@@ -218,7 +243,9 @@ a quick screening-grade cold start, `homotopy=True` when a cold solve fails: EM4
   `optimise_design(build_only=True)` (only `setup_gradients` passes it) returns the dict of
   `build_and_solve_nlp(build_only=True)`: nlp, w0, bounds, accepted lam_g0 / lam_x0, no solver. It raises
   ValueError for `warm_start=None`, or for a full result whose warm-start mode is not `full+duals`. A 7-state init
-  gives the dict without lam_g0 / lam_x0.
+  gives the dict without lam_g0 / lam_x0. `optimise_design` refuses `between_knots` other than 'matlab' and takes
+  `collocation`, `state_scaling` and `atd_tbr` as `MLTP` does. Its file gets the setup tag of its userOpts knobs, not of
+  `param_specs` or `Fz0_shift_bounds`.
 - **Setup gradients, zero solves (C2 stage M, 2026-10-21, `tests/test_sensitivity.py` section 8).**
   `functions/sensitivity.setup_gradients(data, params, tol=1e-3, **kw)` -> `{p: dJ*/dp}` [s per unit of p] of a
   stored full result. It promotes each p (vehParams primary or MF key) and rebuilds the NLP at the stored point
@@ -233,7 +260,8 @@ a quick screening-grade cold start, `homotopy=True` when a cold solve fails: EM4
   full+duals from the stored Sturn result). LKY 0.9: 6 iterations, 18.09017 s (+0.07384 s), objective +0.07146 s vs first
   order +0.06404 s. LKY 0.95: 3 iterations, objective +0.03379 s vs first order +0.03202 s. The first-order gap
   halves with the step (10.4% -> 5.2%): a second-order term, not a gradient error. `setup_sweep` still promotes no
-  MF key (`promotion_safe` needs a primary).
+  MF key (`promotion_safe` needs a primary). A `kw` with `between_knots` other than 'matlab' raises ValueError. A Radau
+  result needs `collocation='radau'` in `kw`.
 - **`MLTP_TyreOptim.py`** is a thin wrapper over `optimise_design()` promoting only `Fz0_shift`.
   As `MLTP_TyreOptim.m:128` it also scales the nominal load: `optimise_design(Fz0_follows_shift=True)` sets
   `vp.Fz0 = vp.Fz0*Fz0_shift` before `vehModel` (only this wrapper; `MLTP_paramOptim` and `setup_sweep` keep
@@ -256,15 +284,18 @@ reproduces the 23-state model's quasi-steady loads, quirks included (tyre-load s
 basis. Active aero is evaluated at the static wing angles; `test_screen.py` anchors mu, aero and
 loads against vehModel. The screen uses the intended `mu_y` peak; the legacy `tyre_set='CopyB'`
 zeroes vehModel's cornering stiffness (see the tyre bullet below), so compare the screen only with
-NLPs on the default MF205 set. Knobs the screen reads: `LMUX`, `LMUY`, `LFZO`, `Cd_scale`, `Cl_scale`, and under
-`physics='corrected'` the A4 drag axle shift and the A5 `Ppack` cap / `Preg` regen (`Envelope.F_brk`). `LKX` / `LKY`
-have no QSS site (peak friction only), so the screen cannot rank them.
+NLPs on the default MF205 set. Knobs the screen reads: `LMUX`, `LMUY`, `LFZO`, `Cd_scale`, `Cl_scale`, `k_arb_f` and
+`k_arb_r` (roll split, C3). It also reads the MF 6.1 mu pressure factors (`INFLPRES` with `ppx3`, `ppx4`, `ppy3`, `ppy4`,
+C5). Under `physics='corrected'` it reads the A4 drag axle shift and the A5 `Ppack` cap / `Preg` regen (`Envelope.F_brk`).
+`LKX` / `LKY` and the stiffness pressure terms have no QSS site (peak friction only), so the screen cannot rank them.
+The QSS lap ignores the collocation scheme, but `collocation='radau'` needs casadi for the Radau points of the `s_full` grid.
 
 ### The transcription engine: `functions/transcription.py`
 Shared by all MLTP scripts. `discretise(track, OPT_ds, OPT_d, mesh='uniform', mesh_opts=None,
-s_knot=None)` builds the Legendre collocation grid (defaults from `userOpts.py`: step
+s_knot=None, scheme='legendre')` builds the collocation grid, Legendre or Radau IIA (B4) (defaults from `userOpts.py`: step
 `OPT_ds=30` m, degree `OPT_d=3`, `OPT_uinter='linear'`; knot placement: see Collocation mesh);
-`build_and_solve_nlp(..., warm=None, sym_type=None)` assembles the CasADi NLP, decision vector
+`build_and_solve_nlp(..., warm=None, sym_type=None, linear_inputs=False, h_col_rows=None)` (B3) assembles the CasADi NLP,
+decision vector
 `w = [Xk; Uk; (Yk); Xkj (; P)]` packed **column-major (`order='F'`)**, collocation defect +
 endpoint continuity, path constraints, time-domain input-rate limits, `Xi/Xf` boundary bounds
 (**`NaN` = free state**), objective `J = Σ Qk·B·dsk` + regularisation, then calls
@@ -290,7 +321,7 @@ are the `pct`-th percentiles (90) of the track's own smoothed |k| and |dk/ds|; a
 zero up to float rounding (a straight, a constant-radius circle's dk/ds, curvature noise around
 zero; judged as under 1e-6 rad of turning, or under 1e-6 of peak |k| of curvature change, over
 the whole lap) drops its term, so such tracks get the uniform mesh. `mesh_opts` keys:
-`a, b, ds_min, ds_max, smooth_window, N, pct, grid_ds` (a = b = 1 by default). `'auto'` only
+`a, b, ds_min, ds_max, smooth_window, N, pct, grid_ds, speed`. By default a = b = 1 and speed = 0 (B6 paragraph). `'auto'` only
 redistributes the knots and does not change N (still round(L/`OPT_ds`)), so BCN at the default
 `OPT_ds=30` gets a curvature mesh with N=155, the same interval count as before. Measured with
 the default call (ma57, `tyre_set='MF205'`, pre-fix NLP; with the constraint-set fix in Conventions it
@@ -310,6 +341,19 @@ interval reduction pass `OPT_ds=45`
 (or larger) together with the curvature mesh, e.g. `MLTP(circuit='BCN', OPT_ds=45)`. Results record
 `data.mesh` / `data.mesh_opts`. A new mesh changes `s_full`, so a result saved on another
 mesh (e.g. an older uniform-mesh BCN result) seeds by interpolation (no dual re-injection).
+
+**Mesh report and speed term (B6, 2026-10-28, pinned by `tests/test_mesh_report.py`).** After the summary, `MLTP` prints
+three `[MLTP]` lines (`functions.mesh.mesh_report`). They give the interval durations, the vertical modes and the count of
+intervals that last at most half the slowest period. `vehModel.vertical_eigs` takes the modes from central differences of
+`f_dyn` at the static coast point (states 9-22, about 1 ms). A failure prints one skip line and never raises. Matlab
+physics: 3.38, 3.90 and 4.55 Hz, plus 4 decaying modes (77 us to 37 us). Corrected: 1.90, 3.03 and 5.21 Hz. On Sturn 0 of
+18 and on BCN 0 of 155 intervals resolve a mode. `mesh_opts={'speed': w}` adds w |dv/ds| / dv_ref of the QSS speed to the
+curvature monitor. The default 0 is off (knots bit for bit). userOpts sets the speed `track.v_qss` from `qss_profile`.
+N stays. The knots follow the setup, so `setup_sweep` refuses the term, and a homotopy step or a setup chain with it
+seeds the primal only. BCN at w = 1 (cold, MUMPS): 218 iterations, 116.35533 s (-0.076%), so the keep rule held (lap <=
+116.385 s, iterations <= 248). At vi = 60.001 m/s: 156 iterations, 116.39807 s, against 277 iterations, 116.44196 s on the
+default mesh. The lap on the speed mesh moves 0.043 s between the two starts (default mesh 0.002 s). Its 7-state init at
+vi = 60.000 m/s ended with `Error_In_Step_Computation`, and the 23-state solve still converged.
 
 **Adaptive mesh refinement (`MLTP(refine=...)`, `functions/refine.py`; off by default).**
 `refine=None` is the unchanged single solve. `refine=True` or a dict (`passes` 2, `tol` 1e-2,
@@ -355,7 +399,8 @@ iterations in 2 of 3 runs from seeds 1e-10 apart, Hairpin PureSlip N 11 -> 15 en
 `Restoration_Failed` in 2 of 4 and 15 -> 17 hit 1000 in 2 of 2; the cold retry rescued EM4 (965 iterations) and
 Hairpin 15 -> 17 (231), never Sturn N >= 36. Use refinement to reach N=24-30 meshes that cold
 uniform solves do not converge on; for speed or accuracy at a given N prefer `mesh='curvature'`.
-`refine` is an `MLTP` kwarg only (no GUI widget).
+`refine` reaches `MLTP` from cfg.json too (F2). The GUI has no widget for it, because the Output tab does not look for
+`_meshAdaptive` files.
 
 ### Configuration: `userOpts.py`
 Builds `ctx`: calls `Powertrain`+`vehParams`, loads or **synthesizes** the track, sets `Xi/Xf`,
@@ -384,18 +429,21 @@ circle, 0.05 m, 40 m: median kR 0.9986). No circuit is registered: add the file 
 (`Circuits/Barcelona_circuit.mat`). BCN rebuilt from its own x,y: turning -1.000000000000 laps, no issue, end gap
 0.57 m. Its QSS lap is 134.768 s, +4.1% vs the parity file. Smoothing is a fit knob, so BCN keeps its file.
 Other kwargs: `vp_overrides` (vehParams primaries + Pacejka coefficients), `tyre_set` (default
-`'MF205'`; `'CopyB'` is the legacy set, see the tyre bullet), `OPT_ds` / `OPT_d` / `OPT_e`, `mesh`
+`'MF205'`, `'CopyB'` is the legacy set, `'file:<path>'` reads a .tir, see the tyre bullets), `OPT_ds` / `OPT_d` / `OPT_e`, `mesh`
 (default `'auto'`, see Collocation mesh) / `mesh_opts`, `max_iter` / `tol`, `linear_solver` /
 `hsl_dir`, `cse` / `jit` (opt-in), `screening`, `physics` (`'matlab'` default | `'corrected'`, see the physics
 bullet), `Steering` (`'NA'` | `'Ackermann'`) / `CamberGain` (`'Off'` | `'Linear'` | `'Table'`), `start_state` (`'matlab'`
 default | `'rolling'` | `'periodic'`, see the start-state bullet), `n_bounds` (None default | half-width W |
-`(lo, hi)`, see the track-width bullet), and `ipopt_overrides` (dict of any IPOPT options,
+`(lo, hi)`, see the track-width bullet), `between_knots` (B3), `collocation` (B4), `state_scaling` (B7), `atd_tbr` (C4, see
+their bullets), and `ipopt_overrides` (dict of any IPOPT options,
 merged last so it beats every default, the screening preset and the warm-start recipe; a non-exact
 `hessian_approximation` warns). Kept on `ctx.mesh` (resolved), `ctx.mesh_requested`,
 `ctx.mesh_opts`, `ctx.tyre_set`, `ctx.screening`, `ctx.ipopt_overrides`, `ctx.cse`, `ctx.jit`, `ctx.physics`,
 `ctx.Steering`, `ctx.CamberGain` (`vehModel(ctx)` reads the last two when its arguments are None),
-`ctx.start_state`, `ctx.periodic`, `ctx.Xi_tol`, `ctx.n_bounds`, `ctx.n_tag`, plus `ctx.track.n_lo` / `n_hi`
-when a band is set.
+`ctx.start_state`, `ctx.periodic`, `ctx.Xi_tol`, `ctx.n_bounds`, `ctx.n_tag`, `ctx.between_knots`, `ctx.linear_inputs`,
+`ctx.power_at_col`, `ctx.collocation`, `ctx.state_scaling`, `ctx.chassis_scale`, `ctx.atd_tbr` (and `pt.atd_k` when set), plus
+`ctx.track.n_lo` / `n_hi` with a band and `ctx.track.v_qss` with a speed weight in `mesh_opts`. `MLTP` adds
+`ctx.out_path` after a save.
 
 ### Helpers (`functions/`)
 - **Solver-side:** `collocation.py` (Legendre points/coeffs; CasADi-native with a numpy fallback),
@@ -411,8 +459,27 @@ when a band is set.
 - **Post-solve analysis:** `sensitivity.py` (numpy only, no solve): `limit_prices`, `lateral_prices`,
   `costates` from the stored multipliers of one full result; first order, and J includes the regularisation
   (0.27% of the Sturn lap, 0.12% of BCN). `setup_gradients` is the exception: it imports casadi and
-  `MLTP_paramOptim` and rebuilds the NLP (no solve, see Co-optimization wrappers). `telemetry.py` (numpy only):
-  `resample(data, by='distance' | 'time', step)`, `export_monster`, `export_csv` (see the output-channels bullet).
+  `MLTP_paramOptim` and rebuilds the NLP (no solve, see Co-optimization wrappers). `telemetry.py` uses numpy and scipy
+  (plotly only inside `overlay_report`, casadi for a Radau result). It has `resample(data, by='distance' | 'time', step)`,
+  `export_monster` and `export_csv` (see the output-channels bullet). E5 log tools (2026-10-28, pinned by
+  `tests/test_telemetry_logs.py`): `read_monster(path, step=0.02, sign=(-1, -1))` (whitespace columns, t = row * step, the
+  sign pair of `export_monster`). `read_csv(path, channel_map=None, beacons='Beacon Markers', chunk=1 << 14)` streams in
+  chunks and keeps the mapped columns only. Its map is `{channel: column}`, `{channel: [column, unit, factor]}` or a JSON
+  file of either. A units row must show the unit of the map. The beacon row gives the channel `lap`. Then
+  `split_laps(t, dist, beacon, gap, drop)` and `project(log, track)`: s and n on the centreline, n left positive, no shift
+  or rotation estimate. `project` warns when the median |n| of the moving samples is above 8 m. Last, `time_delta(sim, lap)`
+  and `overlay_report(data, log, path, lap=None, step=1.0)`: 5 panels on s, and a warning when the `corr` of ay or delta is
+  below 0. No AiM channel map ships (signs unverified). `correlate.py` (E6 to E8, 2026-10-28, pinned by
+  `tests/test_correlate.py`) uses numpy and scipy, and casadi only in `nlp_forecast`. `STAGES` = grip, drag, downforce.
+  `run_stage(stage, log, circuit, ledger=None, link=True, lap=None, tags=None, **useropts_kwargs)` fits one stage with the
+  QSS. It appends a record to a JSON ledger. One ledger holds one car (circuit, physics, tyre_set), and a re-run marks the
+  later stages stale. `grip_fit` (E7a) fits LMUY and LMUX from ax and ay, and `grip_from_lap` sets LMUX = LMUY from a lap
+  ratio. `drag_fit` (E8a) fits Cd_scale and f from a power balance on straights. `lift_fit` (E8b, physics='corrected'
+  only) fits Cl_scale from the damper travel. `identifiable` is the gate: `gamma` <= 15, and no name of `NEVER` (LFZO,
+  Fz0_shift, LKX, LKY). `check_ax` raises ValueError when ax does not follow d vx/dt. `nlp_forecast` gives the first-order
+  NLP change via `setup_gradients`. The fits give effective QSS values and apply to the QSS only. On NLP data, VE7 (Sturn)
+  finds an LMUY step of -0.10 within 0.01, but an LMUX step of -0.10 as -0.027. VE8 (BCN): ax at the collocation points
+  rings, so `drag_fit` on a straight fails. A whole-lap fit without ax finds +0.315 for a +0.30 step.
 - **Post-processing only** (reached via `reconstruct_track` *after* the solve): `curv2cart.py`
   (s,k -> cartesian centreline), `cartPath.py` (lateral offset `n` -> racing line), `trackLimits.py`
   (boundary polylines), `rotatePoint2D.py` (used only inside `curv2cart`).
@@ -422,7 +489,9 @@ when a band is set.
 PySide6 GUI (`python -m app.main`) around the same solve: `MainWindow` collects a `RunConfig`
 (`app/runconfig.py`), writes a `cfg.json` and runs `headless_solve.py cfg.json` (frozen: `<exe> --headless
 cfg.json`) as a subprocess. `headless_solve.build_solve_kwargs(cfg, resource_root)` maps cfg ->
-`MLTP(**kwargs)`: forward a new `userOpts` kwarg there and add the matching `RunConfig` field.
+`MLTP(**kwargs)`, or `MLTP_screen(**kwargs)` for the cfg key `"mode": "qss"`. F2 (2026-10-28): its `FORWARD` table sends a
+key only when it is set and not default, so an old cfg makes the old call. Add a new option to `FORWARD` and add the matching
+`RunConfig` field.
 The Advanced tab has a Tyre set combo (`MF205` default, `CopyB`) and a Mesh combo (`auto` default,
 `uniform`, `curvature`); `mesh_opts` and `screening` still have no widget. The Setup table's Pacejka
 defaults, Reset and changed-value highlighting follow the Tyre set combo: on a switch, the
@@ -430,7 +499,14 @@ tyre-set-dependent (lateral) cells still at the old set's default are re-seeded 
 values, while cells the user edited keep their value and are flagged against the new set. The
 `brkB`/`Tdist` rows are greyed while ATD is on and 4 Motors is off (inert in the 23-state model; only
 the 7-state warm start reads them). The tabs are built Main, Advanced, Setup, Output (the Setup table
-seeds from the Tyre set combo) but shown Main, Setup, Output, Advanced. Packaging notes: `build/README.md`.
+seeds from the Tyre set combo) but shown Main, Setup, Output, Advanced. The Advanced-tab group "Run, model and start" has
+the combos Run (`nlp` | `qss`), Physics and Start state. It also has a Homotopy check box and a "More options" JSON box.
+The box takes the keys of `mainwindow.MORE_KEYS`: n_bounds, ladder, ipopt_overrides, Steering, CamberGain, pt_overrides,
+between_knots, collocation, state_scaling, atd_tbr and continue_from. Choosing 4 Motors ticks Homotopy, and clearing 4 Motors
+unticks it. The library default stays None. F2-V1 (BCN, 4 motors, ATD Off, homotopy, MUMPS): 938 + 234 + 98 + 59
+iterations, 111.17993 s. `app.results.result_paths(rc)` builds the .mat path and the plot folder from the same stem as the
+solve (physics, start state, band, `RunConfig.setup_tag()`, `_qss`). `app/main.py` calls `multiprocessing.freeze_support()`
+first (not yet tested in a frozen exe). Packaging notes: `build/README.md`.
 
 ### I/O directories
 `Circuits/` (real track `.mat`), `Data/DATA_AA.mat` (aero coefficients, **required for a real
@@ -486,11 +562,9 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   (`vp.tyre`) ignores all five, so its init seeds a cold solve at the default tyre. `validation/py_export.params`
   drops all five (`MF_SCALES`) while all five are 1.0 (no MATLAB counterpart). Any other value of one exports all
   five, and gate 1 flags them. `Fz0_shift` and the TyreOptim Fz0
-  coupling do not change. GUI: five Setup rows in "Tyre & Wheel". `result_stem` has no override tag, and
-  `data.mf_overrides` keeps the key names only. So a factor run with `save=True` (the default of `MLTP` and
-  `MLTP_screen`) overwrites the stored default result, for example `Results/Sturn_Static_ATDOn_EM4Off.mat`. Until
-  E2 of `docs/laptime_sim_improvements.md` gives unique stems, run factor solves with `save=False` or with their
-  own `results_dir`. Sanity run 2026-10-20 (Linux, MUMPS): Sturn at LMUX = LMUY = 0.95, full+duals from the
+  coupling do not change. GUI: five Setup rows in "Tyre & Wheel". `data.mf_overrides` keeps the key names only, and a
+  factor run saves under its own setup tag (E2), with the values in `data.provenance.setup`. Sanity run 2026-10-20
+  (Linux, MUMPS): Sturn at LMUX = LMUY = 0.95, full+duals from the
   stored Sturn result. It took 20 iterations (Solve_Succeeded) to 18.24010 s, +0.22377 s (+1.24%) against
   18.01633 s, in 3.5 s wall (2.2 s NLP build). The QSS gives 18.74393 s at 1.0 (= default) and 18.98036 s at 0.95
   (+1.26%). Track method for the values (candidate verdicts, no human review): `docs/tyre_scaling_track_method.md`.
@@ -510,7 +584,7 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   drops both while both are 1.0, exports both otherwise. At 1.2 / 0.85: f_drag x1.2, f_lift and the 4 corner lifts
   x0.85 (rel < 1e-12), side force unchanged. QSS Sturn (18.74393 s): Cd_scale 1.2 +0.0084 s, Cl_scale 1.2 -0.0041 s.
   `vp.Cd` / `vp.Cl` stay MATLAB placeholders (GUI label "(placeholder)"): DATA_AA.mat overwrites them, so an override
-  acts only without that file, and then only in the 7-state model. Same `save=True` caveat as the MF factors.
+  acts only without that file, and then only in the 7-state model.
 - **Solver facts (measured on Sturn/BCN with ma57).** MA57 factorisation dominates wall time (~90%) and
   NLP function evaluation is only ~10%, so per-evaluation tweaks (CSE, JIT, `f_dyn.map`, tyre tabulation) gain
   a few percent at most; the levers are the IPOPT iteration count (warm start + duals, mesh, tolerances) and
@@ -559,7 +633,8 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   at vi = 70 m/s converges (404 iterations, 20.18902 s) with zs(0) on the -10 mm box edge, so the car starts off its
   equilibrium. Under corrected, two local frontier solves on Sturn (2 seeds, no global proof) put the highest coast
   rolling vx(0) at about 68.5 m/s. Their rows 1-22 stay in the vi = 70 rolling box. So rolling at vi = 70 m/s is
-  infeasible as posed (see the start-state bullet). Not in the GUI / cfg.json yet. Drag pitch moment and the
+  infeasible as posed (see the start-state bullet). The GUI Physics combo and cfg.json reach it (F2). Drag pitch
+  moment and the
   A5 powertrain keys: next two bullets. `Steering` / `CamberGain` are now `userOpts`
   kwargs (both physics); the CG_p table is ported, and `_linear_interp` extrapolates as `linear_interp.m`.
 - **Drag pitch moment (A4, corrected only, 2026-10-21, pinned by `tests/test_aero_scale.py` section 5).** The
@@ -572,7 +647,8 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   unchanged, only the corrected graph hashes change (by design). Not built: the side-force roll moment (the side
   force is 0 at the default `alpha_TW = 0`).
 - **Powertrain keys (A5, corrected only, 2026-10-21, pinned by `tests/test_power_a5.py`).** `vp_overrides` takes
-  `gear, Tmax, Pmax, Preg, Ppack` (`vehParams.PT_KEYS`). They are not primaries: no GUI rows until F2, no sweep.
+  `gear, Tmax, Pmax, Preg, Ppack` (`vehParams.PT_KEYS`). They are not primaries: no GUI rows (the More options box takes
+  them as `pt_overrides`, F2), no sweep.
   ValueError under `physics='matlab'` or for a value not finite and > 0 (Preg may be 0). Set only when given: `gear`
   -> `vp.gear`, the rest -> `ctx.pt`. Tmax / Pmax = ratings of ONE motor. `Preg` (regen W per motor) sets the torque
   lower bound -Tmax, the `motor_power` ub `1 + Preg/Pmax` (P >= -Preg) and the `BrTh` ub inf. The energy then
@@ -586,7 +662,7 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   -50.000 kW at the knots, -50.069 kW at the collocation points (the power row holds at the knots only, B3).
   Energy 1016.4 -> 982.1 Wh. No corrected EM4 solve with the keys yet. `limit_prices` does not price the regen
   bounds or the pack row. It gives NaN for Tmax and Pmax if a motor torque is below -1e-6 x its scale `u_s`
-  (regen). Same `save=True` caveat as the MF factors (stem `_physCorrected`, no knob tag).
+  (regen). A run with a key saves under its own setup tag (E2).
 - **Start state (2026-10-18, pinned by `tests/test_start_state.py`, `tests/test_start_wiring.py`).**
   `userOpts(start_state='matlab' | 'rolling' | 'periodic')`, one kwarg, modes exclusive. `'matlab'` (default) = MATLAB
   boxes, NLP byte-identical (sha256 snapshot of 7 builds). `'rolling'`: start box centred on the model's straight-line
@@ -657,12 +733,103 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   `functions/telemetry.export_monster(data, path, step=0.02, sign=(-1, -1))` writes a ChassisSim monster file
   (vendor PDF): 11 tab columns, no header, 50 Hz. Columns 1-4: distance (integral of speed) m, rpm, ay g, ax g.
   Columns 5-8: dampers FL FR RL RR mm. Columns 9-11: steer at the tyre deg, throttle % (0 under regen), speed
-  km/h. Sign default = right positive, UNVERIFIED (the vendor does not say): flip `sign` if ChassisSim disagrees.
+  km/h. Sign default = right positive. Five ChassisSim manuals say that import flag 1 takes a right turn as positive.
+  The monster-file PDF does not say it. So set both flags to 1. No ChassisSim import ran yet. `read_monster` takes the
+  same pair (E5), and `docs/logging_spec.md` (E4) has the sign table.
   `export_csv(data, path, step=1.0, by='distance')` writes an own CSV with a header row. Its columns: s, t, vx, vy,
   r, n, eps, delta, throttle, om_gear, xs_*, ax, ay. Export times (stored Sturn): 5.5 ms for the monster
   file (901 x 11), 2.3 ms for the CSV (541 x 16). BCN stand-in solve (N 155, not a solved lap): 23 ms for the
   monster file (5953 x 11). A result saved before stage M has no `vehicle_full` (resample raises): solve it again.
   ax, ay and the forces stay mesh limited on the 30 m mesh.
+- **Result names and provenance (E2, 2026-10-28, pinned by `tests/test_provenance.py`).** A setup knob that differs from its
+  default adds `_<8 hex>` as the LAST part of the stem. `userOpts.setup_knobs(kw)` gives the knobs, and `knob_tag` the first 8
+  hex digits of the sha256 of their canonical JSON (`functions.sweep.fingerprint`). Default stems never change. Pin:
+  `{'vp_overrides': {'LMUY': 0.95}}` -> `8c76aec0`. Knobs: every userOpts argument outside `userOpts._NOT_SETUP`, plus
+  `TyreModel` and the `MLTP_screen` arguments `load_model` and `ds_fine`. So a new userOpts argument is a knob at once.
+  `_NOT_SETUP` holds the stem keys (circuit, AeroConfig, ATD, Electric_4Motors, tyre_set, physics, start_state, mesh) and the
+  route keys (linear_solver, hsl_dir, jit, cse, circuits_dir, data_dir, ipopt_overrides). `vp_overrides` counts the entries
+  that differ from the tyre-set default, plus the A5 keys. A number `n_bounds` is in the stem (`_hw<W>`), a (lo, hi) pair is
+  a knob. A file tyre set adds the knob `tyre_file` (absolute path). `data['setup_tag']` exists for a knob run only.
+  `data['provenance']` holds `code` (`git describe --always --dirty`, 'unknown' without git), `setup` (the knobs) and `run`.
+  `run` holds the warm-start source, linear solver, jit, cse, casadi version and `ipopt_overrides` as JSON text. savemat
+  refuses field names over 31 characters. `params` holds every vp primary, MF key and pt rating (about 1.5 kB).
+  `optimise_design` stores no `params`. `ctx.out_path` = the file that save=True wrote: read it after a knob run.
+  `RunConfig.setup_tag()` gets the same tag from `headless_solve.build_solve_kwargs`. Not in the name: `ipopt_overrides` (a
+  looser tol through it can overwrite the default), the `optimise_design` `param_specs` / `Fz0_shift_bounds` and the
+  `refine` options (one `_meshAdaptive` stem). The tracked `Results/*.mat` predate E2 (no provenance).
+  `validation/run_py.py` runs with `OPT_ds`, `tol` or `max_iter` get a tag.
+- **Between knots (B3, 2026-10-28, pinned by `tests/test_between_knots.py`).** `userOpts(between_knots='matlab' | 'linear' |
+  'linear+power')`. 'matlab' (default) = MATLAB's U_k + duk*tau with duk per metre. That is a near hold of U_k at the
+  collocation points, and the path rows hold at the knots only. 'linear' feeds the dynamics U_k + (U_k+1 - U_k)*tau (same
+  rows and variables). 'linear+power' adds the motor power rows and the pack row (`MLTP.colloc_path_rows`) at the N*OPT_d
+  collocation points. They come LAST in g, after the periodic rows, point by point. `structure.n_pathcol` counts them: Sturn
+  n_g 1904 -> 1958, BCN 16015 -> 16480, corrected EM4 2038 -> 2254. EM4 under matlab gets no rows. No rpm rows: the Om box
+  caps the motor speed at gear*Vmax/Rw = 0.885 OMmax. Ponytail: add them for a gear above 8.19 or an Rw below 0.3143 m. The
+  7-state init keeps MATLAB's arithmetic. `data['between_knots']` only when not 'matlab'. Another value seeds the primal
+  only. `optimise_design`, `setup_gradients` and `setup_sweep` refuse a value other than 'matlab'. `limit_prices` gives NaN
+  for Pmax when n_pathcol > 0. Measured (Linux, MUMPS, cold): Sturn 'linear' 143 iterations, 18.05249 s (+0.188%). Sturn
+  'linear+power' 125, 18.05521 s (+0.203%). BCN 'linear+power' 117, 116.47793 s (+0.029%, first-order forecast +0.33% to
+  +0.45%).
+- **Radau collocation (B4, 2026-10-28, pinned by `tests/test_radau.py`).** `userOpts(collocation='legendre' | 'radau')`,
+  23-state NLP only (the 7-state init stays Legendre). `discretise(..., scheme=)` takes the Radau IIA points from casadi. There
+  is no numpy fallback, so a Radau result or a Radau QSS screen needs casadi. The last point of each interval is the next
+  knot, so `s_full` repeats every interior knot (N zero steps). n_w and n_g equal Legendre: each interval keeps the end-point
+  copy and its trivial continuity row (Choice A). The copy has free bounds (fc611ac). Equal bounds on the copy and the knot
+  gave 3 active constraints on 2 variables: 5325 iterations and a lap +5.3% on Sturn. With 'linear+power', the point on the
+  next knot gets no power row, so n_pathcol counts OPT_d - 1 points per interval. `h_col_rows` on a Radau grid needs linear
+  inputs (else ValueError). At a Radau end point, `vehicle_full` holds the left limit (input U_k + b_k), and the next entry is
+  the knot. `data['collocation']` only for 'radau'. Another scheme seeds the primal only. `setup_gradients` of a Radau result
+  needs `collocation='radau'` by hand. Measured (cold, MUMPS): Sturn 278 iterations, 17.99226 s (-0.146%), 19.5 s solve
+  against 12.5 s with Legendre. Corrected Sturn 249 iterations, 20.05447 s (+0.168% vs V10), 12.0 s against 75.3 s. Knot
+  roughness against the Legendre knots: fz_rl 0.18 (matlab) / 0.44 (corrected), zs 0.12 (matlab). But fx_rl 0.73 (matlab),
+  ax 0.67 and zs 1.86 (corrected). Radau damps the undamped body modes of physics='matlab', so parity runs stay on Legendre.
+  Skipped: Choice B (drop the copy, KKT -22%), add when a matlab-physics Radau study needs the wall time.
+- **State scaling (B7, 2026-10-28, pinned by `tests/test_state_scaling.py`).** `userOpts(state_scaling='matlab' | 'typical')`.
+  'typical' = `userOpts.TYPICAL_CHASSIS_SCALE` for rows 9-22: zs, theta, phi 1e-2, their rates 0.1, wu 0.3, zt 2e-2. The
+  physical NLP is the same, in other units (f equal, g' = R g, J' = R J C). The start box keeps its physical width
+  (`ctx.Xi_tol` rows 9-22 / scale). `ctx.chassis_scale` is None for MATLAB's 1.0. The 7-state init ignores it.
+  `data['state_scaling']` only for 'typical'. A result of the other scaling seeds the primal only (no dual map). Stop rule:
+  the IPOPT tolerances act on scaled errors. Under 'typical' the largest physical chassis defect is 8-18x smaller, so
+  iteration counts across scalings are exploration only. Measured (MUMPS, cold, Sturn): the median of 5 starts is 207
+  against 178 iterations. One start per scaling ends on a slow branch (typical vi 60.002: 19.11574 s, default vi 59.998:
+  18.70993 s). MUMPS scaling off: 170 against 157. Corrected: 860 against 392. Never the default. Open: the Windows MA57 arm
+  (`ipopt_overrides={'ma57_automatic_scaling': 'no'}`), owner. Commit 6451820 removed a bug: the start-box code reused the
+  name `tol`, so IPOPT got an array for tol under 'typical'.
+- **Torque-bias rows (C4, 2026-10-28, pinned by `tests/test_atd_tbr.py`).** `userOpts(atd_tbr=None | TBR >= 1)`, ATD On and EM4
+  Off only (else ValueError). k = (TBR - 1)/(TBR + 1) = `pt.atd_k`. Per axle |ATD_l - ATD_r| <= k (ATD_l + ATD_r). That is
+  |T_l - T_r| <= k |T_l + T_r| for drive and brake, as T_i = ATD_i (gear T_motor + 2 T_brake). TBR > 1: rows `diff_F_l`,
+  `diff_F_r`, `diff_R_l`, `diff_R_r` in [0, inf] after `ATD_eq` (nh 8). TBR 1 (open differentials): `diff_F` and `diff_R`
+  fixed at 0 (nh 6). Sturn n_g 1904 / 1942 (TBR 1) / 1980. The warm start compares the path-row names, so PureSlip with ATD On
+  (also nh 8) seeds a TBR 2 NLP with the primal only. `data['atd_tbr']` only when set. Measured (cold, MUMPS): ATD Off against
+  On +0.371 s on Sturn (+2.06%), +3.434 s on BCN (+2.95%). Sturn TBR 3 / 2 / 1: 18.02621 / 18.04571 / 18.33339 s (196 / 281 /
+  119 iterations). BCN TBR 2: 116.64141 s (186 iterations), both axles reach k. The QSS forecast of ATD Off was +0.022 s: the
+  QSS has no yaw moment of a left-right split. Not built: a passive LSD. Add it when the owner says the car has one and TBR 2
+  costs 1% or more. `limit_prices` has no price for the diff rows. `setup_sweep._precheck_base` compares nh only.
+- **Anti-roll bars (C3, 2026-10-28, pinned by `tests/test_arb.py`).** Primaries `vp.k_arb_f`, `vp.k_arb_r` [N/m at the wheel],
+  default 0.0 (MATLAB has none). The left strut gets k (xs_l - xs_r) and the right strut the opposite force, after the MATLAB
+  bump cut, both physics. Roll stiffness added = k t^2 per axle. A plain 0 adds no SX node (`vehModel._arb`), a symbol always
+  adds the term (`optimise_design`). QSS (`ggv.lateral_load_transfer`): 4 k_arb added to the axle spring sum, exact for matlab
+  physics. Under corrected the QSS keeps the spring-only split (error up to 9%, series law skipped). GUI rows in "Suspension
+  stiffness" (max 3e5). `ksD` stays, labelled "(unused)". The parity export drops both at 0. QSS Sturn: front 2e4 +0.119%,
+  rear 2e4 +0.494%, both -0.026%. QSS BCN over front shares 0.3 to 0.7: -0.10% to +1.20%, optimum 0.52 (default 0.48). NLP
+  (`setup_gradients`, Sturn, ATD On): -5.96e-8 / +1.12e-8 s per N/m (front / rear), about 100x below the QSS slope. ATD Off:
+  +6.35e-8 / -7.95e-8, so the gap stays. Warm hops (full+duals): 2e3 N/m steps match first order within 4%, and 2 of 3 hops of
+  2e4 N/m reach another local optimum. A hop back reaches 1.444 ms of objective below the stored Sturn default. Bars lower the
+  roll damping ratio (c from the spring k only: 0.56 -> 0.48 at a 2e4 front bar, corrected).
+- **Tyre files and pressure (C5, 2026-10-28, pinned by `tests/test_tir.py`).** `functions/importfile.read_tir(path)` reads a .tir
+  one line at a time: upper-case names, `$` / `!` comments, D exponents, text values kept. `tyre_set='file:<path>'` uses it as
+  written (the sign convention of the model, MF 5.2 form). ValueError for a missing or non-numeric coefficient or FNOMIN, or
+  for units other than meter / newton / radians. Also ValueError for a file set with Kya(Fz0) <= 0: a file in ISO signs has
+  pKy1 < 0. FNOMIN -> `vp.Fz0`. An entry that no model line reads gives a warning when it is not neutral. MF keys 64 -> 75: `ppx1..ppx4` and `ppy1..ppy5`
+  (0.0), `NOMPRES` = `INFLPRES` = 220000 Pa (placeholders, hot gauge Pa). `vehParams.mf_pressure(mf)` -> 6 factors (plain 1.0
+  at dpi 0): mu_x, Kxk, mu_y, Kya, the load peak of Kya, Kyg0. None in SVx, SVy, E or C. The QSS folds the two mu factors into
+  its LMUX / LMUY copy. Stem `_tir_<base name>`, plus the knob `tyre_file` (absolute path) in the tag.
+  `setup_sweep._model_hash` hashes the file. `.gitignore`: `*.tir`, `Data/tyres/`. Not read from the file: Rw, kt, Jw, f,
+  gear. The 7-state init and the friction homotopy ignore the file and the pressure (the init still reads `vp.Fz0` =
+  FNOMIN). No TYRESIDE mirror. A relative and an
+  absolute spelling of one file differ for the warm start (full-interp). Made-up pp terms at +10% pressure: mu_x x0.9855,
+  Kxk x0.971, mu_y x0.9884, QSS Sturn +0.29%, dJ/dINFLPRES +1.508590e-6 s/Pa. Warm hop (full+duals): 3 iterations, dJ
+  +0.03343 s against first order +0.03319 s.
 - **23-state NLP constraint set matches `MLTP.m` (fixed 2026-10-04, pinned by `test_mltp_constraints.py`).**
   Two port gaps were closed. (1) The input-rate bounds are divided by `u_s` (`m.duk_lb/ub`, as `vehModel.m`
   L377-379 and the 7-state model do). Before, the physical Nm/s, rad/s and deg/s values bounded the normalised

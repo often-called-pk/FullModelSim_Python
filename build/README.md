@@ -56,6 +56,10 @@ Output: `dist\FullModelSim\FullModelSim.exe` (onedir; resources under
 4. On finish: summary shows a lap time; the Output tab lists plots; double-click
    opens one in the browser. Results/Plots are written under
    `%USERPROFILE%\Documents\FullModelSim`.
+5. Advanced tab: set Run to `qss` and click Run. After about 1 s, the summary shows
+   "QSS estimate (not an optimum)" and a lap time, and the Output tab lists no plots.
+   This step checks that the frozen exe holds `MLTP_screen` (F2). No check on this
+   machine ran the QSS mode or `freeze_support` in a frozen exe yet.
 
 ### Verified (frozen run on the dev machine, HSL bundle)
 
