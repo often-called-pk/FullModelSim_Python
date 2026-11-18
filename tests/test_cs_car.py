@@ -1,10 +1,11 @@
 """ChassisSim car record of functions/chassissim.py (ChassisSim phase 2, task 1).
 
-The synthetic checks build a car file with carfile.encode from arbitrary values (every cid of CAR_FIELDS, with the
-record tag that its cid needs), load it with load_car and check the SI conversions, the None rule, the tyre
-temperature column, the hardpoint and aero shapes and the car_vp totals through vehParams. The vendor section runs
-only when CHASSISSIM_DIR names the ChassisSim install folder. It reads the GP3 2013 Eastern Creek car file and checks
-relations only, no copied values. It writes nothing into the vendor folders.
+The synthetic checks write a car file with carfile.encode from arbitrary values. The cids and their record tags
+are written here as literal numbers, not taken from CAR_FIELDS, so a wrong cid in CAR_FIELDS fails. The checks
+cover the SI conversions, the None rule, the tyre decode, the hardpoint order, the strict car_vp and its
+vehParams totals (matlab and corrected physics). The vendor section runs only when CHASSISSIM_DIR names the
+ChassisSim install folder. It reads the GP3 2013 Eastern Creek car file and checks relations only, no copied
+values. It writes nothing into the vendor folders.
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_car.py
     CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_car.py
@@ -18,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from functions import carfile
-from functions.chassissim import CAR_FIELDS, car_vp, load_car
+from functions.chassissim import CAR_FIELDS, CS_JW, car_vp, load_car
 from functions.context import Ctx
 from Powertrain import Powertrain
 from vehParams import vehParams
@@ -29,6 +30,7 @@ DEG_T = np.pi / 180
 LBF_IN = 175.126835      # N/m per lbf/in
 PHYSICS = ("matlab", "corrected")
 TMP = tempfile.TemporaryDirectory()
+CORNERS = ("fl", "fr", "rl", "rr")
 
 
 def ok(name, cond):
@@ -43,43 +45,46 @@ def arb(n, s):
     return np.sin(np.arange(n) * 0.9 + s) * 7.3 - 0.61
 
 
-# ---- synthetic car ---------------------------------------------------------------------------------
-CORNERS = ("fl", "fr", "rl", "rr")
-RADIUS = {"fl": 0.300, "fr": 0.305, "rl": 0.310, "rr": 0.315}   # m, tyre scalar 4
-TOE = {"fl": 0.5, "fr": -0.25, "rl": 0.1, "rr": 0.0}           # deg, tyre scalar 0
-CAMBER = {"fl": -1.0, "fr": -1.5, "rl": -0.5, "rr": -0.75}     # deg, tyre scalar 1
-TYRE_DIMS = {  # distinct per corner; d2 = 2 temperatures in every tyre
-    "fl": (3, 2, 2, 2, 2, 2, 2),
-    "fr": (2, 2, 3, 2, 2, 3, 2),
-    "rl": (4, 2, 2, 3, 2, 2, 2),
-    "rr": (2, 2, 2, 2, 3, 2, 3),
+# ---- synthetic car: literal cids and tags ------------------------------------------------------------
+# Tags as the file holds them: 1 scalar, 2 array, 6 byte, 7 curve, 9 map, 10 hardpoints,
+# 11 spring-like (preload, rate, x, y), 12 damper, 13 tyre.
+TYRE = {  # dims (d1..d7, d2 = 2 temperatures), radius m, toe deg, camber deg, castor deg, drag, kz N/m
+    "fl": dict(dims=(3, 2, 2, 2, 2, 2, 2), radius=0.300, toe=0.5, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
+    "fr": dict(dims=(2, 2, 3, 2, 2, 3, 2), radius=0.305, toe=-0.25, camber=-1.5, castor=2.5, drag=0.012, kz=1.62e5),
+    "rl": dict(dims=(4, 2, 2, 3, 2, 2, 2), radius=0.310, toe=0.1, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
+    "rr": dict(dims=(2, 2, 2, 2, 3, 2, 3), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
 }
-TYRE_TEMPS = (300.0, 350.0)     # the two temperature columns of the load grid, K
-TYRE_BG = 325.0                 # tyre background temperature (scalar 6), between the two columns
-TRACK_TEMP = 350.0              # cid 390, equal to the second column: the wrong column would show it
+TYRE_TEMPS = (300.0, 350.0)    # the two temperature columns of the load grid, K
+TYRE_BG = 325.0                # tyre background temperature (scalar 6), between the two columns
+TRACK_TEMP = 350.0             # cid 390, equal to the second column: the wrong column would show it
+PRESSURE = 2.1e5               # Pa (scalar 5); the kz table reads it in kPa
 VEL = np.array([-400.0, -100.0, 0.0, 100.0, 400.0])   # damper velocity, mm/s
-BUMP = np.array([0.0, 900.0, 1800.0, 2700.0, 3600.0])
-REB = np.array([-3600.0, -2400.0, -1200.0, 0.0, 0.0])
-SPRING = {1: (1.23e5, 200.0), 2: (1.31e5, 210.0), 3: (0.97e5, 190.0), 4: (1.02e5, 205.0),
-          5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}             # cid -> (rate N/m, preload N)
-DAMPER = (31, 32, 33, 34, 35)
+BUMP = np.array([0.0, 900.0, 1800.0, 2700.0, 3600.0])  # N
+REB = np.array([3600.0, 2400.0, 1200.0, 0.0, 0.0])     # N, positive as the docstring says
+SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5, 0.0205),
+          5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}           # cid -> (rate N/m, preload m)
+RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}   # cid -> (rate, preload m)
+ARB = {19: 2.0e4, 21: 1.5e4}                          # cid -> rate N/m
 HARD = (49, 50, 51, 52)
-TYRE_CID = {80: "fl", 81: "fr", 82: "rl", 83: "rr"}
-AERO_MAP = {127: ("cla", (4, 3)), 131: ("cda", (3, 2)), 135: ("balance", (5, 2))}   # cid -> (name, (nx, nz))
+CS_TOTAL, CS_UF, CS_UR = 700.0, 25.0, 35.0
+CS_FRONT = 0.44
+EXPLICIT = {  # tag 1 cids with a literal value
+    84: CS_TOTAL, 85: CS_UF, 86: CS_UR, 87: 60.0, 88: 280.0, 89: 600.0, 96: CS_FRONT,
+    90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
+    117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,            # ride heights, mm
+    100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
+    107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
+    111: 0.3, 112: 1.0, 113: 0.0,                           # torque split, diff front and rear type
+    121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
+    390: TRACK_TEMP,
+}
+EXPLICIT.update({c: 0.5 + 0.01 * c for c in range(7, 13)})            # suspension gaps, no unit
+EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
-# explicit tag-1 values (mass kg, lengths m, ride heights mm, rpm, brakes, aero); all others 0.2 + 0.011 cid
-EXPLICIT = {
-    84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
-    90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
-    117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,
-    102: 1000.0, 103: 9000.0,
-    107: 14000.0, 108: 0.6, 109: 0.05,
-    100: 0.9, 111: 0.3,
-    121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,
-    390: TRACK_TEMP,
-}
+MAPS = {127: ((4, 3), "cla"), 131: ((3, 2), "cda"), 135: ((5, 2), "balance"),
+        114: ((3, 2), "diff_f"), 116: ((2, 4), "diff_r")}          # cid -> ((nx, nz), name)
 
 
 def tyre_sizes(d):
@@ -92,56 +97,64 @@ def tyre_sizes(d):
 
 
 def tyre_record(i, corner):
-    """Tyre record (tag 13) with a load grid of two temperature columns. Return (record, A, B) with A, B per load."""
-    dims = TYRE_DIMS[corner]
-    d1 = dims[0]
+    """Tyre record (tag 13) with a two-column load grid and a kPa pressure axis. Return (record, reference)."""
+    t = TYRE[corner]
+    dims = t["dims"]
+    d1, d2, d3, _, d5, d6, _ = dims
     tabs = [arb(k, 10 * i + j) for j, k in enumerate(tyre_sizes(dims))]
     A, B = arb(d1, 20 + i), arb(d1, 30 + i)
     load = 1000.0 * np.arange(1, d1 + 1)
     tabs[3] = np.concatenate([load, TYRE_TEMPS, np.stack([A, B], axis=1).ravel()])   # load, temperatures, grid (row = load)
+    px = np.linspace(150.0, 250.0, d5)                       # kPa
+    py = t["kz"] * (1.0 + 0.01 * np.arange(d5))             # N/m
+    tabs[10] = np.concatenate([px, py])
     sc = arb(18, 40 + i)
-    sc[0], sc[1], sc[4], sc[5], sc[6] = TOE[corner], CAMBER[corner], RADIUS[corner], 2.1e5, TYRE_BG
-    return (13, 80 + i, (list(dims), sc, tabs)), A, B
+    sc[0], sc[1], sc[2], sc[4], sc[5], sc[6] = t["toe"], t["camber"], t["castor"], t["radius"], PRESSURE, TYRE_BG
+    sc[7], sc[8], sc[9], sc[11], sc[15] = t["drag"], 0.11 + 0.01 * i, 0.12 + 0.01 * i, 0.7 + 0.1 * i, 1.05 + 0.1 * i
+    ref = dict(A=A, B=B, load=load, slip_x=tabs[0][:d3], slip_y=tabs[0][d3:], camber_raw=tabs[5][:d6],
+               camber_y=tabs[5][d6:], kz=float(np.interp(PRESSURE * 1e-3, px, py)), sc=sc, dims=dims)
+    return (13, 80 + i, (list(dims), sc, tabs)), ref
 
 
-def synthetic_records(omit=()):
-    """One record of every CAR_FIELDS cid (except omit), with the tag of its cid. Return (records, tyre A/B by corner)."""
-    recs, ab = [], {}
-    for cid in CAR_FIELDS:
-        if cid in omit:
-            continue
-        if cid in SPRING_CIDS:
-            rate, pre = SPRING[cid]
-            recs.append((11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0]))))
-        elif cid in DAMPER:
-            recs.append((12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB]))))
-        elif cid in HARD:
-            recs.append((10, cid, (0, arb(18, cid))))
-        elif cid in TYRE_CID:
-            rec, A, B = tyre_record(cid - 80, TYRE_CID[cid])
-            recs.append(rec)
-            ab[TYRE_CID[cid]] = (A, B)
-        elif cid in AERO_MAP:
-            _, (nx, nz) = AERO_MAP[cid]
-            recs.append((9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid))))
-        elif cid == 101:
-            recs.append((7, cid, (ENGINE_RPM, ENGINE_NM)))
-        elif cid == 110:
-            recs.append((2, cid, GEARS))
-        else:
-            recs.append((1, cid, EXPLICIT.get(cid, 0.2 + 0.011 * cid)))
-    recs.append((carfile.END_TAG, carfile.END_CID, None))
-    return recs, ab
+def build_records(omit=()):
+    """Literal records of the synthetic car. Return (records, tyre references by corner)."""
+    R, ref = [], {}
 
-
-SPRING_CIDS = tuple(SPRING)
+    def add(tag, cid, v):
+        if cid not in omit:
+            R.append((tag, cid, v))
+    for cid, v in EXPLICIT.items():
+        add(1, cid, v)
+    for cid, (rate, pre) in SPRING.items():
+        add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
+    for cid, (rate, pre) in RUBBER.items():
+        add(11, cid, (1, pre, rate, np.array([0.0, 0.02]), np.array([0.0, 800.0])))
+    for cid, rate in ARB.items():
+        add(11, cid, (1, 0.0, rate, np.array([0.0, 0.1]), np.array([0.0, 300.0])))
+    for cid in range(23, 31):
+        add(2, cid, arb(5, cid))                                          # motion ratio coefficients
+    for cid in range(366, 372):
+        add(6, cid, 10 + cid - 366)                                       # one byte
+    add(7, 101, (ENGINE_RPM, ENGINE_NM))
+    add(2, 110, GEARS)
+    for cid, ((nx, nz), _) in MAPS.items():
+        add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
+    for cid in range(31, 36):
+        add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
+    for cid in HARD:
+        add(10, cid, (0, arb(18, cid)))
+    for i, c in enumerate(CORNERS):
+        rec, ref[c] = tyre_record(i, c)
+        add(*rec[:2], rec[2])
+    R.append((carfile.END_TAG, carfile.END_CID, None))
+    return [r for r in R], ref
 
 
 def write_car(name, omit=()):
-    recs, ab = synthetic_records(omit)
+    recs, ref = build_records(omit)
     path = os.path.join(TMP.name, name)
     carfile.write(recs, path)
-    return path, ab
+    return path, ref
 
 
 def through_vehparams(vp_overrides, physics):
@@ -152,54 +165,129 @@ def through_vehparams(vp_overrides, physics):
     return ctx.vp
 
 
+def raises_naming(fn, field):
+    try:
+        fn()
+    except ValueError as e:
+        return field in str(e)
+    return False
+
+
 print("[cs_car] synthetic car")
-SYN, SYN_AB = write_car("synthetic.car")
+SYN, REF = write_car("synthetic.car")
 car = load_car(SYN)
+written = {c for _, c, _ in build_records()[0] if c != carfile.END_CID}
+ok("the synthetic car holds every CAR_FIELDS cid and no other",
+   written == set(CAR_FIELDS))
 
-# SI conversions
-print("  -- SI conversions")
-ok("ride heights stored in mm read as m (17, 18.5, 20, 21.5 mm)",
-   all(abs(getattr(car.geom, f"ride_height_{c}") - EXPLICIT[117 + i] * 1e-3) < 1e-12
-       for i, c in enumerate(CORNERS)))
-ok("damper velocity stored in mm/s read as m/s (fl, fr, rl, rr, third)",
-   all(np.allclose(getattr(car.susp, f"damper_{c}")["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
-       for c in CORNERS) and np.allclose(car.susp.damper_third_f["velocity"], VEL * 1e-3, rtol=0, atol=1e-12))
-ok("damper bump and rebound forces stay in N",
-   np.allclose(car.susp.damper_fl["bump"], BUMP) and np.allclose(car.susp.damper_fl["rebound"], REB))
-ok("engine rpm axis read as rad/s",
-   np.allclose(car.engine.torque_curve["x"], ENGINE_RPM * RPM_T, rtol=0, atol=1e-12))
-ok("engine torque read in N m, unchanged",
-   np.allclose(car.engine.torque_curve["y"], ENGINE_NM, rtol=0, atol=0))
-ok("idle and limit rpm read as rad/s",
+# literal cids: the value of each cid must land in its own field
+print("  -- literal cids")
+ok("ride heights 117-120 read as m (17, 18.5, 20, 21.5 mm)",
+   all(abs(getattr(car.geom, f"ride_height_{c}") - v * 1e-3) < 1e-12
+       for c, v in zip(CORNERS, (17.0, 18.5, 20.0, 21.5))))
+ok("brake force 107 N, bias 108, delay 109 s",
+   abs(car.brake.force - 14000.0) < 1e-9 and abs(car.brake.front_bias - 0.6) < 1e-12
+   and abs(car.brake.delay - 0.05) < 1e-12)
+ok("idle rpm 102 and limit rpm 103 read as rad/s",
    abs(car.engine.rpm_idle - 1000.0 * RPM_T) < 1e-12 and abs(car.engine.rpm_limit - 9000.0 * RPM_T) < 1e-12)
-ok("tyre toe and camber stored in deg read in rad (fl)",
-   abs(car.tyre.fl["toe"] - TOE["fl"] * DEG_T) < 1e-12 and abs(car.tyre.fl["camber"] - CAMBER["fl"] * DEG_T) < 1e-12)
-ok("tyre radius read in m as stored (rl)", abs(car.tyre.rl["radius"] - RADIUS["rl"]) < 1e-12)
-ok("spring rate and preload read as stored (N/m, N)",
+ok("aero CLA 121, CDA 122, offset 123, rho 125 as stored",
+   abs(car.aero.cla - 3.5) < 1e-12 and abs(car.aero.cda - 0.95) < 1e-12
+   and abs(car.aero.offset - 0.1) < 1e-12 and abs(car.aero.rho - 1.2) < 1e-12)
+ok("mass 84-86, 96 and geometry 90-93 read as stored",
+   abs(car.mass.total - CS_TOTAL) < 1e-9 and abs(car.mass.unsprung_front - CS_UF) < 1e-9
+   and abs(car.mass.unsprung_rear - CS_UR) < 1e-9 and abs(car.mass.front_share - CS_FRONT) < 1e-9
+   and abs(car.geom.wheelbase - 3.1) < 1e-12 and abs(car.geom.cg_height - 0.33) < 1e-12
+   and abs(car.geom.track_front - 1.52) < 1e-12 and abs(car.geom.track_rear - 1.49) < 1e-12)
+ok("inertias 87-89 read as stored", abs(car.mass.Ix - 60.0) < 1e-9 and abs(car.mass.Iy - 280.0) < 1e-9
+   and abs(car.mass.Iz - 600.0) < 1e-9)
+ok("track temperature 390 read as stored", abs(car.env.track_temp - TRACK_TEMP) < 1e-12)
+ok("engine efficiency 100, torque split 111, diff types 112 and 113 as stored",
+   abs(car.engine.efficiency - 0.9) < 1e-12 and abs(car.engine.torque_split - 0.3) < 1e-12
+   and car.diff.front_type == 1.0 and car.diff.rear_type == 0.0)
+
+# groups: one decoded value per group
+print("  -- groups")
+ok("springs: rate in N/m and preload in m, fl..rr and the third springs",
    all(abs(getattr(car.susp, f"spring_{c}")["rate"] - SPRING[i + 1][0]) < 1e-6
-       and abs(getattr(car.susp, f"spring_{c}")["preload"] - SPRING[i + 1][1]) < 1e-9
-       for i, c in enumerate(CORNERS)))
-ok("gear ratios read as stored (6 gears)", np.allclose(car.engine.gears, GEARS, rtol=0, atol=0) and len(car.engine.gears) == 6)
-
-# tyre load curve at the background temperature (scalar 6)
-print("  -- tyre temperature column")
-A, B = SYN_AB["rl"]
-ok("tyre background temperature is scalar 6 (325 K)", abs(car.tyre.rl["temp"] - TYRE_BG) < 1e-12)
-ok("rl load axis read as stored, one fy_peak per load", np.allclose(car.tyre.rl["load"], 1000.0 * np.arange(1, 5))
-   and car.tyre.rl["fy_peak"].shape == (4,))
-ok("fy_peak interpolates the 300 K and 350 K columns at scalar 6 (325 K), not the track temperature (cid 390 = 350 K)",
-   np.allclose(car.tyre.rl["fy_peak"], 0.5 * (A + B), rtol=0, atol=1e-12)
-   and not np.allclose(car.tyre.rl["fy_peak"], B, rtol=0, atol=1e-6))
-
-# shapes
-print("  -- shapes")
-ok("hardpoint block has shape (6, 3) (front_l)", car.hardpoints.front_l.shape == (6, 3))
-ok("aero maps have shape (nx, nz): cla (4, 3), cda (3, 2), balance (5, 2)",
+       and abs(getattr(car.susp, f"spring_{c}")["preload"] - SPRING[i + 1][1]) < 1e-12
+       for i, c in enumerate(CORNERS))
+   and abs(car.susp.spring_third_f["rate"] - SPRING[5][0]) < 1e-6
+   and abs(car.susp.spring_third_r["rate"] - SPRING[6][0]) < 1e-6)
+ok("rubbers 13-18: rate, preload, x and y as stored",
+   all(abs(getattr(car.susp, f"rubber_{c}")["rate"] - RUBBER[13 + i][0]) < 1e-6
+       and abs(getattr(car.susp, f"rubber_{c}")["preload"] - RUBBER[13 + i][1]) < 1e-12
+       and np.allclose(getattr(car.susp, f"rubber_{c}")["x"], [0.0, 0.02])
+       and np.allclose(getattr(car.susp, f"rubber_{c}")["y"], [0.0, 800.0])
+       for i, c in enumerate(CORNERS))
+   and abs(car.susp.rubber_third_f["rate"] - RUBBER[17][0]) < 1e-6
+   and abs(car.susp.rubber_third_r["rate"] - RUBBER[18][0]) < 1e-6)
+ok("ARBs 19 and 21 rate in N/m as stored",
+   abs(car.susp.arb_f["rate"] - ARB[19]) < 1e-6 and abs(car.susp.arb_r["rate"] - ARB[21]) < 1e-6)
+ok("motion ratio coefficients 23-30 read as stored arrays of 5",
+   all(np.allclose(getattr(car.susp, f"mr_{c}"), arb(5, 23 + i)) for i, c in enumerate(CORNERS))
+   and np.allclose(car.susp.mr_arb_f, arb(5, 27)) and np.allclose(car.susp.mr_arb_r, arb(5, 28))
+   and np.allclose(car.susp.mr_third_f, arb(5, 29)) and np.allclose(car.susp.mr_third_r, arb(5, 30)))
+ok("gaps 7-12 read as stored",
+   all(abs(getattr(car.susp, f"gap_{n}") - EXPLICIT[7 + i]) < 1e-12
+       for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))))
+ok("damper velocity in mm/s read as m/s, bump and rebound in N as stored (rebound positive)",
+   all(np.allclose(getattr(car.susp, f"damper_{c}")["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
+       and np.allclose(getattr(car.susp, f"damper_{c}")["bump"], BUMP, rtol=0, atol=0)
+       and np.allclose(getattr(car.susp, f"damper_{c}")["rebound"], REB, rtol=0, atol=0)
+       for c in CORNERS)
+   and np.allclose(car.susp.damper_third_f["velocity"], VEL * 1e-3, rtol=0, atol=1e-12))
+ok("hardpoint block has shape (6, 3), and row i holds point i (values i, 6 + i, 12 + i)",
+   all(getattr(car.hardpoints, n).shape == (6, 3) for n in ("front_l", "front_r", "rear_l", "rear_r"))
+   and all(np.allclose(getattr(car.hardpoints, n)[i],
+                       [arb(18, cid)[i], arb(18, cid)[6 + i], arb(18, cid)[12 + i]])
+           for cid, n in zip(HARD, ("front_l", "front_r", "rear_l", "rear_r")) for i in range(6)))
+ok("aero maps have shape (nx, nz) and hold the stored data (cla 4x3, cda 3x2, balance 5x2)",
    car.aero.cla_map["data"].shape == (4, 3) and car.aero.cda_map["data"].shape == (3, 2)
-   and car.aero.balance_map["data"].shape == (5, 2))
+   and car.aero.balance_map["data"].shape == (5, 2)
+   and np.allclose(car.aero.cla_map["data"], arb(12, 127).reshape(4, 3))
+   and np.allclose(car.aero.balance_map["data"], arb(10, 135).reshape(5, 2)))
+ok("diff maps 114 (3 x 2) and 116 (2 x 4) have their shape and data",
+   car.diff.front_map["data"].shape == (3, 2) and car.diff.rear_map["data"].shape == (2, 4)
+   and np.allclose(car.diff.front_map["data"], arb(6, 114).reshape(3, 2))
+   and np.allclose(car.diff.rear_map["data"], arb(8, 116).reshape(2, 4)))
+ok("DRS 336 and multi-DRS 366 (one byte) as stored",
+   abs(car.aero.drs_336 - (0.2 + 0.001 * 336)) < 1e-12 and car.aero.multi_drs_366 == 10)
+ok("engine torque curve: rpm axis in rad/s, torque in N m",
+   np.allclose(car.engine.torque_curve["x"], ENGINE_RPM * RPM_T, rtol=0, atol=1e-12)
+   and np.allclose(car.engine.torque_curve["y"], ENGINE_NM, rtol=0, atol=0))
+ok("gears read as stored (6)", len(car.engine.gears) == 6 and np.allclose(car.engine.gears, GEARS, rtol=0, atol=0))
 
-# file identity
-print("  -- file identity")
+# tyres: every decoded field of one tyre record
+print("  -- tyres")
+for c in CORNERS:
+    r, t = REF[c], TYRE[c]
+    tyre = getattr(car.tyre, c)
+    ok(f"tyre {c}: radius, toe and camber (deg to rad), castor, pressure, temp, rolling drag",
+       abs(tyre["radius"] - t["radius"]) < 1e-12 and abs(tyre["toe"] - t["toe"] * DEG_T) < 1e-12
+       and abs(tyre["camber"] - t["camber"] * DEG_T) < 1e-12 and abs(tyre["castor"] - t["castor"] * DEG_T) < 1e-12
+       and abs(tyre["pressure"] - PRESSURE) < 1e-6 and abs(tyre["temp"] - TYRE_BG) < 1e-12
+       and abs(tyre["rolling_drag"] - t["drag"]) < 1e-12)
+    ok(f"tyre {c}: peak slip angle and ratio, grip, optimum camber (deg to rad)",
+       abs(tyre["peak_slip_angle"] - r["sc"][8]) < 1e-12 and abs(tyre["peak_slip_ratio"] - r["sc"][9]) < 1e-12
+       and abs(tyre["grip"] - r["sc"][15]) < 1e-12 and abs(tyre["optimum_camber"] - r["sc"][11] * DEG_T) < 1e-12)
+    ok(f"tyre {c}: slip_x, slip_y and camber_x (deg to rad), camber_y as stored",
+       np.allclose(tyre["slip_x"], r["slip_x"], rtol=0, atol=0) and np.allclose(tyre["slip_y"], r["slip_y"], rtol=0, atol=0)
+       and np.allclose(tyre["camber_x"], r["camber_raw"] * DEG_T, rtol=0, atol=1e-15)
+       and np.allclose(tyre["camber_y"], r["camber_y"], rtol=0, atol=0))
+    ok(f"tyre {c}: load axis, one fy_peak per load at scalar 6 (midpoint of 300 and 350 K)",
+       np.allclose(tyre["load"], r["load"]) and tyre["fy_peak"].shape == (len(r["load"]),)
+       and np.allclose(tyre["fy_peak"], 0.5 * (r["A"] + r["B"]), rtol=0, atol=1e-12))
+    ok(f"tyre {c}: kz read at the pressure in kPa (interp at 210 kPa)",
+       abs(tyre["kz"] - r["kz"]) < 1e-6 * r["kz"])
+ok("track temperature 350 K (cid 390) is not the interpolation column",
+   not np.allclose(car.tyre.rl["fy_peak"], REF["rl"]["B"], rtol=0, atol=1e-6))
+
+# shapes of the tyre tables count: slip and camber lengths follow the dims
+ok("tyre tables follow their dims (rr: slip_x 2, camber_y 3-dim table)",
+   len(car.tyre.rr["slip_x"]) == TYRE["rr"]["dims"][2] and len(car.tyre.rr["camber_x"]) == TYRE["rr"]["dims"][5])
+
+# file identity and the None rule
+print("  -- file identity and missing cids")
 ok("sha8 is the first 8 hex digits of the sha256 of the file bytes",
    car.sha8 == hashlib.sha256(Path(SYN).read_bytes()).hexdigest()[:8])
 ok("path is absolute and equals the path given", os.path.isabs(car.path) and car.path == os.path.abspath(SYN))
@@ -210,45 +298,47 @@ try:
 finally:
     os.chdir(here)
 ok("a relative path loads and stores the absolute path", os.path.isabs(rel.path) and os.path.samefile(rel.path, SYN))
-
-# None rule
-print("  -- missing cids")
 no_cda, _ = write_car("no_cda.car", omit=(122, 390))
 cn = load_car(no_cda)
-ok("a cid the file lacks gives None (aero.cda, env.track_temp)", cn.aero.cda is None and cn.env.track_temp is None)
-ok("the other fields of that car are still read", abs(cn.aero.cla - 3.5) < 1e-12)
+ok("a cid the file lacks gives None (aero.cda, env.track_temp), the others still read",
+   cn.aero.cda is None and cn.env.track_temp is None and abs(cn.aero.cla - 3.5) < 1e-12)
 
-# car_vp
+# car_vp: strict, one totals set
 print("  -- car_vp")
 vp = car_vp(car)
-ok("car_vp mb + md + muf + mur equals the car mass (700 kg)",
-   abs(vp["mb"] + vp["md"] + vp["muf"] + vp["mur"] - 700.0) < 1e-9 and vp["md"] == 0.0
-   and vp["muf"] == 25.0 and vp["mur"] == 35.0)
-ok("car_vp track is the mean of the two tracks (1.505 m)", abs(vp["t"] - (1.52 + 1.49) / 2) < 1e-12)
-ok("car_vp Rw is the rear left tyre radius (0.310 m)", abs(vp["Rw"] - RADIUS["rl"]) < 1e-12)
-ok("car_vp wheelbase, CG height and inertias read as stored",
+ok("car_vp keys: mb, md, muf, mur, wB, l, hcg, I_x, I_y, I_z, t, Rw, Jw, f, kt",
+   set(vp) == {"mb", "md", "muf", "mur", "wB", "l", "hcg", "I_x", "I_y", "I_z", "t", "Rw", "Jw", "f", "kt"})
+ok("car_vp mb + md + muf + mur equals the car mass (700 kg), md 0",
+   abs(vp["mb"] + vp["md"] + vp["muf"] + vp["mur"] - CS_TOTAL) < 1e-9 and vp["md"] == 0.0
+   and vp["muf"] == CS_UF and vp["mur"] == CS_UR)
+expect_wb = (CS_FRONT * CS_TOTAL - CS_UF) / (CS_TOTAL - CS_UF - CS_UR)
+ok(f"car_vp wB = (front share x total - muf) / mb = {expect_wb:.6f}", abs(vp["wB"] - expect_wb) < 1e-12)
+ok("car_vp wheelbase, CG height, inertias as stored",
    abs(vp["l"] - 3.1) < 1e-12 and abs(vp["hcg"] - 0.33) < 1e-12
    and abs(vp["I_x"] - 60.0) < 1e-12 and abs(vp["I_y"] - 280.0) < 1e-12 and abs(vp["I_z"] - 600.0) < 1e-12)
-ok("car_vp front share key is present in (0, 1)", 0.0 < vp["wB"] < 1.0)
+ok("car_vp t is the mean track (1.505 m)", abs(vp["t"] - (1.52 + 1.49) / 2) < 1e-12)
+ok("car_vp Rw is the rear tyre radius (0.310 m)", abs(vp["Rw"] - TYRE["rl"]["radius"]) < 1e-12)
+ok("car_vp Jw is CS_JW (the car file holds no wheel inertia)", vp["Jw"] == CS_JW)
+ok("car_vp f is the rear tyre rolling drag (0.0135)", abs(vp["f"] - TYRE["rl"]["drag"]) < 1e-12)
+ok("car_vp kt is the mean of the front and rear tyre kz",
+   abs(vp["kt"] - (car.tyre.fl["kz"] + car.tyre.rl["kz"]) / 2) < 1e-6)
+no_mt = write_car("no_mass_total.car", omit=(84,))[0]
+ok("car_vp raises ValueError naming mass.total when the car lacks it",
+   raises_naming(lambda: car_vp(load_car(no_mt)), "mass.total"))
+no_wb = write_car("no_wheelbase.car", omit=(90,))[0]
+ok("car_vp raises ValueError naming geom.wheelbase when the car lacks it",
+   raises_naming(lambda: car_vp(load_car(no_wb)), "geom.wheelbase"))
 
-no_mass, _ = write_car("no_mass.car", omit=(84, 85, 86))
-vp_nm = car_vp(load_car(no_mass))
-ok("a car without the mass cids gives no mass keys (mb, md, muf, mur)",
-   not any(k in vp_nm for k in ("mb", "md", "muf", "mur")) and "l" in vp_nm)
-no_share, _ = write_car("no_share.car", omit=(96,))
-ok("a car without the front share cid gives no wB key", "wB" not in car_vp(load_car(no_share)))
-
-# through vehParams: total mass and front share
 print("  -- car_vp through vehParams")
 for physics in PHYSICS:
     v = through_vehparams(vp, physics)
     ok(f"vehParams total mass equals the car mass ({physics}): m = {v.m:.9g} kg",
-       abs(v.m - 700.0) < 1e-9 and abs(v.ms - (700.0 - 25.0 - 35.0)) < 1e-9)
-for physics in PHYSICS:
-    v = through_vehparams(vp, physics)
+       abs(v.m - CS_TOTAL) < 1e-9 and abs(v.ms - (CS_TOTAL - CS_UF - CS_UR)) < 1e-9)
     share = (v.Wfl0 + v.Wfr0) / (v.g * v.m)
-    ok(f"static front axle share through vehParams equals the car front share 0.44 ({physics}): {share:.6f}",
-       abs(share - car.mass.front_share) < 1e-6)
+    ok(f"static front axle share through vehParams equals the car front share 0.44 ({physics}): {share:.9f}",
+       abs(share - CS_FRONT) < 1e-9)
+    ok(f"vehParams takes Jw, f and kt ({physics})",
+       v.Jw == CS_JW and abs(v.f - TYRE["rl"]["drag"]) < 1e-12 and abs(v.kt - vp["kt"]) < 1e-6)
 
 
 # ---- vendor -----------------------------------------------------------------------------------------
@@ -278,8 +368,6 @@ def vendor(cs):
         v = through_vehparams(vpc, physics)
         ok(f"car_vp through vehParams reproduces the car mass ({physics}): m = {v.m:.6g} kg",
            abs(v.m - c.mass.total) <= 1e-9 * c.mass.total)
-    for physics in PHYSICS:
-        v = through_vehparams(vpc, physics)
         share = (v.Wfl0 + v.Wfr0) / (v.g * v.m)
         ok(f"static front axle share through vehParams equals the car front share ({physics}): "
            f"{share:.6f} vs {c.mass.front_share:.6f}",

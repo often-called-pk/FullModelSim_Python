@@ -233,11 +233,14 @@ def load_car(path):
     Each group is a SimpleNamespace. A field that the file lacks is None. The result also holds
     path (absolute) and sha8 (the first 8 hex digits of the sha256 of the file bytes).
     Angles are in rad and lengths in m. The engine axis is in rad/s and the torque is in N m.
-    A damper holds the velocity in m/s and the bump and rebound force in N. Its table is active when it has points.
-    Toe is positive for toe-out. Brake force is the total in N, bias is the front share, delay is in s.
+    A damper holds the velocity in m/s and the bump and rebound forces in N, both positive.
+    Its table is active when it has points. A spring holds its preload in m and its rate in N/m.
+    Toe is positive for toe-out. Camber is the negative camber: positive when the top of the wheel leans in.
+    Brake force is the total in N, bias is the front share, delay is in s.
     A tyre is a dict. It holds the peak lateral force over the load at its background temperature,
     the slip and camber curves, the peak slip angle and ratio, the radius and the vertical rate.
-    A hardpoint block has shape (6, 3), one row per point.
+    A hardpoint block has shape (6, 3), in the car frame of ChassisSim. The rows are lower inner front,
+    lower inner aft, lower outer, upper inner front, upper inner aft and upper outer.
     """
     path = os.path.abspath(path)
     with open(path, "rb") as fh:
@@ -255,29 +258,36 @@ def load_car(path):
     return SimpleNamespace(path=path, sha8=sha8, **groups)
 
 
-def car_vp(car):
-    """Return the vehParams primary keys that the car sets, as a dict for vp_overrides.
+# ChassisSim has no wheel inertia (its lap simulation has no wheel-spin states). FullModelSim needs one.
+# ponytail: one constant for a single-seater wheel, tyre and brake, plus a share of the driveline. Read a value
+# from the car file when a ChassisSim version stores one.
+CS_JW = 1.0  # kg m^2
 
-    The keys make vehParams derive the car mass, the front weight share, the wheelbase,
-    the CG height, the track and the inertias. mb is the sprung mass and md is 0,
-    because the car mass already holds the driver. ChassisSim gives each unsprung mass as the sum of the left
-    and right corners, as muf and mur of vehParams. wB of vehParams is the front share of the sprung mass, so
-    wB = (front share x total - muf) / sprung mass gives the car front weight share.
-    t is the mean of the two tracks. Rw is the rear tyre radius (the driven wheel).
-    A key whose cid the car lacks is left out, so vehParams keeps its default.
-    The car has no wheel inertia in a cid that we trust, so Jw is never set.
+
+def car_vp(car):
+    """Return the vehParams primary keys of the shared fields, as a dict for vp_overrides.
+
+    The keys make vehParams derive the car mass, the front weight share, the wheelbase, the CG height,
+    the track, the inertias, the wheel radius, the rolling resistance and the tyre rate. mb is the sprung
+    mass and md is 0, because the car mass already holds the driver.
+    ChassisSim gives each unsprung mass as the sum of the left and right corners, as muf and mur of vehParams.
+    wB of vehParams is the front share of the sprung mass. So wB = (front share x total - muf) / mb.
+    vehParams holds one track, one tyre rate and one wheel radius: t and kt are the means of the axles,
+    and Rw is the rear radius (the driven wheel). The car model reads the axle values from the car record.
+    Jw is CS_JW, because the car file holds no wheel inertia.
+    Raise ValueError when the car lacks a field, so that no default of another car enters the solve.
     """
     m, g, ty = car.mass, car.geom, car.tyre
-    out = {}
-    if None not in (m.total, m.unsprung_front, m.unsprung_rear):
-        out.update(mb=m.total - m.unsprung_front - m.unsprung_rear, md=0.0, muf=m.unsprung_front,
-                   mur=m.unsprung_rear)
-        assert abs(out["mb"] + out["md"] + out["muf"] + out["mur"] - m.total) < 1e-9
-        if m.front_share is not None:
-            out["wB"] = (m.front_share * m.total - m.unsprung_front) / out["mb"]
-    track = None if None in (g.track_front, g.track_rear) else (g.track_front + g.track_rear) / 2
-    for key, val in (("l", g.wheelbase), ("hcg", g.cg_height), ("I_x", m.Ix),
-                     ("I_y", m.Iy), ("I_z", m.Iz), ("t", track), ("Rw", None if ty.rl is None else ty.rl["radius"])):
-        if val is not None:
-            out[key] = float(val)
-    return out
+    need = {"mass.total": m.total, "mass.unsprung_front": m.unsprung_front, "mass.unsprung_rear": m.unsprung_rear,
+            "mass.front_share": m.front_share, "mass.Ix": m.Ix, "mass.Iy": m.Iy, "mass.Iz": m.Iz,
+            "geom.wheelbase": g.wheelbase, "geom.cg_height": g.cg_height, "geom.track_front": g.track_front,
+            "geom.track_rear": g.track_rear, "tyre.fl": ty.fl, "tyre.rl": ty.rl}
+    missing = sorted(k for k, v in need.items() if v is None)
+    if missing:
+        raise ValueError(f"The car file {car.path} lacks the fields {missing}. A ChassisSim car needs them.")
+    mb = m.total - m.unsprung_front - m.unsprung_rear
+    return {"mb": mb, "md": 0.0, "muf": m.unsprung_front, "mur": m.unsprung_rear,
+            "wB": (m.front_share * m.total - m.unsprung_front) / mb,
+            "l": g.wheelbase, "hcg": g.cg_height, "I_x": m.Ix, "I_y": m.Iy, "I_z": m.Iz,
+            "t": (g.track_front + g.track_rear) / 2, "Rw": ty.rl["radius"], "Jw": CS_JW,
+            "f": ty.rl["rolling_drag"], "kt": (ty.fl["kz"] + ty.rl["kz"]) / 2}
