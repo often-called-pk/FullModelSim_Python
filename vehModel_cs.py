@@ -49,8 +49,8 @@ def _sp(z):
 
 def _curve(x, y, ext=0.0, n=200):
     """Return f(v): a C2 curve through (x, y). PCHIP samples feed a cubic B-spline.
-    Inside the table the node step is at most half the smallest table spacing (n nodes at least), and every table
-    abscissa and the origin are nodes, so the knees of the table stay.
+    Inside the table the node step is at most half the smallest table spacing, with n nodes at least.
+    Every table abscissa and the origin are nodes, so the knees of the table stay.
     ext > 0 extends both ends on the end slope by ext x range, on a coarse grid. Else the end values hold.
     v is clamped inside the grid, because a casadi B-spline returns 0 outside its grid."""
     x, y = np.asarray(x, float), np.asarray(y, float)
@@ -61,17 +61,25 @@ def _curve(x, y, ext=0.0, n=200):
     p = PchipInterpolator(x, y)
     lo, hi = x[0], x[-1]
     e = ext * (hi - lo)
-    step = min((hi - lo) / (n - 1), 0.5 * np.min(np.diff(x)))
-    xs = np.linspace(lo, hi, int(np.ceil((hi - lo) / step)) + 1)
+    # Grid spacing h = 0.95 x the target step, so the gaps stay <= the step after the node filter below.
+    # ponytail: at most 5000 nodes in the table range, so one close pair of points cannot blow up the grid
+    h = max(0.95 * min((hi - lo) / (n - 1), 0.5 * np.min(np.diff(x))), (hi - lo) / 5000)
+    step = h / 0.95
+    xs = np.linspace(lo, hi, int(np.ceil((hi - lo) / h)) + 1)
     if e > 0:
         xs = np.r_[np.linspace(lo - e, lo, 20)[:-1], xs, np.linspace(hi, hi + e, 20)[1:]]
-    nodes = np.r_[x, [0.0] if lo - e < 0 < hi + e else []]
-    xs = np.union1d(xs[np.min(np.abs(xs[:, None] - nodes[None, :]), axis=1) > 0.05 * step], nodes)
+    nodes = np.unique(np.r_[x, [0.0] if lo - e < 0 < hi + e else []])
+    i = np.clip(np.searchsorted(nodes, xs), 1, nodes.size - 1)
+    near = np.minimum(np.abs(xs - nodes[i - 1]), np.abs(xs - nodes[i]))
+    xs = np.union1d(xs[near > 0.05 * step], nodes)
     d = p.derivative()
     ys = np.where(xs < lo, y[0] + d(lo) * (xs - lo), np.where(xs > hi, y[-1] + d(hi) * (xs - hi), p(np.clip(xs, lo, hi))))
+    s_lo, s_hi = float(d(lo)), float(d(hi))
     lo, hi = lo - e, hi + e
     f = ca.interpolant("curve", "bspline", [xs], ys)
     w = 1e-3 * (hi - lo)
+    if ext > 0:              # beyond the grid the curve goes on along its end slopes (a stop keeps its stiffness)
+        return lambda v: f(_clamp(v, lo, hi, w)) + s_hi * _smax(v - hi, 0, w) - s_lo * _smax(lo - v, 0, w)
     return lambda v: f(_clamp(v, lo, hi, w))
 
 
@@ -131,9 +139,9 @@ def _gear_envelope(cs, R, v):
     """Return (F_env, om_engine) for the wheel speed v [m/s] (SX or float).
     F_env is the smooth maximum over the gears of the drive force: efficiency x torque(engine speed) x ratio / R.
     Below idle the clutch holds the engine at idle. Above the limit a tanh window (2% of the limit) fades the torque.
-    The log-sum-exp overestimates the true maximum by up to F_ref ln(n) / B_GEAR where n gears give nearly equal force
-    (0.9% of F_ref for n = 2 at a gear crossing), and less elsewhere. om_engine is the engine speed of the gears, weighted by their share of F_env. It holds at idle
-    under the clutch."""
+    The log-sum-exp overestimates the true maximum. The error is at most F_ref ln(n) / B_GEAR, where n gears give
+    nearly equal force: 0.9 % of F_ref for n = 2 at a gear crossing.
+    om_engine is the engine speed of the gears, weighted by their share of F_env. It holds at idle under the clutch."""
     e = cs.engine
     te = _curve(e.torque_curve["x"], e.torque_curve["y"])
     F_ref = drive_scale(cs, R)
@@ -150,7 +158,8 @@ def _gear_envelope(cs, R, v):
 
 
 def gear_envelope_numeric(cs, R, v):
-    """Return F_env [N] at the wheel speeds v [m/s] (numpy array). It evaluates the function of the NLP, so the QSS and the NLP share one source."""
+    """Return F_env [N] at the wheel speeds v [m/s] (numpy array).
+    It evaluates the function of the NLP, so the QSS and the NLP share one source."""
     x = ca.SX.sym("v")
     fn = ca.Function("F_env", [x], [_gear_envelope(cs, R, x)[0]]).map(int(np.size(v)))
     return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))

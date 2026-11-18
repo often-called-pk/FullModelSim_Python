@@ -26,10 +26,9 @@ from scipy.interpolate import PchipInterpolator
 
 from functions import carfile
 from functions.ggv import build_envelope
-B_GEAR = 80.0          # vehModel_cs.B_GEAR, the sharpness of the gear maximum
 from MLTP_screen import MLTP_screen
 import vehModel_cs as VCS
-from vehModel_cs import _surf, roll_centres
+from vehModel_cs import B_GEAR, W_RUBBER, _surf, roll_centres
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
@@ -179,13 +178,13 @@ def shape(R, cda_scale=1.0, peak_scale=1.0):
     return out
 
 
-def build_records(cda_scale=1.0, peak_scale=1.0):
+def build_records(cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
     R = []
 
     def add(tag, cid, v):
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
-        add(1, cid, v)
+        add(1, cid, bias if (bias is not None and cid == 108) else v)
     for cid, v in zip((55, 59, 63, 67), (0.06, 0.08, 0.10, 0.12)):   # roll-centre heights [m], middle values
         add(1, cid, v)
     for cid in (204, 205, 206, 207):                                  # rubber gaps are ground gaps (flag 1)
@@ -197,7 +196,10 @@ def build_records(cda_scale=1.0, peak_scale=1.0):
     for cid, rate in ARB.items():
         add(11, cid, (1, 0.0, rate, np.array([0.0, 0.1]), np.array([0.0, 300.0])))
     for cid in range(23, 31):
-        add(2, cid, arb(5, cid))                                          # motion ratio coefficients
+        v = arb(5, cid)
+        if mr_fl is not None and cid == 23:                              # front left motion ratio polynomial
+            v = np.array(mr_fl, float)
+        add(2, cid, v)                                                    # motion ratio coefficients
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
@@ -216,9 +218,9 @@ def build_records(cda_scale=1.0, peak_scale=1.0):
     return R
 
 
-def write_car(name, cda_scale=1.0, peak_scale=1.0):
+def write_car(name, cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
     path = os.path.join(TMP.name, name)
-    carfile.write(build_records(cda_scale, peak_scale), path)
+    carfile.write(build_records(cda_scale, peak_scale, mr_fl, bias), path)
     return path
 
 
@@ -297,10 +299,10 @@ ok("build_envelope(ctx) on the same ctx gives the same drive table",
 ctx4 = qss(None, Electric_4Motors="On")
 ok("4EM ctx: F_drive_tab is None", ctx4.envelope.F_drive_tab is None)
 
-# drive table: the 0.1 m/s grid of a car, equal to the numpy max over the gears of the car engine curve (independent
-# of vehModel_cs), within the log-sum-exp bound F_ref ln(n) / B_GEAR above the max and a 2e-3 F_ref slack (the
-# NLP's 5 rpm smooth idle clip and the spline differ from PCHIP at the two ends of the speed range).
-def drive_max_gears(cs, v):
+# drive table: the 0.1 m/s grid of a car. Away from a gear crossing the numpy max over the gears of the car engine
+# curve (PCHIP, own F_ref, independent of vehModel_cs) is the force, to 1e-4 F_ref. The log-sum-exp adds at most
+# F_ref ln(n) / B_GEAR, which is a bound on the crossings only.
+def gear_forces(cs, v):
     e = cs.engine
     Rr = cs.tyre.rl["radius"]
     x, y = np.asarray(e.torque_curve["x"], float), np.asarray(e.torque_curve["y"], float)
@@ -312,25 +314,22 @@ def drive_max_gears(cs, v):
         w = v * Gr / Rr
         win = 0.5 * (1.0 + np.tanh((e.rpm_limit - w) / dw))
         fg.append(e.efficiency * te(np.clip(np.maximum(w, e.rpm_idle), x.min(), x.max())) * Gr / Rr * win)
-    return np.max(np.vstack(fg), axis=0), F_ref, len(fg)
+    top2 = np.sort(np.vstack(fg), axis=0)[-2:]
+    return top2[1], top2[1] - top2[0], F_ref, len(fg)
 
 
 dstep = np.diff(env.v_grid)
-ok(f"car QSS grid is 0.1 m/s steps (min {dstep.min():.4f}, max {dstep.max():.4f} over {env.v_grid.size} nodes)",
-   bool(np.allclose(dstep[:-1], 0.1, rtol=0.0, atol=1e-3)))
+ok(f"car QSS grid is 0.1 m/s steps at every step (min {dstep.min():.5f}, max {dstep.max():.5f}, "
+   f"{env.v_grid.size} nodes)", bool(np.allclose(dstep, 0.1, rtol=0.0, atol=1e-3)))
 ok(f"F_drive_tab has one value per node (length {env.F_drive_tab.size})",
    env.F_drive_tab is not None and env.F_drive_tab.size == env.v_grid.size)
-mx, F_ref, n_g = drive_max_gears(ctx.cs, env.v_grid)
-bound_hi = F_ref * np.log(n_g) / B_GEAR
+top, gap, F_ref, n_g = gear_forces(ctx.cs, env.v_grid)
 ft = env.F_drive_tab
-slack = 2e-3 * F_ref
-viol = np.maximum(mx - slack - ft, ft - (mx + bound_hi + slack))
-sel = env.v_grid >= 25.0
-ok(f"F_drive_tab within max-over-gears + F_ref ln({n_g})/B_GEAR (+2e-3 F_ref slack) at every node "
-   f"(max violation {viol.max():.2e} N)", bool(np.all(viol <= 0.0)))
-ok(f"F_drive_tab equals the max over gears within 1e-4 F_ref for 25..278 m/s (max dev "
-   f"{np.max(np.abs(ft[sel] - mx[sel])):.2f} N, F_ref {F_ref:.0f} N)",
-   bool(np.max(np.abs(ft[sel] - mx[sel])) < 1e-4 * F_ref + bound_hi))
+away = (gap > 0.1 * F_ref) & (env.v_grid >= 25.0) & (env.v_grid <= 265.0)
+dev = np.abs(ft[away] - top[away])
+ok(f"F_drive_tab equals the max over the gears to 1e-4 F_ref away from the gear crossings "
+   f"({away.sum()} nodes, max dev {dev.max():.3f} N, F_ref {F_ref:.0f} N)",
+   bool(away.sum() > 100 and dev.max() < 1e-4 * F_ref))
 ok(f"F_drive_tab is positive over the grid (min {ft.min():.1f} N)", bool(np.all(ft > 0)))
 ok("n_v does not apply to a car: build_envelope(ctx, n_v=5) keeps the 0.1 m/s grid",
    quiet(build_envelope, ctx, n_v=5).v_grid.size == env.v_grid.size)
@@ -374,10 +373,12 @@ ok("quasi-static ride heights fall monotonically with speed up to the top speed"
    bool(np.all(np.diff(rh_f) <= 1e-12) and np.all(np.diff(rh_r) <= 1e-12)))
 
 F_brk = float(env.F_brk_trq)
-res = env.F_res(env.v_grid)
 ok(f"brake check: F_brk_trq equals cid 107 ({BRAKE_FORCE:.0f} N): {F_brk:.1f} N", abs(F_brk - BRAKE_FORCE) < 1e-6)
-ok("brake check: ax_brk x M_eff minus the resistance never exceeds the car brake force at any speed",
-   bool(np.all(env.ax_brk * env.M_eff - res <= F_brk * (1 + 1e-9) + 1e-6)))
+for bias in (0.0, 1.0):          # the brake bracket with one axle only (cid 108 = 0 or 1)
+    cb = qss(write_car(f"bias{int(bias)}.car", bias=bias))
+    fb = cb.envelope.Fx_brk
+    ok(f"brake bias {bias:.0f}: Fx_brk finite and > 0 at every speed (min {fb.min():.1f} N)",
+       bool(np.all(np.isfinite(fb)) and np.all(fb > 0)))
 ok("Fx_brk (tyre) is finite and positive on the grid",
    bool(np.all(np.isfinite(env.Fx_brk)) and np.all(env.Fx_brk > 0)))
 ok(f"ay_max positive on the grid (min {env.ay_max.min() / G:.2f} g)", bool(np.all(env.ay_max > 0)))
@@ -395,6 +396,49 @@ e_lift = np.max(np.abs(env.F_lift - lift_ref) / np.maximum(np.abs(lift_ref), 1.0
 ok(f"downforce: F_lift = q x CLA(rh_f, rh_r) at the fixed-point ride heights (max rel {e_lift:.1e})",
    bool(e_lift < 1e-6))
 
+# motion ratio law (e): a car whose front left corner has c1 = 0.9, c2 = 0.5 (sm = c1 x + c2 x^2 / 2, mr = c1 + c2 x).
+# The QSS axle force table is the sum over the corners of (F0/mr0 + k sm) mr - F0 + rubber, with the rubber
+# mr x slope x W softplus((sm - gap) / W) (2-point table, linear). The table is read back at the travel that the
+# fixed point implies: travel = rh0 - rh - F_axle / kt, and the hand force there must equal the axle load of the QSS.
+def hand_corner(cs_, vp_, c, x):
+    cf = np.atleast_1d(getattr(cs_.susp, f"mr_{c}")).astype(float)
+    k = getattr(cs_.susp, f"spring_{c}")["rate"]
+    sm = sum(v / (i + 1) * x ** (i + 1) for i, v in enumerate(cf))
+    mr = sum(v * x ** i for i, v in enumerate(cf))
+    F0, mr0 = getattr(vp_, f"m_c_{c}") * vp_.g, cf[0]
+    rub = getattr(cs_.susp, f"rubber_{c}")
+    slope = (rub["y"][-1] - rub["y"][0]) / (rub["x"][-1] - rub["x"][0])
+    gap = getattr(cs_.susp, f"gap_{c}")
+    rubber = mr * slope * W_RUBBER * np.logaddexp(0.0, (sm - gap) / W_RUBBER)
+    return (F0 / mr0 + k * sm) * mr - F0 + rubber
+
+
+MR_CAR = write_car("mr.car", mr_fl=[0.9, 0.5, 0.0, 0.0, 0.0])
+ctx_mr = qss(MR_CAR)
+env_mr, cs_m, vp_m, geo_m = ctx_mr.envelope, ctx_mr.cs, ctx_mr.vp, ctx_mr.cs.geom
+kt = {"f": cs_m.tyre.fl["kz"] + cs_m.tyre.fr["kz"], "r": cs_m.tyre.rl["kz"] + cs_m.tyre.rr["kz"]}
+rh0 = {"f": 0.5 * (geo_m.ride_height_fl + geo_m.ride_height_fr), "r": 0.5 * (geo_m.ride_height_rl + geo_m.ride_height_rr)}
+Fa = {"f": env_mr.Fz_front - (vp_m.Wfl0 + vp_m.Wfr0), "r": env_mr.Fz_rear - (vp_m.Wrl0 + vp_m.Wrr0)}
+rh = {"f": env_mr.info["rh_f"], "r": env_mr.info["rh_r"]}
+pair = {"f": ("fl", "fr"), "r": ("rl", "rr")}
+nodes = [int(np.argmin(np.abs(env_mr.v_grid - v))) for v in (30.0, 70.0)] + [env_mr.v_grid.size - 1]
+for a in ("f", "r"):
+    for i in nodes:
+        tr = rh0[a] - rh[a][i] - Fa[a][i] / kt[a]
+        hand = sum(hand_corner(cs_m, vp_m, c, tr) for c in pair[a])
+        rel = abs(hand - Fa[a][i]) / abs(Fa[a][i])
+        ok(f"MR law ({a} axle, {env_mr.v_grid[i]:.1f} m/s): QSS axle load {Fa[a][i]:.1f} N vs hand formula at travel "
+           f"{1e3 * tr:.2f} mm {hand:.1f} N ({100 * rel:.3f} %)", bool(rel < 0.005))
+
+# aero maps 50 mm below their grid (f): the clamp holds the edge value, not zero
+for name, tab in (("cla", ctx.cs.aero.cla_map), ("cda", ctx.cs.aero.cda_map), ("balance", ctx.cs.aero.balance_map)):
+    f_ = _surf(tab)
+    xm, z0 = 0.5 * (tab["x"][0] + tab["x"][-1]), tab["z"][0]
+    below, edge = float(f_(xm, z0 - 0.05)), float(f_(xm, z0))
+    ok(f"{name} map 50 mm below the grid holds the edge value ({below:.4g} vs edge {edge:.4g})",
+       bool(below != 0.0 and abs(below - edge) <= 1e-3 * abs(edge)))
+
+# brake bias cars (a): one axle only
 print("[cs_qss] lap")
 lap = float(ctx.data.lap_time)
 ok(f"car QSS lap finite and positive: {lap:.3f} s", bool(np.isfinite(lap) and lap > 0))

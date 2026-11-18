@@ -490,7 +490,7 @@ def build_envelope_cs(ctx, v_grid=None):
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     """
     from scipy.interpolate import PchipInterpolator
-    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, roll_centres, gear_envelope_numeric, _rubber, _surf
+    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, roll_centres, gear_envelope_numeric, _mr, _rubber, _surf
     import casadi as ca
     vp, cs = ctx.vp, ctx.cs
     grip = getattr(ctx, "grip", 1.0)
@@ -542,8 +542,13 @@ def build_envelope_cs(ctx, v_grid=None):
     xg = np.linspace(0.0, 0.15, 600)                    # strut travel grid: spring + rubber force of an axle, once
     F_ax = {}
     for a, (l, r) in (("f", ("fl", "fr")), ("r", ("rl", "rr"))):
-        fr = ca.Function("rub", [xv], [_rubber(cs, l)(xv) + _rubber(cs, r)(xv)]).map(xg.size)
-        F_ax[a] = (kw[l] + kw[r]) * xg + np.asarray(fr(xg.reshape(1, -1))).ravel()      # increasing in the travel
+        extra = 0                                       # spring force above the static load, as vehModel_cs, plus rubbers
+        for c in (l, r):
+            sm, mr = _mr(getattr(cs.susp, f"mr_{c}"))
+            F0, mr0 = getattr(vp, f"m_c_{c}") * vp.g, float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
+            extra = extra + (F0 / mr0 + getattr(cs.susp, f"spring_{c}")["rate"] * sm(xv)) * mr(xv) - F0 + _rubber(cs, c)(xv)
+        fr = ca.Function("axle", [xv], [extra]).map(xg.size)
+        F_ax[a] = np.asarray(fr(xg.reshape(1, -1))).ravel()                       # increasing in the travel
 
     def travel(Fa, a):       # strut travel of axle a under the extra axle load Fa: springs and bump rubbers
         return np.interp(Fa, F_ax[a], xg)

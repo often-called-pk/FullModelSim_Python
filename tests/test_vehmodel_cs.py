@@ -24,6 +24,9 @@ from pathlib import Path
 import casadi as ca
 import numpy as np
 
+import time
+from types import SimpleNamespace
+
 import functions.transcription as T
 from functions import carfile
 from MLTP import MLTP
@@ -522,6 +525,95 @@ f_on = float(fr_fun((gap + 0.01) / mr0))
 exp_on = mr0 * float(np.interp(0.01, np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]]))
 ok(f"rubber frame: {f_off:.4f} N 10 onset widths before the gap; {f_on:.2f} N at 10 mm past it (table {exp_on:.2f} N)",
    abs(f_off) < 0.01 and abs(f_on / exp_on - 1) < 0.02)
+
+# 1. non-constant motion ratio: sm(x) = 0.9 x + 0.25 x^2, mr(x) = 0.9 + 0.5 x on the front left.
+#    The spring force is (F0 / mr0 + k sm(x)) mr(x); the rubber force is mr(x) table(sm(x) - gap), both within 1 %.
+mr_poly = np.array([0.9, 0.5, 0.0, 0.0, 0.0])
+ctx_mr = build(write_car("mr_poly.car", over={23: mr_poly}))
+mm_r, vp_r, cs_r = ctx_mr.m23, ctx_mr.vp, ctx_mr.cs
+fzs_fl_fun = ca.Function("Z", [mm_r.x, mm_r.u, mm_r.pv], [mm_r.fzs_fl])
+
+
+def fzs_at_travel(xtrav):
+    """fzs_fl at strut travel xtrav (zs = -xtrav, theta = phi = 0, zt static)."""
+    xx = static_x(ctx_mr, 30.0)
+    xx[9] = -xtrav
+    return float(fzs_fl_fun.call([xx / mm_r.x_s, np.zeros(mm_r.nu), 0.0])[0])
+
+
+def sm_p(x):
+    return 0.9 * x + 0.25 * x * x
+
+
+def mr_p(x):
+    return 0.9 + 0.5 * x
+
+
+F0_r = vp_r.m_c_fl * vp_r.g
+k_r = float(cs_r.susp.spring_fl["rate"])
+spring_exp = (F0_r / 0.9 + k_r * sm_p(-0.02)) * mr_p(-0.02)
+spring_model = fzs_at_travel(-0.02)                    # extension: no rubber, no damper force
+ok(f"polynomial MR, spring force at travel -20 mm: {spring_model:.2f} vs (F0/mr0 + k sm) mr = {spring_exp:.2f} N",
+   abs(spring_model - spring_exp) < 0.01 * abs(spring_exp))
+rub_tab = cs_r.susp.rubber_fl
+gap_r = float(cs_r.susp.gap_fl)
+spring_exp_p = (F0_r / 0.9 + k_r * sm_p(0.02)) * mr_p(0.02)
+rub_model = fzs_at_travel(0.02) - spring_exp_p
+rub_exp = mr_p(0.02) * float(np.interp(sm_p(0.02) - gap_r, np.r_[0.0, rub_tab["x"]], np.r_[0.0, rub_tab["y"]]))
+ok(f"polynomial MR, rubber force at travel +20 mm: {rub_model:.2f} vs mr table(sm - gap) = {rub_exp:.2f} N",
+   rub_exp > 1.0 and abs(rub_model - rub_exp) < 0.01 * abs(rub_exp))
+
+# 2. slip table that ends rising (last point highest): fn and the capped lateral curve stay at or below max(y)
+#    and LAT_CAP beyond the table end
+Tt = {"slip_x": [0.0, 1.0, 2.0], "slip_y": [0.0, 1.0, 1.2]}
+hv_u = V._slip_curve(Tt)
+hv_c = V._slip_curve(Tt, V.LAT_CAP)
+vs_t = np.linspace(0.01, 9.5, 300)
+fn_u = np.array([float(hv_u(v)) * v for v in vs_t])
+fn_c = np.array([float(hv_c(v)) * v for v in vs_t])
+ok(f"rising slip table: fn <= max(y) = 1.2 everywhere (max {fn_u.max():.7f}; the B-spline rings by "
+   f"{(fn_u.max() / 1.2 - 1) * 1e6:.1f} ppm at the knee)", fn_u.max() <= 1.2 * (1 + 1e-5))
+ok(f"rising slip table: capped lateral curve <= LAT_CAP beyond the table end (max past 2: {fn_c[vs_t >= 2].max():.4f})",
+   fn_c.max() <= V.LAT_CAP * (1 + 1e-5) and fn_c[vs_t >= 2].max() <= V.LAT_CAP * (1 + 1e-5))
+
+# 3. _curve node grid: step inside the table at most half the smallest spacing (2 mm/s here); a close pair
+#    (spacing 1e-3 over a range of 3) builds fast, with the node count capped
+_orig_interp = ca.interpolant
+_grids = []
+
+
+def _spy_interp(name, solver, grid, values, *a, **k):
+    _grids.append(np.asarray(grid[0], float))
+    return _orig_interp(name, solver, grid, values, *a, **k)
+
+
+ca.interpolant = _spy_interp
+try:
+    xt = np.arange(0.0, 0.8 + 1e-9, 0.002)
+    V._curve(xt, np.sin(xt))
+    g_in = _grids[-1][(_grids[-1] >= 0.0) & (_grids[-1] <= 0.8)]
+    max_step = float(np.max(np.diff(g_in)))
+    ok(f"node step inside a 2 mm/s table {max_step * 1e3:.3f} mm <= half the spacing (1 mm)", max_step <= 0.5 * 0.002 + 1e-12)
+    xc = np.array([0.0, 1.0, 1.0 + 1e-3, 2.0, 3.0])
+    t0 = time.time()
+    V._curve(xc, np.cos(xc))
+    dt = time.time() - t0
+    ok(f"close pair (1e-3 over range 3) builds in {dt:.2f} s with {_grids[-1].size} nodes", dt < 2.0 and _grids[-1].size <= 5100)
+finally:
+    ca.interpolant = _orig_interp
+
+# 4. cs_seed_inputs takes M and the resistance from prof['env'] (not from the 4EM drag of ladder.lon_model)
+mm_s = ctx.m23
+prof_a = {"s": np.array([0.0, 100.0]), "v": np.array([20.0, 20.0]), "ax": np.array([1.0, 1.0]),
+          "env": SimpleNamespace(M=700.0, F_res=lambda v: 100.0 + 0.5 * np.asarray(v) ** 2)}
+prof_b = dict(prof_a, env=SimpleNamespace(M=900.0, F_res=lambda v: 100.0 + 0.5 * np.asarray(v) ** 2))
+ua = V.cs_seed_inputs(ctx, mm_s, prof_a, [50.0])
+ub = V.cs_seed_inputs(ctx, mm_s, prof_b, [50.0])
+ua_exp = (700.0 * 1.0 + 100.0 + 0.5 * 400.0) / mm_s.u_s[0]
+ub_exp = (900.0 * 1.0 + 100.0 + 0.5 * 400.0) / mm_s.u_s[0]
+ok(f"cs_seed_inputs drive = (M a + c0 + c2 v^2) / u_s from prof env: {ua[0, 0]:.5f} vs {ua_exp:.5f}, "
+   f"M 900: {ub[0, 0]:.5f} vs {ub_exp:.5f}",
+   abs(ua[0, 0] - ua_exp) < 1e-9 and abs(ub[0, 0] - ub_exp) < 1e-9 and abs(ua[1, 0]) < 1e-12 and abs(ua[2, 0]) < 1e-12)
 
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
