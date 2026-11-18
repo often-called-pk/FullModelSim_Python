@@ -520,6 +520,7 @@ def userOpts(ctx,
         if ctx.cs.engine.torque_split not in (None, 0.0):
             raise ValueError("The car sends drive torque to the front axle (torque split above 0). "
                              "The car model drives the rear axle only.")
+        chassissim.aero_refusals(ctx.cs)
         vp_overrides = {**chassissim.car_vp(ctx.cs), **(vp_overrides or {})}
 
     # ---- start state: checked before any work, like the physics flag
@@ -612,6 +613,16 @@ def userOpts(ctx,
         if gap > 1e-3:
             tr.s, tr.k = np.append(tr.s, tr.s[-1] + gap), np.append(tr.k, tr.k[0])
             tr.x, tr.y = np.append(tr.x, tr.x[0]), np.append(tr.y, tr.y[0])
+
+    if ctx.cs is not None and ctx.cs.aero.drs_336 == 1:
+        # DRS gate on track.s: 1 inside the zone, logistic edges of scale 1.25 m (10 to 90 % over 5.5 m).
+        # A zone with start > end wraps over the line.
+        a, b = float(ctx.cs.aero.drs_340), float(ctx.cs.aero.drs_341)
+        if a == b or not (tr.s[0] <= a <= tr.s[-1] and tr.s[0] <= b <= tr.s[-1]):
+            raise ValueError(f"The DRS zone of the car ({a:g} m to {b:g} m) is empty or lies outside the circuit "
+                             f"({tr.s[0]:g} m to {tr.s[-1]:g} m).")
+        sg = lambda z: 1.0 / (1.0 + np.exp(-np.clip(z / 1.25, -50, 50)))
+        tr.drs = (sg(tr.s - a) * sg(b - tr.s) if a <= b else 1.0 - sg(tr.s - b) * sg(a - tr.s))
 
     # ---- lateral bounds: parsed on the final track (after the closing sample above) ----
     n_lo, n_hi, ctx.n_tag = _parse_n_bounds(n_bounds, tr.s)

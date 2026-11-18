@@ -157,18 +157,18 @@ def tyre_record(i, corner):
     return 13, 80 + i, (list(dims), sc, tabs)
 
 
-def shape(R, cda_scale=1.0, peak_scale=1.0):
+def shape(R, peak_scale=1.0):
     """Make the arbitrary record values physical for the QSS: positive peak grid (fy_peak = 1.2 x load x a
-    temperature factor, times peak_scale), slip and camber factors 1, a positive CLA / CDA map (CDA x cda_scale)
-    and a balance of 0.45. Only the values change, the tables keep their shapes."""
+    temperature factor, times peak_scale), slip and camber factors 1, a positive CLA / CDA map (flat, the
+    record scales it to its scalar) and a balance of 0.45. Only the values change, the tables keep their shapes."""
     out = []
     for t, cid, v in R:
         if t == 9 and cid == 127:                       # cla map: downforce coefficient (2.5 keeps the ride heights up at 70 m/s)
             x, z, d = v
             v = (x, z, np.full(len(d), 2.5))
-        elif t == 9 and cid == 131:                     # cda map: drag coefficient x cda_scale
+        elif t == 9 and cid == 131:                     # cda map: flat, its scalar (cid 122) sets the drag
             x, z, d = v
-            v = (x, z, np.full(len(d), 0.95 * cda_scale))
+            v = (x, z, np.full(len(d), 0.95))
         elif t == 9 and cid == 135:                     # balance map: front share of the downforce
             x, z, d = v
             v = (x, z, np.full(len(d), 0.45))
@@ -186,13 +186,13 @@ def shape(R, cda_scale=1.0, peak_scale=1.0):
     return out
 
 
-def build_records(cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
+def build_records(cda_scalar=0.95, peak_scale=1.0, mr_fl=None, bias=None):
     R = []
 
     def add(tag, cid, v):
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
-        add(1, cid, bias if (bias is not None and cid == 108) else v)
+        add(1, cid, bias if (bias is not None and cid == 108) else cda_scalar if cid == 122 else v)
     for cid in (55, 59, 63, 67):                                       # roll-centre heights [m], middle values
         v = RC_HEIGHT
         add(1, cid, v)
@@ -222,14 +222,14 @@ def build_records(cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
     for i, c in enumerate(CORNERS):
         t, cid, v = tyre_record(i, c)
         add(t, cid, v)
-    R = shape(R, cda_scale, peak_scale)
+    R = shape(R, peak_scale)
     R.append((carfile.END_TAG, carfile.END_CID, None))
     return R
 
 
-def write_car(name, cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
+def write_car(name, cda_scalar=0.95, peak_scale=1.0, mr_fl=None, bias=None):
     path = os.path.join(TMP.name, name)
-    carfile.write(build_records(cda_scale, peak_scale, mr_fl, bias), path)
+    carfile.write(build_records(cda_scalar, peak_scale, mr_fl, bias), path)
     return path
 
 
@@ -471,7 +471,7 @@ DBL = write_car("peak2.car", peak_scale=2.0)
 lap_peak = float(qss(DBL).data.lap_time)
 ok(f"doubling the tyre peak table lowers the QSS lap: {lap:.3f} s -> {lap_peak:.3f} s", lap_peak < lap)
 
-CDA = write_car("cda15.car", cda_scale=1.5)
+CDA = write_car("cda15.car", cda_scalar=0.95 * 1.5)     # the CDA scalar (cid 122) x1.5: the map is normalised to it
 lap_cda = float(qss(CDA).data.lap_time)
 ok(f"raising CDA (drag map x1.5) raises the QSS lap: {lap:.3f} s -> {lap_cda:.3f} s", lap_cda > lap)
 

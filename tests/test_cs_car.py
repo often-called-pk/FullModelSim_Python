@@ -73,6 +73,7 @@ HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
                     [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
 HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
 BUMP_X = np.linspace(-0.02, 0.02, 11)                     # m, wheel travel grid of the bump steer tables (74-77)
+AERO_X = np.linspace(0.0, 0.4, 5)                         # axis of the task 8 aero tables and maps (zero values)
 CS_TOTAL, CS_UF, CS_UR = 700.0, 25.0, 35.0
 CS_FRONT = 0.44
 EXPLICIT = {  # tag 1 cids with a literal value
@@ -153,6 +154,14 @@ def build_records(omit=(), over=None):
     add(2, 110, GEARS)
     for cid, ((nx, nz), _) in MAPS.items():
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
+    # Task 8 aero corrections, refused features and DRS-free speed tables: 1-D tables (tag 7) zero in y,
+    # enables (tag 6) 0, 2-D maps (tag 9) zero in data. Axes are non-degenerate; only the values are zero.
+    for cid in (128, 132, 136, 139, 416, 417, 418, 437, 438, 439, 870):
+        add(7, cid, (AERO_X, np.zeros(len(AERO_X))))
+    for cid in (413, 414, 415, 434, 435, 436):
+        add(6, cid, 0)
+    for cid in (*range(452, 464), 872, 873, 874, 875):
+        add(9, cid, (AERO_X, AERO_X, np.zeros(len(AERO_X) ** 2)))
     for cid in range(31, 36):
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
     for cid, rows in zip(HARD, (HP_LEFT, HP_RIGHT, HP_LEFT, HP_RIGHT)):
@@ -264,7 +273,7 @@ ok("hardpoint block has shape (6, 3), and row i holds point i (left and right si
 ok("aero maps have shape (nx, nz) and hold the stored data (cla 4x3, cda 3x2, balance 5x2)",
    car.aero.cla_map["data"].shape == (4, 3) and car.aero.cda_map["data"].shape == (3, 2)
    and car.aero.balance_map["data"].shape == (5, 2)
-   and np.allclose(car.aero.cla_map["data"], arb(12, 127).reshape(4, 3))
+   and np.allclose(car.aero.cla_map["data"], arb(12, 127).reshape(4, 3) * (3.5 / arb(12, 127).max()))   # scaled: map / peak x 3.5
    and np.allclose(car.aero.balance_map["data"], arb(10, 135).reshape(5, 2)))
 ok("diff maps 114 (3 x 2) and 116 (2 x 4) have their shape and data",
    car.diff.front_map["data"].shape == (3, 2) and car.diff.rear_map["data"].shape == (2, 4)
@@ -318,10 +327,13 @@ try:
 finally:
     os.chdir(here)
 ok("a relative path loads and stores the absolute path", os.path.isabs(rel.path) and os.path.samefile(rel.path, SYN))
-no_cda, _ = write_car("no_cda.car", omit=(122, 390))
+no_cda, _ = write_car("no_cda.car", omit=(122, 131, 390))     # the CDA map goes with its scalar (task 8 rule)
 cn = load_car(no_cda)
-ok("a cid the file lacks gives None (aero.cda, env.track_temp), the others still read",
-   cn.aero.cda is None and cn.env.track_temp is None and abs(cn.aero.cla - 3.5) < 1e-12)
+ok("a cid the file lacks gives None (aero.cda, aero.cda_map, env.track_temp), the others still read",
+   cn.aero.cda is None and cn.aero.cda_map is None and cn.env.track_temp is None and abs(cn.aero.cla - 3.5) < 1e-12)
+cda_no_scalar, _ = write_car("cda_no_scalar.car", omit=(122,))
+ok("a CDA map without its scalar 122 raises ValueError naming the scalar",
+   raises_naming(lambda: load_car(cda_no_scalar), "missing scalar 'cda'"))
 
 print("  -- bump steer, tyre table 4, suspension curves")
 ok("bump steer tables 74-77 (fl, fr, rl, rr) hold the travel grid x and a zero y (synthetic car)",

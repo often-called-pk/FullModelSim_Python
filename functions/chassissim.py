@@ -172,6 +172,12 @@ CAR_FIELDS = {
     127: ("aero.cla_map", 1.0), 131: ("aero.cda_map", 1.0), 135: ("aero.balance_map", 1.0),
     **{c: (f"aero.drs_{c}", 1.0) for c in range(336, 342)},
     **{c: (f"aero.multi_drs_{c}", 1.0) for c in range(366, 372)},
+    # Corrections of the aero maps (tag 7 tables). Sideslip x is in rad, speed x in m/s. Enables are 0 or 1.
+    128: ("aero.ss_cla", 1.0), 132: ("aero.ss_cda", 1.0), 136: ("aero.ss_ab", 1.0),
+    **{413 + i: (f"aero.sp_on_{n}", 1.0) for i, n in enumerate(("cla", "cda", "ab"))},
+    **{416 + i: (f"aero.sp_{n}", 1.0) for i, n in enumerate(("cla", "cda", "ab"))},
+    # Features that the car model refuses when they are live: steer correction, roll split, 2-D maps, wake maps.
+    **{c: (f"aero.refused_{c}", 1.0) for c in (139, *range(434, 440), *range(452, 464), 870, *range(872, 876))},
     100: ("engine.efficiency", 1.0), 101: ("engine.torque_curve", (RPM, 1.0)),
     102: ("engine.rpm_idle", RPM), 103: ("engine.rpm_limit", RPM), 110: ("engine.gears", 1.0),
     111: ("engine.torque_split", 1.0),
@@ -266,7 +272,50 @@ def load_car(path):
             g, a = name.split(".")
             t, v = recs[cid]
             setattr(groups[g], a, _tyre_decode(v) if t == 13 else _conv(t, v, f))
+    a = groups["aero"]
+    for mp, sc in (("cla_map", "cla"), ("cda_map", "cda")):
+        # ChassisSim scales the CLA and CDA maps to a peak of 1 and multiplies them by the scalar.
+        if getattr(a, mp) is None:
+            continue
+        peak, scal = float(np.max(getattr(a, mp)["data"])), getattr(a, sc)
+        if scal is None:
+            raise ValueError(f"The car file {path} has the aero map '{mp}' but a missing scalar '{sc}'.")
+        if peak < 0:
+            raise ValueError(f"The car file {path} has the aero map '{mp}' with a negative peak.")
+        if (peak == 0) != (scal == 0):
+            raise ValueError(f"The car file {path} has the aero map '{mp}' with a zero peak or a zero scalar '{sc}', "
+                             f"but not both. A car without this force needs both at zero.")
+        if peak > 0:        # a zero map with a zero scalar stays as it is
+            getattr(a, mp)["data"] = getattr(a, mp)["data"] * (scal / peak)
     return SimpleNamespace(path=path, sha8=sha8, **groups)
+
+
+def table_live(v):
+    """Return True when a decoded aero record holds a non-zero value. A table counts by its y or data, not its axis."""
+    if v is None:
+        return False
+    if isinstance(v, dict):
+        v = v["y"] if "y" in v else v.get("data", 0.0)
+    try:
+        return bool(np.any(np.asarray(v, float) != 0))
+    except (TypeError, ValueError):
+        return any(table_live(e) for e in v)
+
+
+def aero_refusals(cs):
+    """Raise ValueError for an aero feature of the car that the model does not build."""
+    a = cs.aero
+    live = lambda *names: [n for n in names if table_live(getattr(a, n, None))]
+    for what, names in (
+            ("the roll split table (cid 139)", ["refused_139"]),
+            ("a 2-D steer or state map (cids 452 to 463)", [f"refused_{c}" for c in range(452, 464)]),
+            ("a wake map (cids 870, 872 to 875)", [f"refused_{c}" for c in (870, 872, 873, 874, 875)])):
+        if live(*names):
+            raise ValueError(f"The car file {cs.path} uses {what}. The car model does not build it.")
+    if any(getattr(a, f"refused_{c}", None) == 1 for c in (434, 435, 436)):     # ChassisSim ignores a table with its enable at 0
+        raise ValueError(f"The car file {cs.path} uses the steer correction (cids 434 to 436). The car model does not build it.")
+    if a.multi_drs_366 == 1:
+        raise ValueError(f"The car file {cs.path} uses the multiple DRS zones (cid 366). The car model does not build it.")
 
 
 # ChassisSim has no wheel inertia (its lap simulation has no wheel-spin states). FullModelSim needs one.

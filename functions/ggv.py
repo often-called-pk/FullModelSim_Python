@@ -518,7 +518,7 @@ def build_envelope_cs(ctx, v_grid=None):
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     """
     from scipy.interpolate import PchipInterpolator
-    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf
+    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf, _clean
     import casadi as ca
     from functions.chassissim import suspension_curves
     vp, cs = ctx.vp, ctx.cs
@@ -565,8 +565,24 @@ def build_envelope_cs(ctx, v_grid=None):
     aero_fn = ca.Function("aero", [a_, b_], [_surf(aero.cla_map)(a_, b_), _surf(aero.cda_map)(a_, b_),
                                               _surf(aero.balance_map)(a_, b_)]).map(v.size)
 
+    from functions.chassissim import table_live
+
+    def tab(t, x):       # a correction table: PCHIP inside, the end value outside, as the NLP curve
+        xt, yt = _clean(t["x"], t["y"])
+        return PchipInterpolator(xt, yt)(np.clip(x, xt[0], xt[-1]))
+
     def aero_at(rr, rf):
-        return [np.asarray(o).ravel() for o in aero_fn(rr.reshape(1, -1), rf.reshape(1, -1))]
+        cl, cd, ab = [np.asarray(o).ravel() for o in aero_fn(rr.reshape(1, -1), rf.reshape(1, -1))]
+        # sideslip corrections at zero sideslip (the QSS has none), then the speed corrections. The QSS has no DRS.
+        f = [min(max(float(tab(t, 0.0)), -0.4), 0.4) if table_live(t) else 0.0 for t in (aero.ss_cla, aero.ss_cda, aero.ss_ab)]
+        cl, cd, ab = cl * (1 + f[0]), cd * (1 + f[1]), ab + f[2]
+        if aero.sp_on_cla == 1:
+            cl = cl * tab(aero.sp_cla, v)
+        if aero.sp_on_cda == 1:
+            cd = cd * tab(aero.sp_cda, v)
+        if aero.sp_on_ab == 1:
+            ab = ab + tab(aero.sp_ab, v)
+        return cl, cd, ab
     off = aero.offset or 0.0
     rho = aero.rho if aero.rho else 1.225
     q = 0.5 * rho * v * v

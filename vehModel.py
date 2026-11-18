@@ -889,7 +889,7 @@ def vertical_eigs(ctx, m, f_dyn, vx, h=1e-6):
     Xn = np.tile((X / xs)[:, None], (1, n))
     Xn[rows, 1 + 2 * np.arange(rows.size)] += h
     Xn[rows, 2 + 2 * np.arange(rows.size)] -= h
-    dx, sf = f_dyn.map(n)(Xn, np.tile((U / us)[:, None], (1, n)), np.zeros((1, n)))
+    dx, sf = f_dyn.map(n)(Xn, np.tile((U / us)[:, None], (1, n)), np.zeros((f_dyn.size1_in(2), n)))
     dx = np.array(dx)[rows]
     return np.linalg.eigvals((dx[:, 1::2] - dx[:, 2::2]) / (2 * h) / float(np.array(sf)[0, 0]))
 

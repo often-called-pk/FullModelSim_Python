@@ -105,10 +105,15 @@ def discretise(track, OPT_ds, OPT_d, mesh="uniform", mesh_opts=None, s_knot=None
     n_lo = getattr(track, "n_lo", None)                     # per-point lateral band, else None
     n_bounds = None if n_lo is None else (np.interp(s_full, s, n_lo), np.interp(s_full, s, track.n_hi))
 
+    pv = lambda sq, kq: kq.reshape(1, -1)       # a DRS gate (userOpts) goes under k in pv
+    drs = getattr(track, "drs", None)
+    if drs is not None:
+        pv = lambda sq, kq: np.vstack([kq, np.interp(sq, s, drs)])
+
     return dict(N=N, mesh=mesh, s_knot=s_knot, dsk=dsk, s_col=s_col, s_full=s_full,
                 k_knot=k_knot, k_col=k_col, k_full=k_full,
-                pv_knot=k_knot.reshape(1, -1), pv_col=k_col.reshape(1, -1),
-                pv_full=k_full.reshape(1, -1), tau=tau, C=C, D=D, B=B, n_bounds=n_bounds)
+                pv_knot=pv(s_knot, k_knot), pv_col=pv(s_col, k_col),
+                pv_full=pv(s_full, k_full), tau=tau, C=C, D=D, B=B, n_bounds=n_bounds)
 
 
 # ============================================================================

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from scipy.interpolate import PchipInterpolator
 
 from vehModel import _chassis_corrected
-from functions.chassissim import suspension_curves
+from functions.chassissim import suspension_curves, table_live
 
 C4 = ("fl", "fr", "rl", "rr")
 W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
@@ -28,6 +28,10 @@ B_GEAR = 80.0       # sharpness of the smooth maximum over the gears
 E_D, E_D2, P0_DET = 0.02, 0.01, 100.0   # diff: wheel speed width [m/s], map floor [m/s], Detroit gate force [N]
 # ponytail: one spool stiffness [N s/m] for every car. It holds dv near 0.01 m/s at a 2 g corner (the geometric r t is 0.7 m/s). Make it a car field if a car needs another.
 K_SPOOL = 5e4
+# The sideslip table x is the lateral velocity over the speed. On the GP3 log the ChassisSim sideslip channel runs
+# against the vy of this model (corr -0.968 along the fixed line, opposite signs at every point above 1.5 g), so the
+# sign is -1. ponytail: assumes the tables use the logged sideslip; the binary did not show the frame sign.
+SIDESLIP_SIGN = -1.0
 S_MAX = 4.0         # largest normalised slip of the slip curve table
 
 
@@ -51,17 +55,22 @@ def _sp(z):
     return ca.log1p(ca.exp(z))
 
 
+def _clean(x, y):
+    """Return the table sorted by x, without repeated abscissae."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    o = np.argsort(x, kind="stable")
+    x, y = x[o], y[o]
+    keep = np.r_[True, np.diff(x) > 0]
+    return x[keep], y[keep]
+
+
 def _curve(x, y, ext=0.0, n=200):
     """Return f(v): a C2 curve through (x, y). PCHIP samples feed a cubic B-spline.
     Inside the table the node step is at most half the smallest table spacing, with n nodes at least.
     Every table abscissa and the origin are nodes, so the knees of the table stay.
     ext > 0 extends both ends on the end slope by ext x range, on a coarse grid. Else the end values hold.
     v is clamped inside the grid, because a casadi B-spline returns 0 outside its grid."""
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    o = np.argsort(x, kind="stable")
-    x, y = x[o], y[o]
-    keep = np.r_[True, np.diff(x) > 0]       # drop repeated abscissae
-    x, y = x[keep], y[keep]
+    x, y = _clean(x, y)                      # sorted, repeated abscissae dropped
     p = PchipInterpolator(x, y)
     lo, hi = x[0], x[-1]
     e = ext * (hi - lo)
@@ -268,7 +277,9 @@ def vehModel_cs(ctx):
     assert nu == duk_ub.size == duk_lb.size, "Rate limits (ctx.input_keys) do not match the inputs"
 
     kappa = SX.sym("kappa")
-    pv = ca.vertcat(kappa)
+    drs = getattr(ctx.track, "drs", None) is not None       # userOpts builds the gate when the car has a DRS
+    gate = SX.sym("drs_gate") if drs else None
+    pv = ca.vertcat(kappa, gate) if drs else ca.vertcat(kappa)
 
     # ===================== suspension =======================================
     # xs = 0 is the static state: the spring force then equals the static sprung corner load.
@@ -316,9 +327,26 @@ def vehModel_cs(ctx):
     rh_r = 0.5 * (cs.geom.ride_height_rl + cs.geom.ride_height_rr) + zs + vp.l_r * theta
     rho = cs.aero.rho if cs.aero.rho else 1.225
     q = 0.5 * rho * vx ** 2
-    L = q * _surf(cs.aero.cla_map)(rh_r, rh_f)
-    D = q * _surf(cs.aero.cda_map)(rh_r, rh_f)
-    AB = _surf(cs.aero.balance_map)(rh_r, rh_f) + (cs.aero.offset or 0.0)
+    ae = cs.aero
+    cla, cda = _surf(ae.cla_map)(rh_r, rh_f), _surf(ae.cda_map)(rh_r, rh_f)
+    AB = _surf(ae.balance_map)(rh_r, rh_f) + (ae.offset or 0.0)
+    tab = lambda t, x: _curve(t["x"], t["y"])(x)
+    if any(table_live(t) for t in (ae.ss_cla, ae.ss_cda, ae.ss_ab)):    # sideslip: sin of the angle at the CG
+        sb = SIDESLIP_SIGN * vy / ca.sqrt(vx ** 2 + vy ** 2)
+        fc = lambda t: _clamp(tab(t, sb), -0.4, 0.4, 1e-3) if table_live(t) else 0.0
+        cla, cda, AB = cla * (1 + fc(ae.ss_cla)), cda * (1 + fc(ae.ss_cda)), AB + fc(ae.ss_ab)
+    if drs:                         # a DRS zone: the deltas of the car file, weighted by the gate
+        cla_n = cla - gate * (ae.drs_337 + ae.drs_338)
+        # ponytail: smooth floor of 1e-3 m^2 on the divisor, so a delta equal to the whole CLA cannot divide by zero
+        AB, cla, cda = (cla * AB - gate * ae.drs_337) / _smax(cla_n, 1e-3, 1e-6), cla_n, cda - gate * ae.drs_339
+    # speed correction: a ratio of CLA and CDA, an offset of AB, each when its enable is 1
+    if ae.sp_on_cla == 1:
+        cla = cla * tab(ae.sp_cla, vx)
+    if ae.sp_on_cda == 1:
+        cda = cda * tab(ae.sp_cda, vx)
+    if ae.sp_on_ab == 1:
+        AB = AB + tab(ae.sp_ab, vx)
+    L, D = q * cla, q * cda
     f_lift_fl = f_lift_fr = 0.5 * AB * L
     f_lift_rl = f_lift_rr = 0.5 * (1 - AB) * L
     f_lift, f_drag = L, D

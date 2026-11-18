@@ -210,7 +210,7 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
     def add(tag, cid, v):
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
-        add(1, cid, v)
+        add(1, cid, 0.0 if mirror and cid in (121, 122) else v)     # no aero: the zero maps take zero scalars
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
