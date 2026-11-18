@@ -25,6 +25,9 @@ W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
 FZ_FLOOR = 20.0     # N, scale of the tyre load floor (smooth maximum of the load and 0)
 LAT_CAP = 0.9       # the lateral force of a wheel stays under this share of its pure lateral capacity
 B_GEAR = 80.0       # sharpness of the smooth maximum over the gears
+E_D, E_D2, P0_DET = 0.02, 0.01, 100.0   # diff: wheel speed width [m/s], map floor [m/s], Detroit gate force [N]
+# ponytail: one spool stiffness [N s/m] for every car. It holds dv near 0.01 m/s at a 2 g corner (the geometric r t is 0.7 m/s). Make it a car field if a car needs another.
+K_SPOOL = 5e4
 S_MAX = 4.0         # largest normalised slip of the slip curve table
 
 
@@ -91,6 +94,21 @@ def _surf(tab, e=5e-4):
     ex, ez = e if isinstance(e, tuple) else (e, e)
     f = ca.interpolant("surf", "bspline", [x, z], np.asarray(tab["data"], float).ravel(order="F"))
     return lambda a, b: f(ca.vertcat(_clamp(a, x[0], x[-1], ex), _clamp(b, z[0], z[-1], ez)))
+
+
+def _lock_map(tab, kx=4, kz=20):
+    """Return f(P, dv) for a diff map {x, z, data}: the force moved to the slower wheel [N].
+    The force axis gets kx and the speed axis kz PCHIP steps per interval. The step of a map sits on the speed axis.
+    The code refines the data one axis after the other. PCHIP keeps the data monotone, so a step gives no ringing.
+    Both axes are clamped to the grid, as ChassisSim does. The value stays inside the range of the data."""
+    x, z, d = (np.asarray(tab[a], float) for a in ("x", "z", "data"))
+    fx = np.unique(np.concatenate([np.linspace(a, b, kx + 1) for a, b in zip(x[:-1], x[1:])]))
+    fz = np.unique(np.concatenate([np.linspace(a, b, kz + 1) for a, b in zip(z[:-1], z[1:])]))
+    d = PchipInterpolator(z, d, axis=1)(fz)
+    d = PchipInterpolator(x, d, axis=0)(fx)
+    f = _surf({"x": fx, "z": fz, "data": d}, (1.0, 1e-3))
+    lo, hi = float(np.min(tab["data"])), float(np.max(tab["data"]))
+    return lambda P, dv: _smin(_smax(f(P, dv), lo, 0.1), hi, 0.1)     # the B-spline may ring by a few N at a kink
 
 
 def _slip_curve(T, cap=None):
@@ -329,7 +347,7 @@ def vehModel_cs(ctx):
     sx = {c: (Rw[c[0]] * Om[c] - vxw[c]) / vxw[c] for c in C4}
 
     # ===================== tyre forces ======================================
-    fx, fy, mu_x, mu_y, dcam = {}, {}, {}, {}, {}
+    fx, fy, mu_x, mu_y, dcam, Cx = {}, {}, {}, {}, {}, {}
     for c in C4:
         T = ty[c]
         fze = _smax(fz[c], 0.0, 2 * FZ_FLOOR)                                   # load floor
@@ -347,6 +365,7 @@ def vehModel_cs(ctx):
         fy[c] = Fp * cam * _slip_curve(T, LAT_CAP)(sn) * sa_n         # the lateral force stays under 0.9 of its capacity
         fx[c] = Fp * cam * t4 * _slip_curve(T)(sn) * ss_n
         mu_x[c], mu_y[c] = Fp * cam * t4 / fze, Fp * cam / fze
+        Cx[c] = Fp * cam * t4                                       # the Fx peak of the corner [N]
     f_roll_c = {c: ty[c]["rolling_drag"] * fz[c] for c in C4}
     f_roll = sum(f_roll_c.values())
 
@@ -363,9 +382,28 @@ def vehModel_cs(ctx):
 
     # ===================== powertrain =======================================
     bias = cs.brake.front_bias
+    # Rear differential. P = T_drive is the drive force at the wheels. The faster wheel loses T_x to the slower one.
+    E_DET = F_ref / (2 * K_SPOOL)       # ponytail: Detroit tanh width, so its slope at dv = 0 never exceeds the spool K at full drive
+    P, dv, dt = T_drive, Rw["r"] * (Om_rl - Om_rr), cs.diff.rear_type
+    if dt == 1:
+        T_rl, T_rr = T_drive * Rw["r"] / 2, T_drive * Rw["r"] / 2                               # open (the graph of the car before the diff types)
+    elif dt == 2:                                                           # super: the split follows the Fx peaks
+        T_rl, T_rr = (P * Cx[c] / (Cx["rl"] + Cx["rr"]) * Rw["r"] for c in ("rl", "rr"))
+    else:
+        if dt == 3:
+            T_x = K_SPOOL * dv                                              # spool
+        elif dt == 4:
+            if cs.diff.rear_map is None:
+                raise ValueError("The car has a custom rear differential but no differential map.")
+            T_x = ca.tanh(dv / E_D) * _lock_map(cs.diff.rear_map)(P, ca.sqrt(dv ** 2 + E_D2 ** 2))
+        elif dt == 5:                                                       # Detroit: locked under drive
+            T_x = 0.5 * P * 0.5 * (1 + ca.tanh(P / P0_DET)) * ca.tanh(dv / E_DET)
+        else:
+            raise ValueError(f"The rear differential type {dt} is not known. Use 1 to 5.")
+        T_rl, T_rr = (P / 2 - T_x) * Rw["r"], (P / 2 + T_x) * Rw["r"]
     T_w = {"fl": T_brake * bias / 2 * Rw["f"], "fr": T_brake * bias / 2 * Rw["f"],
-           "rl": T_drive * Rw["r"] / 2 + T_brake * (1 - bias) / 2 * Rw["r"],       # open rear differential
-           "rr": T_drive * Rw["r"] / 2 + T_brake * (1 - bias) / 2 * Rw["r"]}
+           "rl": T_rl + T_brake * (1 - bias) / 2 * Rw["r"],
+           "rr": T_rr + T_brake * (1 - bias) / 2 * Rw["r"]}
     v_r = 0.5 * (Om_rl + Om_rr) * Rw["r"]
     F_env, om_eng = _gear_envelope(cs, Rw["r"], v_r)
 

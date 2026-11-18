@@ -139,7 +139,7 @@ EXPLICIT = {
     117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,            # ride heights, mm
     100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
-    111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0 = rear drive), diff types
+    111: 0.0, 112: 1.0, 113: 1.0,                           # torque split (0 = rear drive), diff types (1 = open)
     55: 0.03, 59: 0.03, 63: 0.03, 67: 0.03,                # roll-centre heights per corner, m
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
