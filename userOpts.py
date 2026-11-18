@@ -32,6 +32,7 @@ from functions.importfile import mat_to_namespace, n_tag
 from functions.mesh import curvature_mesh, mesh_opts_record
 from functions.sweep import fingerprint
 from functions.track_qa import check_track
+from functions import chassissim
 
 
 # ----------------------------------------------------------------------------- 
@@ -79,8 +80,23 @@ def _synthetic_curvature(circuit):
     return None
 
 
-def _load_track(circuit, circuits_dir):
+def _checked(track, circuit, path):
+    """Run the track QA: an error raises ValueError, other issues give one warning. Return the track."""
+    _, issues = check_track(track)
+    errors = [text for level, text in issues if level == "error"]
+    if errors:
+        raise ValueError(f"Track '{circuit}' ({path}) fails the track QA: {'; '.join(errors)}. "
+                         "Rebuild k from x, y with functions.track_qa.k_from_xy.")
+    if issues:
+        warnings.warn(f"Track '{circuit}' QA: {'; '.join(text for _, text in issues)}")
+    return track
+
+
+def _load_track(circuit, circuits_dir, chassissim_dir=None):
     """Build (synthetic) or load (real) the track as a namespace with .s, .k[, .x, .y]."""
+    if circuit.startswith(chassissim.PREFIX):
+        cs_dir = chassissim.install_dir(chassissim_dir)
+        return _checked(chassissim.load_circuit(circuit[len(chassissim.PREFIX):], cs_dir), circuit, cs_dir)
     if circuit in _REAL_CIRCUITS:
         path = os.path.join(circuits_dir, _REAL_CIRCUITS[circuit])
         if not os.path.exists(path):
@@ -103,14 +119,7 @@ def _load_track(circuit, circuits_dir):
             track.x = np.asarray(track.x, dtype=float).reshape(-1)
         if hasattr(track, "y"):
             track.y = np.asarray(track.y, dtype=float).reshape(-1)
-        _, issues = check_track(track)
-        errors = [text for level, text in issues if level == "error"]
-        if errors:
-            raise ValueError(f"Track '{circuit}' ({path}) fails the track QA: {'; '.join(errors)}. "
-                             "Rebuild k from x, y with functions.track_qa.k_from_xy.")
-        if issues:
-            warnings.warn(f"Track '{circuit}' QA: {'; '.join(text for _, text in issues)}")
-        return track
+        return _checked(track, circuit, path)
 
     k = _synthetic_curvature(circuit)
     if k is None:
@@ -252,7 +261,7 @@ def _parse_n_bounds(n_bounds, s):
 # or where files live (ipopt_overrides goes to provenance['run']). TyreModel (an MLTP argument) is a knob too,
 # and so are load_model and ds_fine (MLTP_screen arguments).
 _NOT_SETUP = frozenset({"circuit", "AeroConfig", "ATD", "Electric_4Motors", "tyre_set", "physics", "start_state",
-                        "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "data_dir",
+                        "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "chassissim_dir", "data_dir",
                         "ipopt_overrides"})
 
 
@@ -428,6 +437,7 @@ def userOpts(ctx,
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
              circuits_dir="Circuits",
+             chassissim_dir=None,          # ChassisSim install folder for circuit='chassissim:<name>' (else env CHASSISSIM_DIR)
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
              hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
@@ -532,8 +542,12 @@ def userOpts(ctx,
     ctx.circuit = circuit
 
     # ---- track ------------------------------------------------------------
-    ctx.track = _load_track(circuit, circuits_dir)
+    ctx.track = _load_track(circuit, circuits_dir, chassissim_dir)
     tr = ctx.track
+    g = getattr(tr, "grip", 1.0)
+    if g != 1.0:  # circuit base grip, ChassisSim "Base Grip factor"
+        ctx.mf.LMUX *= g
+        ctx.mf.LMUY *= g
     if ctx.periodic and getattr(tr, "x", None) is not None:
         # Spa, NBR: the file stops one step short of the start. Close the lap with a
         # sample at the start point so the periodic rows join the same position.

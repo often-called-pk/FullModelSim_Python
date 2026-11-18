@@ -262,7 +262,7 @@ def plot_inputs(data):
 # Top-level: build, save, return all figures
 # --------------------------------------------------------------------------- 
 def plotSDI(source, save_dir="Plots", show=False):
-    from functions.importfile import result_stem
+    from functions.importfile import result_stem, circuit_slug
     data = _resolve_data(source)
 
     circuit = str(_get(data, "circuit", "track"))
@@ -272,7 +272,7 @@ def plotSDI(source, save_dir="Plots", show=False):
                        _get(data, "start_state", "matlab"),
                        n_tag=str(_get(data, "n_tag", "") or ""),
                        setup_tag=str(_get(data, "setup_tag", "") or ""))
-    out_dir = os.path.join(save_dir, circuit, stem[len(circuit) + 1:])
+    out_dir = os.path.join(save_dir, circuit_slug(circuit), stem[len(circuit_slug(circuit)) + 1:])
     os.makedirs(out_dir, exist_ok=True)
 
     figs = {

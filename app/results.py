@@ -10,7 +10,7 @@ import os
 import numpy as np
 import scipy.io as sio
 
-from functions.importfile import result_stem, n_tag
+from functions.importfile import result_stem, n_tag, circuit_slug
 
 
 def _cfg(AeroConfig, ATD, EM4):
@@ -29,7 +29,8 @@ def plot_dir(output_dir, circuit, AeroConfig, ATD, EM4,
              tyre_set="MF205", mesh_requested="auto", setup_tag="", **stem_kw):
     # plotSDI names the folder after the result stem minus the "<circuit>_" prefix
     stem = result_stem(circuit, _cfg(AeroConfig, ATD, EM4), tyre_set, mesh_requested, setup_tag=setup_tag, **stem_kw)
-    return os.path.join(output_dir, "Plots", circuit, stem[len(circuit) + 1:])
+    slug = circuit_slug(circuit)
+    return os.path.join(output_dir, "Plots", slug, stem[len(slug) + 1:])
 
 
 def result_paths(rc):

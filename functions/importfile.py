@@ -102,6 +102,14 @@ def n_tag(n_bounds):
     return "nbCustom"
 
 
+def circuit_slug(circuit):
+    """Name part of a file stem: "cs_<name>" for "chassissim:<name>", else the circuit unchanged."""
+    prefix = "chassissim:"
+    if circuit.startswith(prefix):
+        return "cs_" + re.sub(r"\W+", "_", circuit[len(prefix):]).strip("_")
+    return circuit
+
+
 def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="matlab",
                 start_state="matlab", n_tag="", setup_tag=""):
     """File stem (no extension) of a saved MLTP result; casadi-free, so MLTP and
@@ -122,7 +130,7 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
     n_bounds, no other knob) keep the old stem ``<circuit>_<cfg>``. Any other tyre set /
     mesh / physics / start state / lateral band / knob gets its own file instead of
     overwriting the default one."""
-    stem = f"{circuit}_{cfg}"
+    stem = f"{circuit_slug(circuit)}_{cfg}"
     if tyre_set != "MF205":
         if tyre_set.startswith("file:"):
             tyre_set = "tir_" + re.sub(r"\W+", "_", re.split(r"[\\/]", tyre_set[5:])[-1].rsplit(".", 1)[0])

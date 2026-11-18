@@ -207,3 +207,6 @@ Results/validation/
 # The pattern ignores the case of the extension, also on a clone with core.ignorecase=false.
 *.[tT][iI][rR]
 Data/tyres/
+*.car
+*.ld
+*.ldx
