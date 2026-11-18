@@ -2,7 +2,8 @@
 
 The synthetic checks write a car file with carfile.encode from arbitrary values. The cids and their record tags
 are written here as literal numbers, not taken from CAR_FIELDS, so a wrong cid in CAR_FIELDS fails. The checks
-cover the SI conversions, the None rule, the tyre decode, the hardpoint order, the strict car_vp and its
+cover the SI conversions, the None rule, the tyre decode (tables 4 and 5 included), the hardpoint order, the
+bump steer tables and their guard in suspension_curves, the strict car_vp and its
 vehParams totals (matlab and corrected physics). The vendor section runs only when CHASSISSIM_DIR names the
 ChassisSim install folder. It reads the GP3 2013 Eastern Creek car file and checks relations only, no copied
 values. It writes nothing into the vendor folders.
@@ -19,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from functions import carfile
-from functions.chassissim import CAR_FIELDS, CS_JW, car_vp, load_car
+from functions.chassissim import CAR_FIELDS, CS_JW, car_vp, load_car, suspension_curves
 from functions.context import Ctx
 from Powertrain import Powertrain
 from vehParams import vehParams
@@ -65,7 +66,13 @@ SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5
           5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}           # cid -> (rate N/m, preload m)
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}   # cid -> (rate, preload m)
 ARB = {19: 2.0e4, 21: 1.5e4}                          # cid -> rate N/m
-HARD = (49, 50, 51, 52)
+HARD = (49, 50, 51, 52)                                   # front_l, front_r, rear_l, rear_r
+# left-side hardpoints (car frame: x rearward, y left +, z up), rows: lower inner front, lower inner aft,
+# lower outer, upper inner front, upper inner aft, upper outer. The right side is the mirror in y.
+HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
+                    [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
+HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
+BUMP_X = np.linspace(-0.02, 0.02, 11)                     # m, wheel travel grid of the bump steer tables (74-77)
 CS_TOTAL, CS_UF, CS_UR = 700.0, 25.0, 35.0
 CS_FRONT = 0.44
 EXPLICIT = {  # tag 1 cids with a literal value
@@ -117,13 +124,15 @@ def tyre_record(i, corner):
     return (13, 80 + i, (list(dims), sc, tabs)), ref
 
 
-def build_records(omit=()):
-    """Literal records of the synthetic car. Return (records, tyre references by corner)."""
+def build_records(omit=(), over=None):
+    """Literal records of the synthetic car. over maps a cid to its replacement value. Return (records, tyre
+    references by corner)."""
     R, ref = [], {}
+    over = over or {}
 
     def add(tag, cid, v):
         if cid not in omit:
-            R.append((tag, cid, v))
+            R.append((tag, cid, over.get(cid, v)))
     for cid, v in EXPLICIT.items():
         add(1, cid, v)
     for cid, (rate, pre) in SPRING.items():
@@ -138,14 +147,16 @@ def build_records(omit=()):
         add(6, cid, 10 + cid - 366)                                       # one byte
     for cid in range(204, 208):
         add(6, cid, 1)                                                    # rubber ground-gap flags, one byte
+    for cid in (74, 75, 76, 77):
+        add(7, cid, (BUMP_X, np.zeros(len(BUMP_X))))                      # bump steer, all zero as shipped
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
     add(2, 110, GEARS)
     for cid, ((nx, nz), _) in MAPS.items():
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
     for cid in range(31, 36):
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
-    for cid in HARD:
-        add(10, cid, (0, arb(18, cid)))
+    for cid, rows in zip(HARD, (HP_LEFT, HP_RIGHT, HP_LEFT, HP_RIGHT)):
+        add(10, cid, (0, np.concatenate([rows[:, 0], rows[:, 1], rows[:, 2]])))   # tag 10: x, y, z columns
     for i, c in enumerate(CORNERS):
         rec, ref[c] = tyre_record(i, c)
         add(*rec[:2], rec[2])
@@ -153,8 +164,8 @@ def build_records(omit=()):
     return [r for r in R], ref
 
 
-def write_car(name, omit=()):
-    recs, ref = build_records(omit)
+def write_car(name, omit=(), over=None):
+    recs, ref = build_records(omit, over)
     path = os.path.join(TMP.name, name)
     carfile.write(recs, path)
     return path, ref
@@ -244,11 +255,12 @@ ok("damper velocity in mm/s read as m/s, bump and rebound in N as stored (reboun
        and np.allclose(getattr(car.susp, f"damper_{c}")["rebound"], REB, rtol=0, atol=0)
        for c in CORNERS)
    and np.allclose(car.susp.damper_third_f["velocity"], VEL * 1e-3, rtol=0, atol=1e-12))
-ok("hardpoint block has shape (6, 3), and row i holds point i (values i, 6 + i, 12 + i)",
+ok("hardpoint block has shape (6, 3), and row i holds point i (left and right sides, right mirrored in y)",
    all(getattr(car.hardpoints, n).shape == (6, 3) for n in ("front_l", "front_r", "rear_l", "rear_r"))
-   and all(np.allclose(getattr(car.hardpoints, n)[i],
-                       [arb(18, cid)[i], arb(18, cid)[6 + i], arb(18, cid)[12 + i]])
-           for cid, n in zip(HARD, ("front_l", "front_r", "rear_l", "rear_r")) for i in range(6)))
+   and np.allclose(car.hardpoints.front_l, HP_LEFT, rtol=0, atol=0)
+   and np.allclose(car.hardpoints.front_r, HP_RIGHT, rtol=0, atol=0)
+   and np.allclose(car.hardpoints.rear_l, HP_LEFT, rtol=0, atol=0)
+   and np.allclose(car.hardpoints.rear_r, HP_RIGHT, rtol=0, atol=0))
 ok("aero maps have shape (nx, nz) and hold the stored data (cla 4x3, cda 3x2, balance 5x2)",
    car.aero.cla_map["data"].shape == (4, 3) and car.aero.cda_map["data"].shape == (3, 2)
    and car.aero.balance_map["data"].shape == (5, 2)
@@ -310,6 +322,40 @@ no_cda, _ = write_car("no_cda.car", omit=(122, 390))
 cn = load_car(no_cda)
 ok("a cid the file lacks gives None (aero.cda, env.track_temp), the others still read",
    cn.aero.cda is None and cn.env.track_temp is None and abs(cn.aero.cla - 3.5) < 1e-12)
+
+print("  -- bump steer, tyre table 4, suspension curves")
+ok("bump steer tables 74-77 (fl, fr, rl, rr) hold the travel grid x and a zero y (synthetic car)",
+   all(np.allclose(getattr(car.susp, f"bump_steer_{c}")["x"], BUMP_X, rtol=0, atol=0)
+       and not np.any(getattr(car.susp, f"bump_steer_{c}")["y"]) for c in CORNERS))
+BUMP_Y = {c: (i + 1) * 1e-3 * BUMP_X / 0.02 for i, c in enumerate(CORNERS)}   # a distinct line per corner, 1-4 mm
+
+
+def bump_over(ys):
+    """Replacement records of cids 74-77: the toe change ys[corner], zero for a corner that is not in ys."""
+    return {74 + i: (BUMP_X, ys.get(c, np.zeros(len(BUMP_X)))) for i, c in enumerate(CORNERS)}
+
+
+bump = load_car(write_car("bump_all.car", over=bump_over(BUMP_Y))[0])
+ok("bump steer tables decode per corner: x is the travel grid, y the stored toe change (distinct per corner)",
+   all(np.allclose(getattr(bump.susp, f"bump_steer_{c}")["x"], BUMP_X, rtol=0, atol=0)
+       and np.allclose(getattr(bump.susp, f"bump_steer_{c}")["y"], BUMP_Y[c], rtol=0, atol=0) for c in CORNERS))
+bump_fl = load_car(write_car("bump_fl.car", over=bump_over({"fl": BUMP_Y["fl"]}))[0])
+ok("a car with one non-zero bump steer table loads", np.any(bump_fl.susp.bump_steer_fl["y"]))
+ok("suspension_curves raises ValueError that names bump steer for that car",
+   raises_naming(lambda: suspension_curves(bump_fl), "bump steer"))
+curves = suspension_curves(load_car(SYN))
+ok("the synthetic car with zero bump steer gives front and rear curves (physical hardpoints)",
+   np.isfinite(curves.f.zg) and np.isfinite(curves.r.zg) and curves.f.lo < 0 < curves.f.hi)
+t4_rec = tyre_record(0, "fl")[0]
+t4_dims, t4_sc, t4_tabs = t4_rec[2]
+t4_tabs = list(t4_tabs)
+t4_tabs[4] = np.concatenate([[-2.0, 2.0], [1000.0, 3000.0], [0.9, 0.8, 1.1, 1.2]])   # cambers deg, loads N, grid rows = camber
+t4_car = load_car(write_car("tyre_t4.car", over={80: (t4_dims, t4_sc, t4_tabs)})[0])
+ok("tyre table 4: camber axis read in rad (-2, 2 deg), load axis in N as stored",
+   np.allclose(t4_car.tyre.fl["fx_camber_x"], np.deg2rad([-2.0, 2.0]), rtol=0, atol=1e-12)
+   and np.allclose(t4_car.tyre.fl["fx_camber_load"], [1000.0, 3000.0], rtol=0, atol=0))
+ok("tyre table 4: grid row = camber, column = load ([[0.9, 0.8], [1.1, 1.2]] as stored)",
+   np.allclose(t4_car.tyre.fl["fx_camber"], [[0.9, 0.8], [1.1, 1.2]], rtol=0, atol=0))
 
 # car_vp: strict, one totals set
 print("  -- car_vp")

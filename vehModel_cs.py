@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from scipy.interpolate import PchipInterpolator
 
 from vehModel import _chassis_corrected
+from functions.chassissim import suspension_curves
 
 C4 = ("fl", "fr", "rl", "rr")
 W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
@@ -84,10 +85,12 @@ def _curve(x, y, ext=0.0, n=200):
 
 
 def _surf(tab, e=5e-4):
-    """Return f(a, b) for a car map {x, z, data}: a on the x axis, b on the z axis. Both are clamped to the grid."""
+    """Return f(a, b) for a car map {x, z, data}: a on the x axis, b on the z axis. Both are clamped to the grid.
+    e is the clamp width of both axes, or a pair (ex, ez) with one width per axis."""
     x, z = np.asarray(tab["x"], float), np.asarray(tab["z"], float)
+    ex, ez = e if isinstance(e, tuple) else (e, e)
     f = ca.interpolant("surf", "bspline", [x, z], np.asarray(tab["data"], float).ravel(order="F"))
-    return lambda a, b: f(ca.vertcat(_clamp(a, x[0], x[-1], e), _clamp(b, z[0], z[-1], e)))
+    return lambda a, b: f(ca.vertcat(_clamp(a, x[0], x[-1], ex), _clamp(b, z[0], z[-1], ez)))
 
 
 def _slip_curve(T, cap=None):
@@ -177,13 +180,13 @@ def _rubber(cs, c):
     return lambda xs: mr(xs) * law(W_RUBBER * _sp((sm(xs) - gap) / W_RUBBER))
 
 
-def roll_centres(cs):
-    """Return (front, rear) roll-centre heights [m]: the middle value of the stored geometry triple of the car."""
-    g = cs.geom
-    need = {"front": (g.rc_height_fl, g.rc_height_fr), "rear": (g.rc_height_rl, g.rc_height_rr)}
-    if any(v is None for pair in need.values() for v in pair):
-        raise ValueError("The car file lacks the stored roll-centre heights (cids 55, 59, 63 and 67).")
-    return 0.5 * sum(need["front"]), 0.5 * sum(need["rear"])
+def poly_sx(p, x, lo, hi):
+    """Evaluate the poly1d p at x (SX), with x kept smoothly inside the fitted range [lo, hi] (Horner)."""
+    x = _clamp(x, lo, hi, 2e-3)
+    y = 0.0
+    for a in p.coeffs:
+        y = y * x + float(a)
+    return y
 
 
 # ---------------------------------------------------------------- the model
@@ -199,6 +202,7 @@ def vehModel_cs(ctx):
     kt = {c: ty[c]["kz"] for c in C4}           # tyre rate per corner
     kt_ref = vp.kt                              # the zt states hold the tyre load / kt_ref
     deg2rad = np.pi / 180.0
+    curves = suspension_curves(cs)
     eng = cs.engine
     vmax = eng.rpm_limit * Rw["r"] / float(np.min(eng.gears))
 
@@ -325,17 +329,24 @@ def vehModel_cs(ctx):
     sx = {c: (Rw[c[0]] * Om[c] - vxw[c]) / vxw[c] for c in C4}
 
     # ===================== tyre forces ======================================
-    fx, fy, mu_x, mu_y = {}, {}, {}, {}
+    fx, fy, mu_x, mu_y, dcam = {}, {}, {}, {}, {}
     for c in C4:
         T = ty[c]
         fze = _smax(fz[c], 0.0, 2 * FZ_FLOOR)                                   # load floor
         Fp = _curve(T["load"], T["fy_peak"])(fze) * (grip * T["grip"])
-        cam = float(np.interp(T["camber"], T["camber_x"], T["camber_y"]))      # factor at the static camber
+        kc = curves.f if c[0] == "f" else curves.r      # dynamic camber: static + the curve at the wheel travel
+        # Camber against the ground = static + the curve at the wheel travel (against the body) + the body roll.
+        # phi > 0 is the right side down (xs_fr > xs_fl). A left wheel then leans its top inward (camber +phi),
+        # a right wheel outward (-phi). So the outer wheel of a turn loses negative camber and the inner one gains it.
+        dyn = T["camber"] + poly_sx(kc.camber, xs[c], kc.lo, kc.hi) + (phi if c[1] == "l" else -phi)
+        cam = _curve(T["camber_x"], T["camber_y"])(dyn)
+        dcam[c] = dyn
+        t4 = _surf({"x": T["fx_camber_x"], "z": T["fx_camber_load"], "data": T["fx_camber"]}, (5e-4, 5.0))(dyn, fze)   # Fx peak / Fy peak
         sa_n, ss_n = sa[c] / T["peak_slip_angle"], sx[c] / T["peak_slip_ratio"]
         sn = ca.sqrt(sa_n ** 2 + ss_n ** 2 + 1e-6)
         fy[c] = Fp * cam * _slip_curve(T, LAT_CAP)(sn) * sa_n         # the lateral force stays under 0.9 of its capacity
-        fx[c] = Fp * _slip_curve(T)(sn) * ss_n
-        mu_x[c] = mu_y[c] = Fp / fze
+        fx[c] = Fp * cam * t4 * _slip_curve(T)(sn) * ss_n
+        mu_x[c], mu_y[c] = Fp * cam * t4 / fze, Fp * cam / fze
     f_roll_c = {c: ty[c]["rolling_drag"] * fz[c] for c in C4}
     f_roll = sum(f_roll_c.values())
 
@@ -343,8 +354,8 @@ def vehModel_cs(ctx):
            "rl": fx["rl"], "rr": fx["rr"]}
     fyg = {"fl": fy["fl"]*ca.cos(delta) + fx["fl"]*ca.sin(delta), "fr": fy["fr"]*ca.cos(delta) + fx["fr"]*ca.sin(delta),
            "rl": fy["rl"], "rr": fy["rr"]}
-    # roll centres: the stored heights of the car file (T6 makes them curves). Jacking and Mx as vehModel.
-    hRC = dict(zip("fr", roll_centres(cs)))
+    # roll centres: the curve of the axle at the mean wheel travel (static value = the stored height). Jacking and Mx as vehModel.
+    hRC = {a: poly_sx(k.rc_h, 0.5 * (xs[a + "l"] + xs[a + "r"]), k.lo, k.hi) for a, k in (("f", curves.f), ("r", curves.r))}
     fj = {"fl": -fyg["fl"] * (2*hRC["f"]/t_f), "fr": +fyg["fr"] * (2*hRC["f"]/t_f),
           "rl": -fyg["rl"] * (2*hRC["r"]/t_r), "rr": +fyg["rr"] * (2*hRC["r"]/t_r)}
     Mx = {c: fyg[c] * (vp.hcg - hRC[c[0]]) for c in C4}
@@ -390,7 +401,7 @@ def vehModel_cs(ctx):
         setattr(m, f"mu_{c}_x", mu_x[c])
         setattr(m, f"mu_{c}_y", mu_y[c])
         setattr(m, f"f_lift_{c}", {"fl": f_lift_fl, "fr": f_lift_fr, "rl": f_lift_rl, "rr": f_lift_rr}[c])
-        setattr(m, f"dynamic_camber_{c}", ty[c]["camber"] * (-1.0 if c[1] == "r" else 1.0))
+        setattr(m, f"dynamic_camber_{c}", dcam[c] * (-1.0 if c[1] == "r" else 1.0))
     m.f_roll, m.f_drag, m.f_lift = f_roll, f_drag, f_lift
     m.Lon_acc, m.Lat_acc, m.ax, m.ay = Lon_acc, Lat_acc, ax, ay
     m.F_env, m.om_engine, m.v_r, m.rh_f, m.rh_r = F_env, om_eng, v_r, rh_f, rh_r

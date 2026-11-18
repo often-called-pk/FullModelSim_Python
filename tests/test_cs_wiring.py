@@ -111,10 +111,10 @@ INSTALL = build_install(os.path.join(TMP.name, "ChassisSim"))
 # ---- synthetic car: literal cids and tags (as in tests/test_cs_car.py) -------------------------------
 # Tags: 1 scalar, 2 array, 6 byte, 7 curve, 9 map, 10 hardpoints, 11 spring-like, 12 damper, 13 tyre.
 TYRE = {  # dims (d1..d7), radius m, toe deg (0: a toe force jacks the body through a 2 m roll centre), camber, castor, drag, kz N/m
-    "fl": dict(dims=(3, 2, 3, 2, 2, 2, 2), radius=0.300, toe=0.0, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
-    "fr": dict(dims=(2, 2, 3, 2, 2, 3, 2), radius=0.305, toe=0.0, camber=-1.5, castor=2.5, drag=0.012, kz=1.62e5),
-    "rl": dict(dims=(4, 2, 3, 3, 2, 2, 2), radius=0.310, toe=0.0, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
-    "rr": dict(dims=(2, 2, 3, 2, 3, 2, 3), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
+    "fl": dict(dims=(3, 2, 3, 2, 2, 4, 4), radius=0.300, toe=0.0, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
+    "fr": dict(dims=(2, 2, 3, 2, 2, 4, 4), radius=0.305, toe=0.0, camber=-1.5, castor=2.5, drag=0.012, kz=1.62e5),
+    "rl": dict(dims=(4, 2, 3, 3, 2, 4, 4), radius=0.310, toe=0.0, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
+    "rr": dict(dims=(2, 2, 3, 2, 3, 4, 4), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
 }
 TYRE_TEMPS = (300.0, 350.0)
 TYRE_BG = 325.0
@@ -126,7 +126,13 @@ SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5
           5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}
 ARB = {19: 2.0e4, 21: 1.5e4}
-HARD = (49, 50, 51, 52)
+HARD = (49, 50, 51, 52)                  # front left, front right, rear left, rear right
+# Left-side hardpoints (x rearward, y left +, z up, m), rows: lower inner front, lower inner aft, lower outer,
+# upper inner front, upper inner aft, upper outer. The right side is y mirrored. Front and rear are the same.
+HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
+                    [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
+HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
+BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel; toe change zero (cids 74-77)
 EXPLICIT = {
     84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
@@ -134,7 +140,7 @@ EXPLICIT = {
     100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
     111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0 = rear drive), diff types
-    55: 0.060, 59: 0.065, 63: 0.095, 67: 0.100,            # roll-centre heights per corner, m
+    55: 0.03, 59: 0.03, 63: 0.03, 67: 0.03,                # roll-centre heights per corner, m
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
@@ -168,7 +174,7 @@ def tyre_sizes(d):
 def tyre_record(i, corner, toe=None):
     t = TYRE[corner]
     dims = t["dims"]
-    d1, d2, d3, _, d5, d6, _ = dims
+    d1, d2, d3, _, d5, d6, d7 = dims
     tabs = [arb(k, 10 * i + j) for j, k in enumerate(tyre_sizes(dims))]
     A, B = arb(d1, 20 + i), arb(d1, 30 + i)
     load = np.linspace(1000.0, 25000.0, d1)              # N, up to 25 kN (the load floor is tested at 20 kN)
@@ -176,6 +182,7 @@ def tyre_record(i, corner, toe=None):
     tabs[0][:d3] = np.linspace(0.0, 2.0, d3)                 # slip abscissae: from 0, increasing
     tabs[0][d3:] = np.array([0.0, 0.97, 0.97])[:d3]          # slip values: from 0, flat after the knee at 1
     tabs[5][:d6] = np.linspace(-3.0, 3.0, d6)                # camber abscissae (deg), increasing
+    tabs[4] = np.concatenate([np.linspace(-3.0, 3.0, d6), np.linspace(0.0, 25000.0, d7), np.ones(d6 * d7)])  # flat 1.0 grid
     px = np.linspace(150.0, 250.0, d5)
     py = t["kz"] * (1.0 + 0.01 * np.arange(d5))
     tabs[10] = np.concatenate([px, py])
@@ -230,8 +237,10 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
     for cid in range(31, 36):
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
-    for cid in HARD:
-        add(10, cid, (0, arb(18, cid)))
+    for cid, hp in zip(HARD, (HP_LEFT, HP_RIGHT, HP_LEFT, HP_RIGHT)):
+        add(10, cid, (0, hp.T.ravel()))                  # column-major (6, 3): the 3 coordinate rows of 6 points
+    for cid in range(74, 78):
+        add(7, cid, (BUMP_STEER_X, np.zeros(BUMP_STEER_X.size)))
     for i, c in enumerate(CORNERS):
         add(*tyre_record(i, c, (toes or {}).get(c)))
     if mirror:

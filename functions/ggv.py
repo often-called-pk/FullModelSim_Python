@@ -478,22 +478,52 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
 # ============================================================================
 # Stage (a) for a ChassisSim car
 # ============================================================================
+def _camber_tables(cs, T):
+    """Return (camf, t4f): the camber factor T5(camber) and the Fx camber factor T4(camber, load) of the NLP.
+    Both NLP functions are sampled once per tyre on fine grids and then read by linear interpolation (error about
+    1e-5). The samples are kept on the car record, so a setup sweep pays the cost once."""
+    cache = cs.__dict__.setdefault("_qss_camber", {})
+    if id(T) not in cache:
+        import casadi as ca
+        from scipy.interpolate import RegularGridInterpolator
+        from vehModel_cs import _curve, _surf
+        cx, gx, gz = (np.asarray(T[k], float) for k in ("camber_x", "fx_camber_x", "fx_camber_load"))
+        c5 = np.linspace(cx[0] - 0.05, cx[-1] + 0.05, 2001)          # covers the clamp at the table ends
+        c4 = np.linspace(gx[0] - 0.01, gx[-1] + 0.01, 401)
+        l4 = np.linspace(gz[0] - 50.0, gz[-1] + 50.0, 4 * gz.size + 1)
+        a, b = ca.SX.sym("a"), ca.SX.sym("b")
+        f5 = ca.Function("t5", [a], [_curve(cx, T["camber_y"])(a)]).map(c5.size)
+        f4 = ca.Function("t4", [a, b], [_surf({"x": gx, "z": gz, "data": T["fx_camber"]}, (5e-4, 5.0))(a, b)])
+        A, B = np.meshgrid(c4, l4, indexing="ij")
+        v4 = np.asarray(f4.map(A.size)(A.reshape(1, -1), B.reshape(1, -1))).reshape(A.shape)
+        g4 = RegularGridInterpolator((c4, l4), v4)
+        cache[id(T)] = (c5, np.asarray(f5(c5.reshape(1, -1))).ravel(), g4)
+    c5, v5, g4 = cache[id(T)]
+    def t4f(c, z):
+        c, z = np.broadcast_arrays(np.clip(c, g4.grid[0][0], g4.grid[0][-1]), np.clip(z, g4.grid[1][0], g4.grid[1][-1]))
+        return g4(np.stack([c, z], axis=-1)).reshape(c.shape)
+    return (lambda c: np.interp(c, c5, v5)), t4f
+
+
 def build_envelope_cs(ctx, v_grid=None):
     """Return the Envelope of a ChassisSim car (ctx.cs), on the speed grid v_grid (default: 0.1 m/s steps from 2 m/s
     to the top speed, so the gear steps of the drive force stay sharp).
 
     It mirrors vehModel_cs quasi-statically. The tyre peak force is F'(Fz) x tyre grip x ctx.grip, with the
-    load floor, the static camber factor and the peak of the slip curve. The aero maps are read at the
-    ride heights that the aero load gives (a fixed point). The lateral load transfer follows the roll
-    stiffness split of the springs and bars, with the tyre in series, and the static roll centres.
+    load floor, the camber factor at the dynamic camber and the peak of the slip curve. The aero maps are read at the
+    ride heights that the aero load gives (a fixed point). The camber of the traction and brake limits uses the heave
+    travel only (no pitch). The lateral load transfer follows the roll
+    stiffness split of the springs and bars, with the tyre in series, and the roll centres of the curves at the heave travel.
     The drive force is the gear envelope (the same smooth maximum as the NLP). Brakes: the brake force and
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     """
     from scipy.interpolate import PchipInterpolator
-    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, roll_centres, gear_envelope_numeric, _mr, _rubber, _surf
+    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf
     import casadi as ca
+    from functions.chassissim import suspension_curves
     vp, cs = ctx.vp, ctx.cs
     grip = getattr(ctx, "grip", 1.0)
+    curves = suspension_curves(cs)
     ty = {c: getattr(cs.tyre, c) for c in C4}
     eng, geo, aero = cs.engine, cs.geom, cs.aero
     Rr = ty["rl"]["radius"]
@@ -509,20 +539,26 @@ def build_envelope_cs(ctx, v_grid=None):
         x, y = np.asarray(T["load"], float)[o], np.asarray(T["fy_peak"], float)[o]
         keep = np.r_[True, np.diff(x) > 0]
         p = PchipInterpolator(x[keep], y[keep])
-        cam = float(np.interp(T["camber"], T["camber_x"], T["camber_y"]))
+        kc = curves.f if T is ty["fl"] or T is ty["fr"] else curves.r
+        camf, t4f = _camber_tables(cs, T)      # the camber factor and the Fx / Fy ratio of the NLP
         pk = float(np.max(T["slip_y"]))                       # peak of the normalised slip curve
         k_x, k_y = grip * T["grip"] * pk, grip * T["grip"] * min(pk, LAT_CAP)   # the lateral force has the 0.9 cap
 
-        def F(Fz, lat):
+        def F(Fz, lat, tw=0.0, roll=0.0):      # tw = wheel travel [m]; roll = camber change of the body roll [rad]
             Fz = np.asarray(Fz, float)
             fze = 0.5 * (Fz + np.sqrt(Fz * Fz + (2 * FZ_FLOOR) ** 2))    # the load floor of the NLP
-            return p(np.clip(fze, x[0], x[-1])) * (k_y * cam if lat else k_x)
+            dyn = T["camber"] + kc.camber(np.clip(tw, kc.lo, kc.hi)) + roll      # the dynamic camber, once
+            pf = p(np.clip(fze, x[0], x[-1]))
+            return pf * k_y * camf(dyn) if lat else pf * k_x * camf(dyn) * t4f(dyn, fze)
         return F
+
     PK = {c: peak_fn(ty[c]) for c in C4}
 
-    def axle(a, Fz, dF, lat):       # sum of the two corner peaks of axle a, loads Fz/2 + dF and Fz/2 - dF
+    def axle(a, Fz, dF, lat, xo=0.0, xi=0.0, ro=0.0):
+        """Sum of the two corner peaks of axle a: the outer wheel has the load Fz/2 + dF, the wheel travel xo and
+        loses the camber ro of the body roll. The inner wheel has Fz/2 - dF, xi and gains ro."""
         l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
-        return PK[l](0.5 * Fz + dF, lat) + PK[r](0.5 * Fz - dF, lat)
+        return PK[l](0.5 * Fz + dF, lat, xo, -ro) + PK[r](0.5 * Fz - dF, lat, xi, ro)
 
     # ---- aero at the quasi-static ride heights (fixed point) -----------------
     a_, b_ = ca.SX.sym("a"), ca.SX.sym("b")             # the surfaces of the NLP, evaluated (mapped over the speeds)
@@ -567,17 +603,20 @@ def build_envelope_cs(ctx, v_grid=None):
     Fz_f = vp.Wfl0 + vp.Wfr0 + AB * F_lift
     Fz_r = vp.Wrl0 + vp.Wrr0 + (1.0 - AB) * F_lift
     M, h_x = float(vp.m), vp.hcg
+    hv_f, hv_r = travel(AB * F_lift, "f"), travel((1.0 - AB) * F_lift, "r")     # heave travel of the axles (aero load)
 
     # ---- lateral: yaw-balanced axles + load transfer from the roll stiffness split -------------
+    ks = {}
+
     def roll_k(a, t):        # axle roll stiffness [N m/rad]: wheel rates t^2/4, bar rate/2 x MR^2 x t^2, tyre in series
         l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
         bar = 0.5 * getattr(cs.susp, f"arb_{a}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{a}"))[0]) ** 2
-        k_s = (kw[l] + kw[r]) * t * t / 4.0 + bar * t * t
+        k_s = ks[a] = (kw[l] + kw[r]) * t * t / 4.0 + bar * t * t
         k_t = (ty[l]["kz"] + ty[r]["kz"]) * t * t / 4.0
         return k_s * k_t / (k_s + k_t)
     Kf, Kr = roll_k("f", t_f), roll_k("r", t_r)
     phi_f = Kf / (Kf + Kr)
-    hrc_f, hrc_r = roll_centres(cs)
+    hrc_f, hrc_r = curves.f.rc_h(np.clip(hv_f, curves.f.lo, curves.f.hi)), curves.r.rc_h(np.clip(hv_r, curves.r.lo, curves.r.hi))   # roll centre above the ground at the heave travel
     sh_f, sh_r = vp.l_r / L, vp.l_f / L
 
     def lat_capacity(ay):
@@ -585,7 +624,11 @@ def build_envelope_cs(ctx, v_grid=None):
         Mx = Fy_f * (h_x - hrc_f) + Fy_r * (h_x - hrc_r)
         dF_f = np.clip((phi_f * Mx + Fy_f * hrc_f) / t_f, 0.0, 0.5 * Fz_f)
         dF_r = np.clip(((1 - phi_f) * Mx + Fy_r * hrc_r) / t_r, 0.0, 0.5 * Fz_r)
-        return np.minimum(axle("f", Fz_f, dF_f, True) / (M * sh_f), axle("r", Fz_r, dF_r, True) / (M * sh_r))
+        ro_f, ro_r = phi_f * Mx / ks["f"], (1 - phi_f) * Mx / ks["r"]      # roll angle of the suspension at each axle [rad]
+        rf, rr = ro_f * t_f / 2, ro_r * t_r / 2                              # wheel travel from the roll, outer +, inner -
+        ro_f = ro_r = Mx / (Kf + Kr)    # the camber follows the body roll vs the ground: suspension and tyres (state phi of the NLP)
+        return np.minimum(axle("f", Fz_f, dF_f, True, hv_f + rf, hv_f - rf, ro_f) / (M * sh_f),
+                          axle("r", Fz_r, dF_r, True, hv_r + rr, hv_r - rr, ro_r) / (M * sh_r))
     ay0 = lat_capacity(np.zeros_like(v))
     ay_max = _bisect_fixed_point(lat_capacity, np.zeros_like(v), 2.0 * ay0 + 1.0)
 
@@ -593,16 +636,16 @@ def build_envelope_cs(ctx, v_grid=None):
     bias = float(cs.brake.front_bias)
 
     def trac_capacity(F):
-        return axle("r", np.clip(Fz_r + F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False)
+        return axle("r", np.clip(Fz_r + F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False, hv_r, hv_r)
 
     def brk_capacity(F):
         dF = F * h_x / L
         f, r = np.clip(Fz_f + dF, 0.0, Fz_f + Fz_r), np.clip(Fz_r - dF, 0.0, Fz_f + Fz_r)
         with np.errstate(divide="ignore"):
-            cf = axle("f", f, 0.0, False) / bias if bias > 0 else np.inf
-            cr = axle("r", r, 0.0, False) / (1.0 - bias) if bias < 1 else np.inf
+            cf = axle("f", f, 0.0, False, hv_f, hv_f) / bias if bias > 0 else np.inf
+            cr = axle("r", r, 0.0, False, hv_r, hv_r) / (1.0 - bias) if bias < 1 else np.inf
         return np.minimum(cf, cr)
-    hi_x = 2.0 * (axle("f", Fz_f, 0.0, False) + axle("r", Fz_r, 0.0, False)) + 1.0
+    hi_x = 2.0 * (axle("f", Fz_f, 0.0, False, hv_f, hv_f) + axle("r", Fz_r, 0.0, False, hv_r, hv_r)) + 1.0
     Fx_trac = _bisect_fixed_point(trac_capacity, np.zeros_like(v), hi_x)
     Fx_brk = _bisect_fixed_point(brk_capacity, np.zeros_like(v), hi_x)
 

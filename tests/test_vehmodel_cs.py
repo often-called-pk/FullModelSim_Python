@@ -29,6 +29,7 @@ from types import SimpleNamespace
 
 import functions.transcription as T
 from functions import carfile
+from functions.chassissim import suspension_curves
 from MLTP import MLTP
 import vehModel_cs as V
 from scipy.interpolate import PchipInterpolator
@@ -104,10 +105,10 @@ INSTALL = build_install(os.path.join(TMP.name, "ChassisSim"))
 # ---- synthetic car: literal cids and tags (as in tests/test_cs_car.py) -------------------------------
 # Tags: 1 scalar, 2 array, 6 byte, 7 curve, 9 map, 10 hardpoints, 11 spring-like, 12 damper, 13 tyre.
 TYRE = {  # dims (d1..d7), radius m, toe deg (0: a toe force jacks the body through a 2 m roll centre), camber, castor, drag, kz N/m
-    "fl": dict(dims=(3, 2, 3, 2, 2, 2, 2), radius=0.300, toe=0.0, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
-    "fr": dict(dims=(2, 2, 3, 2, 2, 3, 2), radius=0.305, toe=0.0, camber=-1.5, castor=2.5, drag=0.012, kz=1.62e5),
-    "rl": dict(dims=(4, 2, 3, 3, 2, 2, 2), radius=0.310, toe=0.0, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
-    "rr": dict(dims=(2, 2, 3, 2, 3, 2, 3), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
+    "fl": dict(dims=(3, 2, 3, 2, 2, 5, 4), radius=0.300, toe=0.0, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
+    "fr": dict(dims=(2, 2, 3, 2, 2, 5, 4), radius=0.305, toe=0.0, camber=-1.5, castor=2.5, drag=0.012, kz=1.62e5),
+    "rl": dict(dims=(4, 2, 3, 3, 2, 5, 4), radius=0.310, toe=0.0, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
+    "rr": dict(dims=(2, 2, 3, 2, 3, 5, 4), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
 }
 TYRE_TEMPS = (300.0, 350.0)
 TYRE_BG = 325.0
@@ -119,7 +120,12 @@ SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5
           5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}
 ARB = {19: 2.0e4, 21: 1.5e4}
-HARD = (49, 50, 51, 52)
+HARD = (49, 50, 51, 52)                                   # front_l, front_r, rear_l, rear_r
+# left-side hardpoints (car frame: x rearward, y left +, z up), rows: lower inner front, lower inner aft,
+# lower outer, upper inner front, upper inner aft, upper outer. The right side is the mirror in y.
+HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
+                    [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
+HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
 EXPLICIT = {
     84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
@@ -127,7 +133,7 @@ EXPLICIT = {
     100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
     111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0 = rear drive), diff types
-    55: 0.060, 59: 0.065, 63: 0.095, 67: 0.100,            # roll-centre heights per corner, m
+    55: 0.03, 59: 0.03, 63: 0.03, 67: 0.03,                # roll-centre heights per corner, m (above ground)
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
@@ -161,14 +167,19 @@ def tyre_sizes(d):
 def tyre_record(i, corner, toe=None):
     t = TYRE[corner]
     dims = t["dims"]
-    d1, d2, d3, _, d5, d6, _ = dims
+    d1, d2, d3, _, d5, d6, d7 = dims
     tabs = [arb(k, 10 * i + j) for j, k in enumerate(tyre_sizes(dims))]
     A, B = arb(d1, 20 + i), arb(d1, 30 + i)
     load = np.linspace(1000.0, 25000.0, d1)              # N, up to 25 kN (the load floor is tested at 20 kN)
     tabs[3] = np.concatenate([load, TYRE_TEMPS, np.stack([A, B], axis=1).ravel()])
     tabs[0][:d3] = np.linspace(0.0, 2.0, d3)                 # slip abscissae: from 0, increasing
     tabs[0][d3:] = np.array([0.0, 0.97, 0.97])[:d3]          # slip values: from 0, flat after the knee at 1
-    tabs[5][:d6] = np.linspace(-3.0, 3.0, d6)                # camber abscissae (deg), increasing
+    # lateral camber factor T5: camber nodes (deg) around the static camber, 1.0 at it and 0.6 at +-4 deg (a hump)
+    off = np.array([-4.0, -2.0, 0.0, 2.0, 4.0])
+    tabs[5][:d6] = t["camber"] + off
+    tabs[5][d6:] = 1.0 - 0.4 * (off / 4.0) ** 2
+    # table 4 (longitudinal camber factor): cambers (deg), loads (N), then a flat 1.0 grid (row = camber)
+    tabs[4] = np.concatenate([np.linspace(-3.0, 3.0, d6), 1000.0 * np.arange(1, d7 + 1), np.ones(d6 * d7)])
     px = np.linspace(150.0, 250.0, d5)
     py = t["kz"] * (1.0 + 0.01 * np.arange(d5))
     tabs[10] = np.concatenate([px, py])
@@ -223,8 +234,8 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
     for cid in range(31, 36):
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
-    for cid in HARD:
-        add(10, cid, (0, arb(18, cid)))
+    for cid, rows in ((49, HP_LEFT), (50, HP_RIGHT), (51, HP_LEFT), (52, HP_RIGHT)):
+        add(10, cid, (0, np.concatenate([rows[:, 0], rows[:, 1], rows[:, 2]])))   # tag 10: x column, y column, z column
     for i, c in enumerate(CORNERS):
         add(*tyre_record(i, c, (toes or {}).get(c)))
     if mirror:
@@ -373,25 +384,26 @@ exp_lift = 0.5 * ctx.cs.aero.rho * 30.0 ** 2 * cla[4, 3]
 ok(f"lift at the nodes: rear 20 mm on X, front 17 mm on Z (lift {lift:.3f}, map entry {exp_lift:.3f} N)",
    abs(lift - exp_lift) < 1e-2 * abs(exp_lift))
 
-# 2. tyre law, rear left: sa at the peak (sa_n = 1), zero slip ratio: |Fy| = 0.9 F' cam (lateral cap)
+# 2. tyre law, rear left: sa at the peak (sa_n = 1), zero slip ratio: |Fy| = 0.9 mu_y fz (the lateral cap;
+#    mu_y = Fp T5 / fze, so the camber factor sits in mu_y and cancels against the peak)
 rl = ctx.cs.tyre.rl
 x = static_x(ctx, 30.0)
 x[1] = -30.0 * np.tan(rl["peak_slip_angle"])                 # sa_rl = atan(-vy / vx) = peak
-fy, mu, fz, sa, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fy_rl, m.mu_rl_x, m.fz_rl, m.sa_rl, m.sx_rl])
-                      .call([x / m.x_s, np.zeros(m.nu), 0.0])]
-cam = float(np.interp(rl["camber"], rl["camber_x"], rl["camber_y"]))
-exp_fy = 0.9 * mu * fz * cam
-ok(f"pure lateral at the peak slip angle: |Fy| = 0.9 F' cam ({abs(fy):.4f} vs {exp_fy:.4f} N)",
-   abs(abs(fy) - exp_fy) < 1e-3 * exp_fy and abs(sa / rl["peak_slip_angle"] - 1) < 1e-6 and abs(sx) < 1e-9)
+fy, mu_y, fz, sa, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fy_rl, m.mu_rl_y, m.fz_rl, m.sa_rl, m.sx_rl])
+                        .call([x / m.x_s, np.zeros(m.nu), 0.0])]
+exp_fy = 0.9 * mu_y * fz
+ok(f"pure lateral at the peak slip angle: |Fy| = 0.9 mu_y fz ({abs(fy):.4f} vs {abs(exp_fy):.4f} N)",
+   abs(abs(fy) - abs(exp_fy)) < 1e-3 * abs(exp_fy) and abs(sa / rl["peak_slip_angle"] - 1) < 1e-6 and abs(sx) < 1e-9)
 
-# 2b. locked wheel (Om = 0, slip ratio -1): |Fx| <= F' and not zero (no growth past the table end)
+# 2b. locked wheel (Om = 0, slip ratio -1): |Fx| <= mu_x fz (= F' T5 T4) and not zero (no growth past the table end)
 x = static_x(ctx, 30.0)
 x[1] = 0.0
 x[7] = 0.0
-fx, mu, fz, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fx_rl, m.mu_rl_x, m.fz_rl, m.sx_rl])
-                  .call([x / m.x_s, np.zeros(m.nu), 0.0])]
-ok(f"locked wheel (SR {sx:.3f}): 0.9 F' <= |Fx| <= F' ({abs(fx):.4f} vs F' {mu * fz:.4f} N)",
-   abs(sx + 1) < 1e-9 and 0.9 * mu * fz <= abs(fx) <= mu * fz * (1 + 1e-6))
+fx, mu_x, fz, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fx_rl, m.mu_rl_x, m.fz_rl, m.sx_rl])
+                    .call([x / m.x_s, np.zeros(m.nu), 0.0])]
+peak = mu_x * fz                                             # Fx peak = F' x T5 (dynamic camber) x T4
+ok(f"locked wheel (SR {sx:.3f}): 0.9 mu_x fz <= |Fx| <= mu_x fz ({abs(fx):.4f} vs peak {peak:.4f} N)",
+   abs(sx + 1) < 1e-9 and 0.9 * peak <= abs(fx) <= peak * (1 + 1e-6))
 
 # 3. brake split under pure brake (T_brake_n = -1, no drive): front / rear wheel torque ratio, left = right
 x = static_x(ctx, 30.0)
@@ -423,28 +435,56 @@ x[7] = -1.6 * 30.0 / rl["radius"]                              # slip ratio -1.6
 fx, mu, fz, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fx_rl, m.mu_rl_x, m.fz_rl, m.sx_rl])
                   .call([x / m.x_s, np.zeros(m.nu), 0.0])]
 fn_end = float(rl["slip_y"][-1])
-ok(f"normalised slip {abs(sx) / rl['peak_slip_ratio']:.1f} >= 10: |Fx| = fn_end F' ({abs(fx):.4f} vs {fn_end * mu * fz:.4f} N)",
-   abs(sx / rl["peak_slip_ratio"]) >= 10 and abs(abs(fx) / (fn_end * mu * fz) - 1) < 0.01)
+exp_fx = fn_end * mu * fz                                                 # Fx peak = mu_x fz (= F' T5 T4), x fn_end
+ok(f"normalised slip {abs(sx) / rl['peak_slip_ratio']:.1f} >= 10: |Fx| = fn_end mu_x fz ({abs(fx):.4f} vs {exp_fx:.4f} N)",
+   abs(sx / rl["peak_slip_ratio"]) >= 10 and abs(abs(fx) / exp_fx - 1) < 0.01)
 xk, yk = np.asarray(rl["slip_x"], float), np.asarray(rl["slip_y"], float)
 odd = PchipInterpolator(np.r_[-xk[::-1], xk[1:]], np.r_[-yk[::-1], yk[1:]])
 slope0 = float(odd.derivative()(0.0))
 h1 = float(V._slip_curve(rl)(1e-3))
 ok(f"h(1e-3) = fn'(0) within 1 % ({h1:.5f} vs {slope0:.5f})", abs(h1 / slope0 - 1) < 0.01)
 
-# 2. load floor: fze at fz = 0 is the floor (finite); at fz = 20 kN the load peak is evaluated at fz = fze, so
-#    Fp / mu = fz within 0.1 % (the load table reaches 25 kN; the PCHIP reference is the table itself)
+# 2. load floor: mu_x = Fp T5 T4 / fze and T4 = 1 (flat grid). The readback divides out T5 at the dynamic camber of
+#    the rear left (read from the model output), so fze = Fp(fz) T5 / mu_x.
+#    fz = 0 gives the floor (finite); at fz = 20 kN fze equals fz within 0.1 % (the load table reaches 25 kN).
+t5 = lambda dyn: float(PchipInterpolator(rl["camber_x"], rl["camber_y"])(dyn))
+dyn_of = lambda xx: float(ca.Function("D", [m.x, m.u, m.pv], [m.dynamic_camber_rl]).call([xx / m.x_s, np.zeros(m.nu), 0.0])[0])
 x = static_x(ctx, 30.0)
 x[21] = 0.0                                                    # zt_rl = 0: fz = 0
 mu0 = float(ca.Function("M", [m.x, m.u, m.pv], [m.mu_rl_x]).call([x / m.x_s, np.zeros(m.nu), 0.0])[0])
 fp0 = float(PchipInterpolator(rl["load"], rl["fy_peak"])(rl["load"][0])) * rl["grip"]
-fze0 = fp0 / mu0
+fze0 = fp0 * t5(dyn_of(x)) / mu0
 x = static_x(ctx, 30.0)
 x[21] = 20000.0 / ctx.vp.kt                                    # zt_rl: fz = 20 kN
 mu20 = float(ca.Function("M", [m.x, m.u, m.pv], [m.mu_rl_x]).call([x / m.x_s, np.zeros(m.nu), 0.0])[0])
 fp20 = float(PchipInterpolator(rl["load"], rl["fy_peak"])(20000.0)) * rl["grip"]
-fze20 = fp20 / mu20
+fze20 = fp20 * t5(dyn_of(x)) / mu20
 ok(f"load floor: fze at fz 0 is ~20 N ({fze0:.3f}, finite), at 20 kN fze equals fz ({fze20:.1f} vs 20000)",
    np.isfinite(mu0) and 19.5 < fze0 < 20.5 and abs(fze20 / 20000.0 - 1) < 1e-3)
+
+# 2c. dynamic camber with body roll: camber = static + poly(xs) + phi on the left wheels, - phi on the right
+#     (phi > 0 compresses the right side). The output channel negates the right side (sign convention).
+curves = suspension_curves(ctx.cs)
+zs_c, phi_c = -0.004, 0.02
+xr = static_x(ctx, 30.0)
+xr[9], xr[13] = zs_c, phi_c
+t_f_c, t_r_c = ctx.cs.geom.track_front, ctx.cs.geom.track_rear
+xs_c = {"fl": -(zs_c + t_f_c / 2 * phi_c), "fr": -(zs_c - t_f_c / 2 * phi_c),
+        "rl": -(zs_c + t_r_c / 2 * phi_c), "rr": -(zs_c - t_r_c / 2 * phi_c)}
+mcam = [ca.Function("C", [m.x, m.u, m.pv], [getattr(m, f"dynamic_camber_{c}")]).call([xr / m.x_s, np.zeros(m.nu), 0.0])[0]
+        for c in ("fl", "fr", "rl", "rr")]
+dc_err = 0.0
+for i, c in enumerate(("fl", "fr", "rl", "rr")):
+    tyre = getattr(ctx.cs.tyre, c)
+    kc = curves.f if c[0] == "f" else curves.r
+    # poly_sx keeps the travel inside the fitted range with the smooth clamp of width 2 mm: mirror it
+    xs_in = float(V._clamp(xs_c[c], kc.lo, kc.hi, 2e-3))
+    dyn_exp = tyre["camber"] + float(kc.camber(xs_in)) + (phi_c if c[1] == "l" else -phi_c)
+    out_exp = dyn_exp * (-1.0 if c[1] == "r" else 1.0)
+    dc_err = max(dc_err, abs(float(mcam[i]) - out_exp))
+ok(f"dynamic camber with roll: sign and side convention (phi {phi_c} rad): max error {dc_err:.2e} rad (< 1e-4)",
+   dc_err < 1e-4)
+ok(f"dynamic camber with roll: static + poly(clamped xs) +- phi to 1e-6 rad (max error {dc_err:.2e} rad)", dc_err < 1e-6)
 
 # 3. slip table with decreasing x raises ValueError
 ok("slip table with decreasing x raises ValueError",

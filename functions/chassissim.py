@@ -10,6 +10,7 @@ import os
 from types import SimpleNamespace
 
 import numpy as np
+from scipy.optimize import brentq
 
 from functions import carfile
 
@@ -159,6 +160,7 @@ CAR_FIELDS = {
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))},
     **{204 + i: (f"susp.gap_flag_{c}", 1.0) for i, c in enumerate(_C4)},     # 1 = the gap is measured on the ground
+    **{74 + i: (f"susp.bump_steer_{c}", 1.0) for i, c in enumerate(_C4)},    # tag 7: wheel travel [m], toe change
     **_corners("susp", 13, "rubber_"), 17: ("susp.rubber_third_f", 1.0), 18: ("susp.rubber_third_r", 1.0),
     19: ("susp.arb_f", 1.0), 21: ("susp.arb_r", 1.0),
     **_corners("susp", 23, "mr_"), 27: ("susp.mr_arb_f", 1.0), 28: ("susp.mr_arb_r", 1.0),
@@ -191,7 +193,10 @@ def _tyre_decode(v):
     dims, sc, tb = v
     sc = np.asarray(sc, float)
     tb = [np.asarray(t, float) for t in tb]
-    d1, d2, d3, _, d5, d6, _ = (int(d) for d in dims)
+    d1, d2, d3, _, d5, d6, d7 = (int(d) for d in dims)
+    t4, d4, n4 = tb[4], d6, d7      # table 4: d6 cambers [deg], d7 loads [N], then the grid (row = camber)
+    if len(t4) != d4 + n4 + d4 * n4:
+        raise ValueError("The longitudinal camber table (table 4) of the tyre has a size that does not fit its dimensions.")
     z = tb[3][d1:d1 + d2]
     grid = tb[3][d1 + d2:].reshape(d1, d2)
     t = sc[6]
@@ -200,6 +205,7 @@ def _tyre_decode(v):
         "temp": sc[6], "rolling_drag": sc[7], "optimum_camber": sc[11] * DEG, "peak_slip_angle": sc[8], "peak_slip_ratio": sc[9], "grip": sc[15],
         "load": tb[3][:d1], "fy_peak": np.array([np.interp(t, z, r) for r in grid]),
         "slip_x": tb[0][:d3], "slip_y": tb[0][d3:],
+        "fx_camber_x": t4[:d4] * DEG, "fx_camber_load": t4[d4:d4 + n4], "fx_camber": t4[d4 + n4:].reshape(d4, n4),
         "camber_x": tb[5][:d6] * DEG, "camber_y": tb[5][d6:],
         "kz": float(np.interp(sc[5] * 1e-3, tb[10][:d5], tb[10][d5:])),
     }
@@ -296,3 +302,112 @@ def car_vp(car):
             "l": g.wheelbase, "hcg": g.cg_height, "I_x": m.Ix, "I_y": m.Iy, "I_z": m.Iz,
             "t": (g.track_front + g.track_rear) / 2, "Rw": ty.rl["radius"], "Jw": CS_JW,
             "f": ty.rl["rolling_drag"], "kt": (ty.fl["kz"] + ty.rl["kz"]) / 2}
+
+
+# ---------------------------------------------------------------- suspension kinematics (front view)
+TRAVEL = 0.05       # m, wheel travel range of the fitted curves (bump positive)
+
+
+def _circ_hit(c0, r0, c1, r1, near):
+    """Return (p, miss): the intersection of two circles in the plane that lies nearest to the point near, and the
+    distance by which the circles miss each other (0 when they intersect). A miss keeps the point on the line of the
+    centres, so that a root finder still sees a continuous function. The caller checks miss at the root."""
+    d = c1 - c0
+    dn = np.hypot(*d)
+    a = (r0 * r0 - r1 * r1 + dn * dn) / (2 * dn)
+    h = np.sqrt(max(r0 * r0 - a * a, 0.0))
+    miss = np.sqrt(max(a * a - r0 * r0, 0.0))
+    m = c0 + a * d / dn
+    p = [m + s * h * np.array([-d[1], d[0]]) / dn for s in (1.0, -1.0)]
+    return (p[0] if np.hypot(*(p[0] - near)) < np.hypot(*(p[1] - near)) else p[1]), miss
+
+
+def _line_hit(a, b, c, d):
+    """Return the intersection of the line a-b with the line c-d (2D)."""
+    t = np.linalg.solve(np.array([[b[0] - a[0], c[0] - d[0]], [b[1] - a[1], c[1] - d[1]]]), c - a)
+    return a + t[0] * (b - a)
+
+
+def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name=""):
+    """Solve the front view of one double wishbone and fit the curves. hp has shape (6, 3): the rows of the car
+    file (lower inner front, lower inner aft, lower outer, upper inner front, upper inner aft, upper outer).
+    The inner points of each wishbone are projected to one pivot (the mean of the two). The upright is rigid and
+    the contact patch (y = track / 2) is fixed to it. The wheel moves by w, bump positive.
+    The ground height of ChassisSim is a reference z that no file field holds. It is found here: the z of the
+    ground at which the static roll centre equals rc_static. The result holds the datum, the curves as poly1d in
+    w [m]: rc_h [m] above the contact patches and camber [rad]. The camber is the change of the negative camber
+    against the body: positive when the top leans in. The result also holds the range lo, hi [m]."""
+    li, lo, ui, uo = hp[:2, 1:].mean(0), hp[2, 1:], hp[3:5, 1:].mean(0), hp[5, 1:]
+    L1, L2, Lu = np.hypot(*(lo - li)), np.hypot(*(uo - ui)), np.hypot(*(uo - lo))
+    th0 = np.arctan2(*(lo - li)[::-1])
+    yc = track / 2
+
+    def pose(dl):
+        LO = li + L1 * np.array([np.cos(th0 + dl), np.sin(th0 + dl)])
+        UO, miss = _circ_hit(ui, L2, LO, Lu, uo)
+        return LO, UO, miss
+
+    def ang(LO, UO):
+        u = UO - LO
+        return np.arctan2(-u[0], u[1])
+    a0 = ang(lo, uo)
+
+    def rc_line(zg, dl):
+        """Return (contact patch, travel w, instant centre, camber) of the pose dl."""
+        LO, UO, _ = pose(dl)
+        da = ang(LO, UO) - a0
+        c0 = np.array([yc, zg]) - lo
+        cp = LO + np.array([[np.cos(da), -np.sin(da)], [np.sin(da), np.cos(da)]]) @ c0
+        u = (LO - li) / L1
+        v = (UO - ui) / L2
+        if abs(u[0] * v[1] - u[1] * v[0]) < 1e-12:     # parallel wishbones: the instant centre is at infinity
+            ic = cp + 1e6 * u       # ponytail: a far point on the arm direction gives the parallel RC line, exact slope
+        else:
+            ic = _line_hit(li, LO, ui, UO)
+        return cp, cp[1] - zg, ic, da
+
+    def height(cp, ic):             # height at y = 0 of the line from the contact patch to the instant centre
+        return cp[1] + (0.0 - cp[0]) * (ic[1] - cp[1]) / (ic[0] - cp[0])
+    cp, _, ic, _ = rc_line(0.0, 0.0)
+    h0 = height(cp, ic)             # linear in zg: h(zg) = zg (1 - k) + k ic_z
+    k = (height(*rc_line(1.0, 0.0)[::2]) - h0)
+    if abs(k) < 1e-9:
+        raise ValueError(f"The stored roll-centre height of the {name} axle cannot set the ground datum, "
+                         "because the roll centre of this geometry does not depend on the ground height.")
+    zg = (rc_static - h0) / k
+    w = np.linspace(-travel, travel, n)
+    dls = []
+    try:
+        for wi in w:
+            dls.append(brentq(lambda d: rc_line(zg, d)[1] - wi, -0.6, 0.6))
+    except (ValueError, np.linalg.LinAlgError) as e:
+        raise ValueError(f"The suspension geometry of the {name} axle has no solution for a wheel travel of "
+                         f"+-{travel * 1e3:.0f} mm. Check the hardpoints in the car file.") from e
+    if any(pose(d)[2] > 1e-6 for d in dls):        # the wishbones and the upright must close at every root
+        raise ValueError(f"The suspension geometry of the {name} axle has no solution for a wheel travel of "
+                         f"+-{travel * 1e3:.0f} mm. Check the hardpoints in the car file.")
+    rows = [rc_line(zg, d) for d in dls]
+    rc_h = np.array([height(r[0], r[2]) - (zg + wi) for r, wi in zip(rows, w)])     # above the contact patch
+    cam = np.array([r[3] for r in rows])
+    return SimpleNamespace(zg=zg, lo=-travel, hi=travel, rc_h=np.poly1d(np.polyfit(w, rc_h, 6)),
+                           camber=np.poly1d(np.polyfit(w, cam - cam[n // 2], 3)))
+
+
+def suspension_curves(car):
+    """Return SimpleNamespace(f, r) of axle_kinematics for a car record. Cached on the record.
+    The stored roll-centre height (cids 55, 59, 63, 67) is the chassis-frame height at w = 0: rc_h(0) + zg.
+    rc_h itself is the height above the contact patches. A car with a bump steer table (cids 74-77) that is not
+    zero raises ValueError, because the model has no bump steer."""
+    for c in _C4:
+        t = getattr(car.susp, f"bump_steer_{c}", None)
+        if t is not None and np.any(t["y"]):
+            raise ValueError("The car file holds a bump steer table that is not zero. The model does not support bump steer yet.")
+    if getattr(car, "_curves", None) is None:
+        g, h = car.geom, car.hardpoints
+        need = (g.rc_height_fl, g.rc_height_fr, g.rc_height_rl, g.rc_height_rr, h.front_l, h.rear_l)
+        if any(v is None for v in need):
+            raise ValueError("The car file lacks the roll-centre heights (cids 55, 59, 63, 67) or the hardpoints (cids 49-52).")
+        car._curves = SimpleNamespace(
+            f=axle_kinematics(np.asarray(h.front_l, float), g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front"),
+            r=axle_kinematics(np.asarray(h.rear_l, float), g.track_rear, 0.5 * (g.rc_height_rl + g.rc_height_rr), name="rear"))
+    return car._curves

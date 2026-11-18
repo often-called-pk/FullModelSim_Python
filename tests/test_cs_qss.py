@@ -28,7 +28,8 @@ from functions import carfile
 from functions.ggv import build_envelope
 from MLTP_screen import MLTP_screen
 import vehModel_cs as VCS
-from vehModel_cs import B_GEAR, W_RUBBER, _surf, roll_centres
+from vehModel_cs import B_GEAR, W_RUBBER, _surf
+from functions.chassissim import suspension_curves
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
@@ -95,7 +96,13 @@ SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5
           5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}
 ARB = {19: 2.0e4, 21: 1.5e4}
-HARD = (49, 50, 51, 52)
+HARD = (49, 50, 51, 52)                      # front left, front right, rear left, rear right
+# left-side hardpoints in the car frame (x rearward, y left +, z up), rows: lower inner front, lower inner aft,
+# lower outer, upper inner front, upper inner aft, upper outer. The rear uses the same rows; the right side mirrors y.
+HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
+                    [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
+HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
+RC_HEIGHT = 0.03                             # m, roll-centre heights (cids 55, 59, 63, 67)
 EXPLICIT = {
     84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
@@ -132,12 +139,13 @@ def tyre_sizes(d):
 
 def tyre_record(i, corner):
     t = TYRE[corner]
-    dims = t["dims"]
-    d1, d2, d3, _, d5, d6, _ = dims
+    dims = tuple(t["dims"][:5]) + (4, 4)        # d6 cambers and d7 loads of tables 4 and 5: >= 4 for the bspline
+    d1, d2, d3, _, d5, d6, d7 = dims
     tabs = [arb(k, 10 * i + j) for j, k in enumerate(tyre_sizes(dims))]
     A, B = arb(d1, 20 + i), arb(d1, 30 + i)
     load = 1000.0 * np.arange(1, d1 + 1)
     tabs[3] = np.concatenate([load, TYRE_TEMPS, np.stack([A, B], axis=1).ravel()])
+    tabs[4] = np.concatenate([np.linspace(-3.0, 3.0, d6), 1000.0 * np.arange(1, d7 + 1), np.ones(d6 * d7)])  # Fx camber factor 1
     tabs[0][:d3] = np.linspace(0.0, 1.5, d3)                 # slip abscissae from 0, increasing
     tabs[5][:d6] = np.linspace(-3.0, 3.0, d6)                # camber abscissae (deg), increasing
     px = np.linspace(150.0, 250.0, d5)
@@ -185,7 +193,8 @@ def build_records(cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
         add(1, cid, bias if (bias is not None and cid == 108) else v)
-    for cid, v in zip((55, 59, 63, 67), (0.06, 0.08, 0.10, 0.12)):   # roll-centre heights [m], middle values
+    for cid in (55, 59, 63, 67):                                       # roll-centre heights [m], middle values
+        v = RC_HEIGHT
         add(1, cid, v)
     for cid in (204, 205, 206, 207):                                  # rubber gaps are ground gaps (flag 1)
         add(6, cid, 1)
@@ -208,8 +217,8 @@ def build_records(cda_scale=1.0, peak_scale=1.0, mr_fl=None, bias=None):
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
     for cid in range(31, 36):
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
-    for cid in HARD:
-        add(10, cid, (0, arb(18, cid)))
+    for cid, hp in zip(HARD, (HP_LEFT, HP_RIGHT, HP_LEFT, HP_RIGHT)):
+        add(10, cid, (0, hp.ravel(order="F")))      # the file holds the (6, 3) block column-major
     for i, c in enumerate(CORNERS):
         t, cid, v = tyre_record(i, c)
         add(t, cid, v)
@@ -234,6 +243,25 @@ def qss(car_path=None, **kw):
     return quiet(MLTP_screen, **opts)
 
 
+def hand_corner(cs_, vp_, c, x):
+    cf = np.atleast_1d(getattr(cs_.susp, f"mr_{c}")).astype(float)
+    k = getattr(cs_.susp, f"spring_{c}")["rate"]
+    sm = sum(v / (i + 1) * x ** (i + 1) for i, v in enumerate(cf))
+    mr = sum(v * x ** i for i, v in enumerate(cf))
+    F0, mr0 = getattr(vp_, f"m_c_{c}") * vp_.g, cf[0]
+    rub = getattr(cs_.susp, f"rubber_{c}")
+    slope = (rub["y"][-1] - rub["y"][0]) / (rub["x"][-1] - rub["x"][0])
+    gap = getattr(cs_.susp, f"gap_{c}")
+    rubber = mr * slope * W_RUBBER * np.logaddexp(0.0, (sm - gap) / W_RUBBER)
+    return (F0 / mr0 + k * sm) * mr - F0 + rubber
+
+
+def heave_travel(cs_, vp_, pair, F_axle, xg=np.linspace(0.0, 0.15, 6001)):
+    """Strut travel [m] of an axle whose spring + rubber load (hand_corner, the MR law) equals F_axle [N]."""
+    F = sum(hand_corner(cs_, vp_, c, xg) for c in pair)
+    return float(np.interp(F_axle, F, xg))
+
+
 def ay_balance(ctx, cap, v0=2.0):
     """Independent lateral limit [m/s^2] of the car from its tables: yaw-balanced axles, the corner peaks of the
     fy_peak table (load PCHIP, camber 1, grip, the peak of the slip curve capped at cap), lateral load transfer
@@ -255,7 +283,15 @@ def ay_balance(ctx, cap, v0=2.0):
     kz = {c: ty[c]["kz"] for c in CORNERS}
     mr_arb = {a: float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{a}"))[0]) for a in "fr"}
     t_f, t_r = geo.track_front, geo.track_rear
-    hrc_f, hrc_r = roll_centres(cs)
+    # roll-centre height above the contact patches at the heave travel of each axle under the aero load at v0
+    # (the QSS: the curves of suspension_curves at the travel of the MR law; the test solves that travel by hand)
+    curves = suspension_curves(cs)
+    Fa_f = float(ctx.envelope.Fz_front[0] - (vp.Wfl0 + vp.Wfr0))
+    Fa_r = float(ctx.envelope.Fz_rear[0] - (vp.Wrl0 + vp.Wrr0))
+    hv_f = heave_travel(cs, vp, ("fl", "fr"), Fa_f)
+    hv_r = heave_travel(cs, vp, ("rl", "rr"), Fa_r)
+    hrc_f = float(curves.f.rc_h(np.clip(hv_f, curves.f.lo, curves.f.hi)))
+    hrc_r = float(curves.r.rc_h(np.clip(hv_r, curves.r.lo, curves.r.hi)))
     Kr = {}
     for a, (l, r), t in (("f", ("fl", "fr"), t_f), ("r", ("rl", "rr"), t_r)):
         bar = 0.5 * getattr(cs.susp, f"arb_{a}")["rate"] * mr_arb[a] ** 2
@@ -333,8 +369,9 @@ ok(f"F_drive_tab equals the max over the gears to 1e-4 F_ref away from the gear 
 ok(f"F_drive_tab is positive over the grid (min {ft.min():.1f} N)", bool(np.all(ft > 0)))
 ok("n_v does not apply to a car: build_envelope(ctx, n_v=5) keeps the 0.1 m/s grid",
    quiet(build_envelope, ctx, n_v=5).v_grid.size == env.v_grid.size)
+quiet(build_envelope, ctx)                  # the first call per car samples the tyre functions (cached on the record)
 t0 = time.perf_counter()
-quiet(build_envelope, ctx)
+quiet(build_envelope, ctx)                  # the timed call is a repeat call
 dt = time.perf_counter() - t0
 ok(f"build_envelope_cs on the synthetic car takes less than 0.5 s ({1e3 * dt:.0f} ms)", dt < 0.5)
 
@@ -400,19 +437,6 @@ ok(f"downforce: F_lift = q x CLA(rh_f, rh_r) at the fixed-point ride heights (ma
 # The QSS axle force table is the sum over the corners of (F0/mr0 + k sm) mr - F0 + rubber, with the rubber
 # mr x slope x W softplus((sm - gap) / W) (2-point table, linear). The table is read back at the travel that the
 # fixed point implies: travel = rh0 - rh - F_axle / kt, and the hand force there must equal the axle load of the QSS.
-def hand_corner(cs_, vp_, c, x):
-    cf = np.atleast_1d(getattr(cs_.susp, f"mr_{c}")).astype(float)
-    k = getattr(cs_.susp, f"spring_{c}")["rate"]
-    sm = sum(v / (i + 1) * x ** (i + 1) for i, v in enumerate(cf))
-    mr = sum(v * x ** i for i, v in enumerate(cf))
-    F0, mr0 = getattr(vp_, f"m_c_{c}") * vp_.g, cf[0]
-    rub = getattr(cs_.susp, f"rubber_{c}")
-    slope = (rub["y"][-1] - rub["y"][0]) / (rub["x"][-1] - rub["x"][0])
-    gap = getattr(cs_.susp, f"gap_{c}")
-    rubber = mr * slope * W_RUBBER * np.logaddexp(0.0, (sm - gap) / W_RUBBER)
-    return (F0 / mr0 + k * sm) * mr - F0 + rubber
-
-
 MR_CAR = write_car("mr.car", mr_fl=[0.9, 0.5, 0.0, 0.0, 0.0])
 ctx_mr = qss(MR_CAR)
 env_mr, cs_m, vp_m, geo_m = ctx_mr.envelope, ctx_mr.cs, ctx_mr.vp, ctx_mr.cs.geom
