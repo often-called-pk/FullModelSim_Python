@@ -374,17 +374,22 @@ def read_ld(path, channel_map=None):
     name that the file holds. The channel is factor * value. The unit of the map must equal the unit of the file.
     Without a map, LD_MAP applies and the reader skips channels that the file lacks. With a map, a missing
     channel raises ValueError.
-    The result has t (sample number / rate of the first mapped channel). A channel with another rate or count is
-    interpolated onto t. When s (Lap Distance) is mapped, the result also has lap, the count of distance wraps.
+    The result has t (sample number / rate of the first mapped channel). The reader interpolates a channel with
+    another rate or count onto t. When the map has s (Lap Distance), the result also has lap (split_laps of s).
     A ChassisSim log starts with a short lead-in (lap 0), then the simulated lap (lap 1) and a tail (lap 2).
-    Signs (measured on ChassisSim .ld files, see docs/logging_spec.md Table C): the log shows ay to the left and
-    steer and yaw rate to the right. LD_MAP flips steer and yaw rate to the model sign. xs_* is the damper travel.
+    Sources in LD_MAP: vx is the ground speed of the front left wheel (Speed FL). om_gear is the engine speed
+    (Engine RPM), not the wheel speed times the gear. throttle is the pedal. xs_* is the damper travel.
+    Signs (measured on ChassisSim .ld files, see docs/logging_spec.md Table C): ay is positive to the left.
+    Steer and yaw rate are positive to the right, so LD_MAP flips them to the model sign.
     The reader supports int16 and int32 channels with shift 0, mul 1 and scale 1. It raises ValueError
     for any other channel that it must read."""
     ent = {}
     for k, v in (LD_MAP if channel_map is None else channel_map).items():
-        v = (v, None, 1.0) if isinstance(v, str) else tuple(v)
-        ent[k] = ((v[0],) if isinstance(v[0], str) else tuple(v[0]), v[1], v[2])
+        try:
+            names, unit, f = (v, None, 1.0) if isinstance(v, str) else v
+        except (TypeError, ValueError):
+            raise ValueError(f"The map entry {k!r} must be a name or (names, unit, factor).") from None
+        ent[k] = ((names,) if isinstance(names, str) else tuple(names), unit, f)
     with open(path, "rb") as fh:
         chs = {c["name"]: c for c in _ld_channels(fh)}
     out, t0, r0 = {}, None, None
@@ -402,7 +407,7 @@ def read_ld(path, channel_map=None):
         raw = np.fromfile(path, dtype=_LD_DTYPE[c["cls"]], count=c["n"], offset=c["off"])
         if raw.size != c["n"]:
             raise ValueError(f"Channel {c['name']!r} is cut short: {raw.size} of {c['n']} samples.")
-        v = f * raw * 10.0 ** -c["dec"]
+        v = raw * (f * 10.0 ** -c["dec"])                      # scale first: an int factor must not wrap
         if t0 is None:
             t0, r0 = np.arange(c["n"]) / c["rate"], c["rate"]
         elif c["n"] != t0.size or c["rate"] != r0:
@@ -411,5 +416,5 @@ def read_ld(path, channel_map=None):
     if t0 is not None:
         out["t"] = t0
         if "s" in out:
-            out["lap"] = np.cumsum(np.r_[0, np.diff(out["s"]) < -0.5 * out["s"].max()])
+            out["lap"] = split_laps(t0, dist=out["s"], drop=0.5 * np.nanmax(out["s"]))
     return out
