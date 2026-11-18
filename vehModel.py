@@ -77,6 +77,76 @@ def _stop_force(xs):
     return K_STOP * W_STOP * (_softplus((xs - BUMP_GAP) / W_STOP) - _softplus((-xs - REBOUND_GAP) / W_STOP))
 
 
+def _chassis_corrected(vp, kappa, st, zrates, wu, zt, fxg, fyg, fx, T, fzs, fj, Mx, My,
+                       f_lift_c, f_side_c, f_drag, f_roll, f_lift, f_side, RW_Cd):
+    """Give the corrected-physics chassis derivatives in the space domain (A1 to A4).
+
+    Inputs. vp: vehicle parameters. kappa: track curvature.
+    st: (vx, vy, r, n, eps). zrates: (zsdot, thetadot, phidot).
+    wu, zt, fxg, fyg, fx, T, fzs, fj, Mx, My, f_lift_c, f_side_c: one value per
+    corner in the order fl, fr, rl, rr (unsprung speed, tyre deflection, vehicle-frame
+    Fx and Fy, tyre-frame Fx, wheel torque, strut force, jacking force, tyre Mx and My,
+    corner lift, corner side force). f_drag, f_roll, f_lift, f_side: body forces.
+    RW_Cd: rear-wing drag coefficient.
+
+    Returns (sf, d). sf is dt/ds. d holds the 23 derivatives in state order:
+    vx, vy, r, n, eps, 4 wheel speeds, zs, zsdot, theta, thetadot, phi, phidot,
+    4 unsprung speeds, 4 tyre deflections. Each is multiplied by sf and not yet scaled.
+    """
+    vx, vy, r, n, eps = st
+    zsdot, thetadot, phidot = zrates
+    wu_fl, wu_fr, wu_rl, wu_rr = wu
+    zt_fl, zt_fr, zt_rl, zt_rr = zt
+    fxg_fl, fxg_fr, fxg_rl, fxg_rr = fxg
+    fyg_fl, fyg_fr, fyg_rl, fyg_rr = fyg
+    fx_fl, fx_fr, fx_rl, fx_rr = fx
+    T_fl, T_fr, T_rl, T_rr = T
+    fzs_fl, fzs_fr, fzs_rl, fzs_rr = fzs
+    fj_fl, fj_fr, fj_rl, fj_rr = fj
+    Mx_fl, Mx_fr, Mx_rl, Mx_rr = Mx
+    My_fl, My_fr, My_rl, My_rr = My
+    f_lift_fl, f_lift_fr, f_lift_rl, f_lift_rr = f_lift_c
+    f_side_fl, f_side_fr, f_side_rl, f_side_rr = f_side_c
+    sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
+    # A1 + A3: the planar equations carry the total mass m (the unsprung masses move with the
+    # car) and no body-attitude terms: the tyre forces lie in the road plane, so gravity and
+    # the sprung-mass rates (thetadot*zsdot) do not enter.
+    dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.m*vy*r) * sf / vp.m
+    dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.m*vx*r) * sf / vp.m
+    dr = ((fyg_fl + fyg_fr)*vp.l_f - (fyg_rl + fyg_rr)*vp.l_r
+          + (-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2)
+          - (f_side_rl + f_side_rr)*vp.l_r + (f_side_fl + f_side_fr)*vp.l_f) * sf / vp.I_z
+    dn = (vx*ca.sin(eps) + vy*ca.cos(eps)) * sf
+    deps = sf*r - kappa
+    dOm_fl = sf * (T_fl - fx_fl*vp.Rw_f) / vp.Jw
+    dOm_fr = sf * (T_fr - fx_fr*vp.Rw_f) / vp.Jw
+    dOm_rl = sf * (T_rl - fx_rl*vp.Rw_r) / vp.Jw
+    dOm_rr = sf * (T_rr - fx_rr*vp.Rw_r) / vp.Jw
+    dzs = zsdot * sf
+    # A3: gravity straight down, no body-frame rate terms
+    dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
+              - vp.ms*vp.g) * sf / vp.ms
+    dtheta = thetadot * sf
+    # A4: the downforce acts on the body: nose-down and left-side-down moments
+    # The rear-wing drag acts at hw and the body drag at hcg (no moment), as in MLTP*.m.
+    # A rearward force above the CG lifts the nose.
+    dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r - (fzs_fl + fzs_fr)*vp.l_f
+                 + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r
+                 - 0.5*vp.rho*vp.A*vx**2*_mf_scale(RW_Cd, vp.Cd_scale)*(vp.hw - vp.hcg)) * sf / vp.I_y
+    dphi = phidot * sf
+    dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t
+               - (f_lift_fl + f_lift_rl - f_lift_fr - f_lift_rr)*0.5*vp.t) * sf / vp.I_x
+    # A1: each corner carries its own unsprung mass (muf/2, mur/2)
+    mu_fl, mu_fr, mu_rl, mu_rr = vp.m_u_fl, vp.m_u_fr, vp.m_u_rl, vp.m_u_rr
+    dwu_fl = (zt_fl*vp.kt - mu_fl*vp.g - fj_fl - fzs_fl) * sf / mu_fl
+    dwu_fr = (zt_fr*vp.kt - mu_fr*vp.g - fj_fr - fzs_fr) * sf / mu_fr
+    dwu_rl = (zt_rl*vp.kt - mu_rl*vp.g - fj_rl - fzs_rl) * sf / mu_rl
+    dwu_rr = (zt_rr*vp.kt - mu_rr*vp.g - fj_rr - fzs_rr) * sf / mu_rr
+    dzt_fl = -wu_fl * sf; dzt_fr = -wu_fr * sf; dzt_rl = -wu_rl * sf; dzt_rr = -wu_rr * sf
+    return sf, (dvx, dvy, dr, dn, deps, dOm_fl, dOm_fr, dOm_rl, dOm_rr, dzs, dzsdot, dtheta, dthetadot,
+                dphi, dphidot, dwu_fl, dwu_fr, dwu_rl, dwu_rr, dzt_fl, dzt_fr, dzt_rl, dzt_rr)
+
+
 def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
     g = getattr(ctx, "grip", 1.0)               # circuit base grip: scales both mu factors
@@ -626,60 +696,44 @@ def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
         T_rr = ca.if_else(xs_rr >= 0.075, 0, T_rr)
 
     # ===================== change of variable & derivatives ===============
-    sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
-
     if phys == "corrected":
-        # A1 + A3: the planar equations carry the total mass m (the unsprung masses move with the
-        # car) and no body-attitude terms: the tyre forces lie in the road plane, so gravity and
-        # the sprung-mass rates (thetadot*zsdot) do not enter.
-        dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.m*vy*r) * sf / vp.m
-        dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.m*vx*r) * sf / vp.m
+        sf, (dvx, dvy, dr, dn, deps, dOm_fl, dOm_fr, dOm_rl, dOm_rr, dzs, dzsdot, dtheta, dthetadot,
+             dphi, dphidot, dwu_fl, dwu_fr, dwu_rl, dwu_rr, dzt_fl, dzt_fr, dzt_rl, dzt_rr) = _chassis_corrected(
+            vp, kappa, (vx, vy, r, n, eps), (zsdot, thetadot, phidot), (wu_fl, wu_fr, wu_rl, wu_rr),
+            (zt_fl, zt_fr, zt_rl, zt_rr), (fxg_fl, fxg_fr, fxg_rl, fxg_rr), (fyg_fl, fyg_fr, fyg_rl, fyg_rr),
+            (fx_fl, fx_fr, fx_rl, fx_rr), (T_fl, T_fr, T_rl, T_rr), (fzs_fl, fzs_fr, fzs_rl, fzs_rr),
+            (fj_fl, fj_fr, fj_rl, fj_rr), (Mx_fl, Mx_fr, Mx_rl, Mx_rr), (My_fl, My_fr, My_rl, My_rr),
+            (f_lift_fl, f_lift_fr, f_lift_rl, f_lift_rr), (f_side_fl, f_side_fr, f_side_rl, f_side_rr),
+            f_drag, f_roll, f_lift, f_side, RW_Cd)
     else:
+        sf = (1 - n*kappa) / (vx*ca.cos(eps) - vy*ca.sin(eps))
         dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.ms*vy*r
                - vp.ms*thetadot*zsdot + vp.ms*vp.g*ca.sin(theta)) * sf / vp.ms
         dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.ms*vx*r
                - vp.ms*vp.g*ca.sin(phi)*ca.cos(theta)) * sf / vp.ms
-    dr = ((fyg_fl + fyg_fr)*vp.l_f - (fyg_rl + fyg_rr)*vp.l_r
-          + (-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2)
-          - (f_side_rl + f_side_rr)*vp.l_r + (f_side_fl + f_side_fr)*vp.l_f) * sf / vp.I_z
-    dn = (vx*ca.sin(eps) + vy*ca.cos(eps)) * sf
-    deps = sf*r - kappa
-    dOm_fl = sf * (T_fl - fx_fl*vp.Rw_f) / vp.Jw
-    dOm_fr = sf * (T_fr - fx_fr*vp.Rw_f) / vp.Jw
-    dOm_rl = sf * (T_rl - fx_rl*vp.Rw_r) / vp.Jw
-    dOm_rr = sf * (T_rr - fx_rr*vp.Rw_r) / vp.Jw
-    dzs = zsdot * sf
-    if phys == "corrected":      # A3: gravity straight down, no body-frame rate terms
-        dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
-                  - vp.ms*vp.g) * sf / vp.ms
-    else:
+        dr = ((fyg_fl + fyg_fr)*vp.l_f - (fyg_rl + fyg_rr)*vp.l_r
+              + (-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2)
+              - (f_side_rl + f_side_rr)*vp.l_r + (f_side_fl + f_side_fr)*vp.l_f) * sf / vp.I_z
+        dn = (vx*ca.sin(eps) + vy*ca.cos(eps)) * sf
+        deps = sf*r - kappa
+        dOm_fl = sf * (T_fl - fx_fl*vp.Rw_f) / vp.Jw
+        dOm_fr = sf * (T_fr - fx_fr*vp.Rw_f) / vp.Jw
+        dOm_rl = sf * (T_rl - fx_rl*vp.Rw_r) / vp.Jw
+        dOm_rr = sf * (T_rr - fx_rr*vp.Rw_r) / vp.Jw
+        dzs = zsdot * sf
         dzsdot = (-f_lift + fzs_fl + fzs_fr + fzs_rl + fzs_rr + fj_fl + fj_fr + fj_rl + fj_rr
                   - vp.ms*vp.g*ca.cos(phi)*ca.cos(theta) - vp.ms*phidot*vy + vp.ms*thetadot*vx) * sf / vp.ms
-    dtheta = thetadot * sf
-    if phys == "corrected":      # A4: the downforce acts on the body: nose-down and left-side-down moments
-        # The rear-wing drag acts at hw and the body drag at hcg (no moment), as in MLTP*.m.
-        # A rearward force above the CG lifts the nose.
-        dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r - (fzs_fl + fzs_fr)*vp.l_f
-                     + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r
-                     - 0.5*vp.rho*vp.A*vx**2*_mf_scale(RW_Cd, vp.Cd_scale)*(vp.hw - vp.hcg)) * sf / vp.I_y
-    else:
+        dtheta = thetadot * sf
         dthetadot = (My_fr + My_fl + My_rl + My_rr + (fzs_rl + fzs_rr)*vp.l_r
                      - (fzs_fl + fzs_fr)*vp.l_f) * sf / vp.I_y
-    dphi = phidot * sf
-    if phys == "corrected":
-        dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t
-                   - (f_lift_fl + f_lift_rl - f_lift_fr - f_lift_rr)*0.5*vp.t) * sf / vp.I_x
-    else:
+        dphi = phidot * sf
         dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t) * sf / vp.I_x
-    if phys == "corrected":      # A1: each corner carries its own unsprung mass (muf/2, mur/2)
-        mu_fl, mu_fr, mu_rl, mu_rr = vp.m_u_fl, vp.m_u_fr, vp.m_u_rl, vp.m_u_rr
-    else:                        # MATLAB: every corner subtracts the TOTAL unsprung mass
-        mu_fl = mu_fr = mu_rl = mu_rr = vp.mus
-    dwu_fl = (zt_fl*vp.kt - mu_fl*vp.g - fj_fl - fzs_fl) * sf / mu_fl
-    dwu_fr = (zt_fr*vp.kt - mu_fr*vp.g - fj_fr - fzs_fr) * sf / mu_fr
-    dwu_rl = (zt_rl*vp.kt - mu_rl*vp.g - fj_rl - fzs_rl) * sf / mu_rl
-    dwu_rr = (zt_rr*vp.kt - mu_rr*vp.g - fj_rr - fzs_rr) * sf / mu_rr
-    dzt_fl = -wu_fl * sf; dzt_fr = -wu_fr * sf; dzt_rl = -wu_rl * sf; dzt_rr = -wu_rr * sf
+        mu_fl = mu_fr = mu_rl = mu_rr = vp.mus     # MATLAB: every corner subtracts the TOTAL unsprung mass
+        dwu_fl = (zt_fl*vp.kt - mu_fl*vp.g - fj_fl - fzs_fl) * sf / mu_fl
+        dwu_fr = (zt_fr*vp.kt - mu_fr*vp.g - fj_fr - fzs_fr) * sf / mu_fr
+        dwu_rl = (zt_rl*vp.kt - mu_rl*vp.g - fj_rl - fzs_rl) * sf / mu_rl
+        dwu_rr = (zt_rr*vp.kt - mu_rr*vp.g - fj_rr - fzs_rr) * sf / mu_rr
+        dzt_fl = -wu_fl * sf; dzt_fr = -wu_fr * sf; dzt_rl = -wu_rl * sf; dzt_rr = -wu_rr * sf
 
     Lon_acc = dvx / sf
     Lat_acc = dvy / sf
