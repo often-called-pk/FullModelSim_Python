@@ -2,8 +2,8 @@
 
 Gap flag 1 (the stored gap is measured on the ground) and flag 0 (the stored gap is measured from the static
 compression: effective gap = stored gap - (F0 / (mr0 k) - preload)). A stored gap of 0 means no rubber at the
-corner, with no node in the NLP. A negative effective gap is valid. Third springs (cids 5, 6) with a non-zero rate
-are refused. The checks read the synthetic car records with load_car, build the car with MLTP and a fake IPOPT
+corner, with no node in the NLP. A negative effective gap is valid. Third springs (cids 5, 6) and third rubbers
+(cids 17, 18, gap flags 208, 209) build (ChassisSim phase 2b, task 12). The checks read the synthetic car records with load_car, build the car with MLTP and a fake IPOPT
 (no solve), and spy on the rubber helper that the QSS envelope calls. The vendor section (last) runs only when
 CHASSISSIM_DIR names the ChassisSim install folder. It reads the GP3 2013, F2, GT3 and F3 car files and writes
 nothing into the vendor folders. Scratch files go to a temp dir.
@@ -26,7 +26,6 @@ import numpy as np
 import functions.transcription as T
 import vehModel_cs as V
 from functions import carfile
-from functions import chassissim as CSM
 from functions.chassissim import load_car
 from MLTP import MLTP
 from MLTP_screen import MLTP_screen
@@ -37,7 +36,6 @@ CIRC = "Synth Ring"
 CORNERS = ("fl", "fr", "rl", "rr")
 G = 9.81
 REFUSE_FLAG = "The car file holds a bump rubber gap flag (cids 204 to 207) other than 0 or 1."
-REFUSE_THIRD = "The model has no third spring yet."
 
 
 def ok(name, cond):
@@ -171,8 +169,8 @@ def build_records(over=None, omit=()):
         add(2, cid, np.array([1.0 + 0.05 * np.sin(cid), 0.0, 0.0, 0.0, 0.0]))
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)
-    for cid in range(204, 208):
-        add(6, cid, 1)                                    # rubber gap flags: 1 = ground gap
+    for cid in range(204, 210):
+        add(6, cid, 1)                                    # rubber gap flags (fl..rr, third f/r): 1 = ground gap
     for cid in (74, 75, 76, 77):
         add(7, cid, (BUMP_X, np.zeros(len(BUMP_X))))
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
@@ -421,14 +419,18 @@ ok(f"QSS axle rubber at one travel (fr, {w_q*1e3:.2f} mm): {q_model:.4f} N = han
    f"effective gap",
    abs(q_model - q_hand) <= 1e-6 * abs(q_hand))
 
-# ==== 7. refusals: flag 2 and a non-zero third spring ========================================================
-print("[cs_rubber] 7. refusals")
+# ==== 7. refusals: flag 2; third spring and third rubber build (task 12) ====================================
+print("[cs_rubber] 7. refusals and third-element builds")
 hit, msg = refusal(build, write_car("flag2.car", {204: 2}))
 ok(f"gap flag 2 raises ValueError with the STE text: {msg!r}", hit and msg == REFUSE_FLAG)
-hit, msg = refusal(build, write_car("third5.car", {5: (1, 0.0, 9.0e4, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
-ok(f"third spring rate 9e4 (cid 5) raises ValueError with the STE text: {msg!r}", hit and msg == REFUSE_THIRD)
-hit, msg = refusal(build, write_car("third6.car", {6: (1, 0.0, 8.0e4, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
-ok(f"third spring rate 8e4 (cid 6) raises ValueError with the STE text: {msg!r}", hit and msg == REFUSE_THIRD)
+CTX_T5 = build(write_car("third5.car", {5: (1, 0.0, 9.0e4, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
+ok(f"F3-like: third spring rate 9e4 (cid 5) builds (nx {CTX_T5.m23.nx}) with a front third element",
+   CTX_T5.m23.nx == 23 and V.third_element(CTX_T5.cs, "f", CTX_T5.vp) is not None)
+CTX_T6 = build(write_car("third_rubber_r.car", {11: 0.027, 12: 0.027, 208: 0, 209: 0,
+                                               18: (0, 0.0, 4.0e4, np.array([0.0, 0.02]), np.array([0.0, 800.0]))}))
+ok(f"F2-like: rear third rubber, flag 0, gap 27 mm (cid 12), builds (nx {CTX_T6.m23.nx}) with a rear third element",
+   CTX_T6.m23.nx == 23 and V.third_element(CTX_T6.cs, "r", CTX_T6.vp) is not None
+   and CTX_T6.cs.susp.gap_flag_third_r == 0 and abs(CTX_T6.cs.susp.gap_third_r - 0.027) < 1e-12)
 hit, msg = refusal(build, write_car("flag0_rate0.car", {204: 0, 205: 0, 206: 0, 207: 0,
                                                        1: (1, 0.02, 0.0, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
 ok(f"flag 0 with a zero spring rate (fl) raises ValueError naming the rate: {msg!r}",
@@ -459,17 +461,7 @@ def vendor(cs_dir):
        + " ".join(f"{g[c]*1e3:.2f}" for c in CORNERS),
        all(g[c] is not None and abs(g[c] - want[c]) < 5e-4 for c in CORNERS))
 
-    # The F2 car has a rear third bump rubber that can engage: the model refuses it (chassissim.third_refusal).
-    # The F2 checks below need its model, so they build it with that refusal stood aside, after the refusal is checked.
-    hit, msg = refusal(build, str(f2), circuit="Adelaide", chassis_dir=cs_dir)
-    ok(f"F2 raises the third-element ValueError naming the rear axle: {msg[:60]!r}",
-       hit and "rear third bump rubber" in msg and "third element" in msg)
-    _third_refusal = CSM.third_refusal
-    CSM.third_refusal = lambda cs: None
-    try:
-        ctx_f2 = build(str(f2), circuit="Adelaide", chassis_dir=cs_dir)
-    finally:
-        CSM.third_refusal = _third_refusal
+    ctx_f2 = build(str(f2), circuit="Adelaide", chassis_dir=cs_dir)
     e = {c: hand_eff_gap(ctx_f2.cs, ctx_f2.vp, c) for c in CORNERS}
     ok("F2 builds (physics corrected, Adelaide): nx 23 and nu 3", ctx_f2.m23.nx == 23 and ctx_f2.m23.nu == 3)
     ok("F2 effective gaps about 0 / 0 / 16 / 16 mm within 0.5 mm: " + " ".join(f"{e[c]*1e3:.2f}" for c in CORNERS),
@@ -490,17 +482,10 @@ def vendor(cs_dir):
     err = float(np.max(np.abs(ld - wt) / wt))
     ok(f"GT3 static loads equal the corner weights within 0.5 %: max {100 * err:.4f} %", err < 0.005)
 
-    # The F3 car's front third rubber engages, so the third-element refusal comes first. The third-spring
-    # refusal is checked with that refusal stood aside.
+    # The F3 car stops at its front axle datum (kinematics), before the third element is read.
     hit, msg = refusal(build, str(f3), circuit="Adelaide", chassis_dir=cs_dir)
-    ok(f"F3 raises the third-element ValueError naming the front axle: {msg[:60]!r}",
-       hit and "front third bump rubber" in msg and "third element" in msg)
-    CSM.third_refusal = lambda cs: None
-    try:
-        hit, msg = refusal(build, str(f3), circuit="Adelaide", chassis_dir=cs_dir)
-    finally:
-        CSM.third_refusal = _third_refusal
-    ok(f"F3 raises ValueError with the third-spring text: {msg!r}", hit and msg == REFUSE_THIRD)
+    ok(f"F3 raises ValueError naming the front axle ground datum: {msg[:60]!r}",
+       hit and "ground datum of the front axle" in msg)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

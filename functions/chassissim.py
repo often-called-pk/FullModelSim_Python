@@ -135,6 +135,7 @@ RPM = 2 * np.pi / 60
 DEG = np.pi / 180
 MM = 1e-3
 _C4 = ("fl", "fr", "rl", "rr")
+_GAPS = (*_C4, "third_f", "third_r")
 
 
 def _corners(group, base, prefix=""):
@@ -162,14 +163,14 @@ CAR_FIELDS = {
     62: ("geom.rc_first_rl", 1.0), 66: ("geom.rc_first_rr", 1.0),
     **{117 + i: (f"geom.ride_height_{c}", MM) for i, c in enumerate(_C4)},
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
-    **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))},
-    **{204 + i: (f"susp.gap_flag_{c}", 1.0) for i, c in enumerate(_C4)},     # 1 = the gap is measured on the ground
+    **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(_GAPS)},
+    **{204 + i: (f"susp.gap_flag_{n}", 1.0) for i, n in enumerate(_GAPS)},   # 1 = the gap is measured on the ground
     **{74 + i: (f"susp.bump_steer_{c}", 1.0) for i, c in enumerate(_C4)},    # tag 7: wheel travel [m], toe change
     **_corners("susp", 13, "rubber_"), 17: ("susp.rubber_third_f", 1.0), 18: ("susp.rubber_third_r", 1.0),
     19: ("susp.arb_f", 1.0), 21: ("susp.arb_r", 1.0),
     **_corners("susp", 23, "mr_"), 27: ("susp.mr_arb_f", 1.0), 28: ("susp.mr_arb_r", 1.0),
     29: ("susp.mr_third_f", 1.0), 30: ("susp.mr_third_r", 1.0),
-    **_corners("susp", 31, "damper_"), 35: ("susp.damper_third_f", 1.0),
+    **_corners("susp", 31, "damper_"), 35: ("susp.damper_third_f", 1.0), 36: ("susp.damper_third_r", 1.0),
     **{49 + i: (f"hardpoints.{n}", 1.0) for i, n in enumerate(("front_l", "front_r", "rear_l", "rear_r"))},
     **_corners("tyre", 80),
     121: ("aero.cla", 1.0), 122: ("aero.cda", 1.0), 123: ("aero.offset", 1.0), 125: ("aero.rho", 1.0),
@@ -350,6 +351,9 @@ def check_car(cs):
     for c in C:                     # the rubber and its flag matter only when the corner has a gap
         if getattr(cs.susp, f"gap_{c}") not in (None, 0):
             need.update({f"susp.{p}_{c}": getattr(cs.susp, f"{p}_{c}") for p in ("gap_flag", "rubber")})
+    for a in "fr":                  # a live third rubber needs its flag
+        if 0 < (getattr(cs.susp, f"gap_third_{a}") or 0) < 0.5 and getattr(cs.susp, f"rubber_third_{a}") is not None:
+            need[f"susp.gap_flag_third_{a}"] = getattr(cs.susp, f"gap_flag_third_{a}")
     a = cs.aero
     if a.drs_336 == 1:
         need.update({f"aero.drs_{c}": getattr(a, f"drs_{c}") for c in range(337, 342)})
@@ -359,15 +363,6 @@ def check_car(cs):
     missing = sorted(k for k, v in need.items() if v is None)
     if missing:
         raise ValueError(f"The car file {cs.path} lacks the fields {missing}. A ChassisSim car needs them.")
-
-
-def third_refusal(cs):
-    """Raise ValueError for a third bump rubber that can engage. The model has no third element."""
-    for ax, name in (("f", "front"), ("r", "rear")):
-        gap = getattr(cs.susp, f"gap_third_{ax}") or 0.0
-        if table_live(getattr(cs.susp, f"rubber_third_{ax}")) and 0 < float(gap) < 0.5:
-            raise ValueError(f"The {name} third bump rubber of the car file {cs.path} can engage (gap {float(gap):g} m). "
-                             "The model has no third element yet.")
 
 
 # vp keys that the car model reads. The car record wins for t, kt, Rw, f and the tyre, aero and engine data.

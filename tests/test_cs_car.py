@@ -147,8 +147,8 @@ def build_records(omit=(), over=None):
         add(2, cid, arb(5, cid))                                          # motion ratio coefficients
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)                                       # one byte
-    for cid in range(204, 208):
-        add(6, cid, 1)                                                    # rubber ground-gap flags, one byte
+    for cid in range(204, 210):
+        add(6, cid, 1)                                                    # rubber ground-gap flags (fl..rr, third f/r), one byte
     for cid in (74, 75, 76, 77):
         add(7, cid, (BUMP_X, np.zeros(len(BUMP_X))))                      # bump steer, all zero as shipped
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
@@ -163,7 +163,7 @@ def build_records(omit=(), over=None):
         add(6, cid, 0)
     for cid in (*range(452, 464), 872, 873, 874, 875):
         add(9, cid, (AERO_X, AERO_X, np.zeros(len(AERO_X) ** 2)))
-    for cid in range(31, 36):
+    for cid in range(31, 37):                                            # dampers fl..rr, third f (35), third r (36)
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
     for cid, rows in zip(HARD, (HP_LEFT, HP_RIGHT, HP_LEFT, HP_RIGHT)):
         add(10, cid, (0, np.concatenate([rows[:, 0], rows[:, 1], rows[:, 2]])))   # tag 10: x, y, z columns
@@ -260,14 +260,16 @@ ok("motion ratio coefficients 23-30 read as stored arrays of 5",
 ok("gaps 7-12 read as stored",
    all(abs(getattr(car.susp, f"gap_{n}") - EXPLICIT[7 + i]) < 1e-12
        for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))))
-ok("rubber ground-gap flags 204-207 (fl, fr, rl, rr) read as 1",
-   all(getattr(car.susp, f"gap_flag_{c}") == 1 for c in CORNERS))
+ok("rubber ground-gap flags 204-207 (fl, fr, rl, rr) and 208-209 (third f, third r) read as 1",
+   all(getattr(car.susp, f"gap_flag_{c}") == 1 for c in CORNERS + ("third_f", "third_r")))
 ok("damper velocity in mm/s read as m/s, bump and rebound in N as stored (rebound positive)",
    all(np.allclose(getattr(car.susp, f"damper_{c}")["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
        and np.allclose(getattr(car.susp, f"damper_{c}")["bump"], BUMP, rtol=0, atol=0)
        and np.allclose(getattr(car.susp, f"damper_{c}")["rebound"], REB, rtol=0, atol=0)
        for c in CORNERS)
-   and np.allclose(car.susp.damper_third_f["velocity"], VEL * 1e-3, rtol=0, atol=1e-12))
+   and np.allclose(car.susp.damper_third_f["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
+   and np.allclose(car.susp.damper_third_r["bump"], BUMP, rtol=0, atol=0)
+   and np.allclose(car.susp.damper_third_r["rebound"], REB, rtol=0, atol=0))
 ok("hardpoint block has shape (6, 3), and row i holds point i (left and right sides, right mirrored in y)",
    all(getattr(car.hardpoints, n).shape == (6, 3) for n in ("front_l", "front_r", "rear_l", "rear_r"))
    and np.allclose(car.hardpoints.front_l, HP_LEFT, rtol=0, atol=0)

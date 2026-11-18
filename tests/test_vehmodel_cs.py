@@ -232,8 +232,9 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
         add(9, cid, (AERO_X, AERO_Z, np.zeros(49) if mirror else arb(49, cid)))   # the mirror car has no aero: no lift at the static point
     for cid, ((nx, nz), _) in MAPS.items():
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
-    for cid in range(31, 36):
+    for cid in range(31, 35):
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
+    add(12, 35, (1, arb(6, 35), np.array([])))      # third front damper: empty table, so no third element (task 12)
     for cid, rows in ((49, HP_LEFT), (50, HP_RIGHT), (51, HP_LEFT), (52, HP_RIGHT)):
         add(10, cid, (0, np.concatenate([rows[:, 0], rows[:, 1], rows[:, 2]])))   # tag 10: x column, y column, z column
     for i, c in enumerate(CORNERS):

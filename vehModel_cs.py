@@ -214,6 +214,14 @@ def rubber_gap(cs, c, vp=None):
     return gap
 
 
+def _rubber_law(rub):
+    """Return F(compression): the table of a flag-1 rubber record. Past the table end the force follows the last
+    chord, as ChassisSim does (one point on the last chord is appended before the curve is built)."""
+    x, y = np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]]
+    dx = x[-1] - x[-2]
+    return _curve(np.r_[x, x[-1] + dx], np.r_[y, y[-1] + (y[-1] - y[-2])], ext=1.0)
+
+
 def _rubber(cs, c, vp=None):
     """Return F(xs): the bump rubber force on the wheel [N] at the strut travel xs [m, SX].
     The rubber and its gap sit at the damper. The compression is sm(xs) - gap, with sm the spring travel of the
@@ -225,9 +233,63 @@ def _rubber(cs, c, vp=None):
         return lambda xs: 0.0
     rub = getattr(cs.susp, f"rubber_{c}")
     sm, mr = _mr(getattr(cs.susp, f"mr_{c}"))
-    law = (_curve(np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]], ext=1.0) if rub["flag"] == 1
+    law = (_rubber_law(rub) if rub["flag"] == 1
            else (lambda comp: rub["rate"] * comp))
     return lambda xs: mr(xs) * law(W_RUBBER * _sp((sm(xs) - gap) / W_RUBBER))
+
+
+def _damper_curve(dm, who):
+    """Return F(v): the damper force [N] at the damper velocity v [m/s]. The table is that of the car record dm."""
+    v, bump, reb = np.asarray(dm["velocity"], float), np.asarray(dm["bump"], float), np.asarray(dm["rebound"], float)
+    if v.size < 2 or not (np.any(bump) or np.any(reb)):
+        raise ValueError(f"The damper of {who} has no table. The car model needs one.")
+    if v[0] != 0 or np.any(np.diff(v) <= 0):
+        raise ValueError(f"The damper table of {who} must start at velocity 0 and increase.")
+    return _curve(np.r_[-v[:0:-1], v], np.r_[-reb[:0:-1], bump], ext=2.0)
+
+
+def third_element(cs, a, vp=None):
+    """Return None for an axle without a live third (heave) element, else (sm, mr, spring, damper).
+    The third element sits on the mean wheel travel w of the two wheels of axle a. Its heave is h = sm(w)
+    with the motion-ratio law of the cid 29 / 30 record, and mr = sm'. The F2 log fits this: the third position is
+    1.198 times the mean rear damper travel, and 1.198 is 1 / the rear corner ratio of 0.8347.
+    spring(h) is the force of the third spring and the third bump rubber [N]. damper(u) is the damper force at the
+    heave rate u, or None without a table. The wheels share the force by virtual work: each gets 0.5 F mr(w).
+    The spring acts on the heave from static (the corner springs keep the static corner load).
+    The rubber gap follows the rule of rubber_gap. Flag 1 is the gap from static.
+    Flag 0 is the gap minus the static heave (the static wheel travel of the corner springs).
+    A gap of 0 or at least 0.5 m means no rubber. An axle without spring rate, rubber and damper table gives None."""
+    su = cs.susp
+    rate = float((getattr(su, f"spring_third_{a}") or {}).get("rate", 0.0))
+    gap, rub = float(getattr(su, f"gap_third_{a}") or 0.0), getattr(su, f"rubber_third_{a}")
+    live_r = (0 < gap < 0.5 and rub is not None and (table_live(rub) if rub["flag"] == 1 else bool(rub["rate"])))
+    dm = getattr(su, f"damper_third_{a}", None)
+    live_d = dm is not None and bool(np.any(dm["bump"]) or np.any(dm["rebound"]))
+    if not (rate or live_r or live_d):
+        return None
+    sm, mr = _mr(getattr(su, f"mr_third_{a}"))
+    law = None
+    if live_r:
+        flag = getattr(su, f"gap_flag_third_{a}")
+        if flag not in (0, 1):
+            raise ValueError(f"The car file {cs.path} holds a third bump rubber gap flag (cid 208 or 209) other than 0 or 1.")
+        if flag == 0:
+            if vp is None:
+                raise ValueError(f"The rubber gap of the third element {a} needs the vehicle parameters (gap flag 0).")
+            d0 = []
+            for c in (a + "l", a + "r"):
+                k = getattr(su, f"spring_{c}")
+                if not k["rate"]:
+                    raise ValueError(f"The spring of corner {c} has no rate. The static deflection for the third rubber gap needs one.")
+                m0 = float(np.atleast_1d(getattr(su, f"mr_{c}"))[0])
+                d0.append((getattr(vp, f"m_c_{c}") * vp.g / (m0 * k["rate"]) - k["preload"]) / m0)    # wheel travel
+            gap -= sm(0.5 * (d0[0] + d0[1]))
+        base = (_rubber_law(rub) if rub["flag"] == 1
+                else (lambda comp: rub["rate"] * comp))
+        law = lambda h: base(W_RUBBER * _sp((h - gap) / W_RUBBER))
+    # ponytail: the third spring acts on the heave from static. Its preload and x / y table are unused, and the corners keep F0.
+    spring = lambda h: rate * h + (law(h) if law else 0.0)
+    return sm, mr, spring, (_damper_curve(dm, "the " + ("front" if a == "f" else "rear") + " third element") if live_d else None)
 
 
 def poly_sx(p, x, lo, hi):
@@ -326,16 +388,22 @@ def vehModel_cs(ctx):
         spring = (F0 / mr0 + sp["rate"] * sm(xs[c])) * mr(xs[c])
         rubber = _rubber(cs, c, vp)(xs[c])
         dm = getattr(cs.susp, f"damper_{c}")
-        v, bump, reb = np.asarray(dm["velocity"], float), np.asarray(dm["bump"], float), np.asarray(dm["rebound"], float)
-        if v.size < 2 or not (np.any(bump) or np.any(reb)):
-            raise ValueError(f"The damper of corner {c} has no table. The car model needs one.")
-        if v[0] != 0 or np.any(np.diff(v) <= 0):
-            raise ValueError(f"The damper table of corner {c} must start at velocity 0 and increase.")
-        key = (v.tobytes(), bump.tobytes(), reb.tobytes())
+        key = (np.asarray(dm["velocity"], float).tobytes(), np.asarray(dm["bump"], float).tobytes(),
+               np.asarray(dm["rebound"], float).tobytes())
         if key not in dampers:
-            dampers[key] = _curve(np.r_[-v[:0:-1], v], np.r_[-reb[:0:-1], bump], ext=2.0)
+            dampers[key] = _damper_curve(dm, f"corner {c}")
         fd = mr(xs[c]) * dampers[key](mr(xs[c]) * xsdot[c])
         fzs[c] = spring + fd + rubber
+    for a, (c1, c2) in (("f", ("fl", "fr")), ("r", ("rl", "rr"))):     # third element: a heave force shared by the two wheels
+        th = third_element(cs, a, vp)
+        if th is None:
+            continue
+        sm3, mr3, f_sp, f_dm = th
+        wm = 0.5 * (xs[c1] + xs[c2])                                          # mean wheel travel
+        wdot = 0.5 * (xsdot[c1] + xsdot[c2])
+        F3 = f_sp(sm3(wm)) + (f_dm(mr3(wm) * wdot) if f_dm else 0.0)
+        for c in (c1, c2):
+            fzs[c] = fzs[c] + 0.5 * F3 * mr3(wm)
     # Anti-roll bars. A ChassisSim bar rate acts like a wheel rate in roll (axle roll stiffness k t^2 / 2), so each
     # wheel gets k/2 (xs_l - xs_r). The GP3 roll in the ChassisSim log (front damper difference 1.9 mm at 2.5 g)
     # fits this form. The C3 form k (xs_l - xs_r) of the 4EM car gives half that roll.

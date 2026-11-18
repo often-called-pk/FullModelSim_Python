@@ -228,8 +228,8 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
         add(2, cid, np.array([1.0 + 0.05 * np.sin(cid), 0.0, 0.0, 0.0, 0.0]))   # constant motion ratio, near 1
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)
-    for cid in range(204, 208):
-        add(6, cid, 1)                                   # rubber gap flags: 1 = ground gap
+    for cid in range(204, 210):
+        add(6, cid, 1)                                   # rubber gap flags (fl..rr, third f/r): 1 = ground gap
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
     add(2, 110, GEARS)
     for cid in (127, 131, 135):
@@ -424,13 +424,15 @@ def car_file(name, **kw):
     return path
 
 
-# (1) third bump rubber: a live front rubber with a 1 cm gap is refused, gap 0 and 1.0 m pass
-hit, msg = refusal(build, car_file("third_live.car", over={11: 0.01}))
-ok(f"live front third rubber (gap 0.01 m) raises ValueError naming the front axle and the third element: {msg[:60]!r}",
-   hit and "front third bump rubber" in msg and "third element" in msg)
+# (1) third bump rubber (task 12): a live front rubber with a 1 cm gap builds with a front third element; gap 0
+# and 1.0 m build without one
+ctx_third = build(car_file("third_live.car", over={11: 0.01}))
+ok(f"live front third rubber (gap 0.01 m, flag 208 = 1) builds (nx {ctx_third.m23.nx}) with a front third element",
+   ctx_third.m23.nx == 23 and V.third_element(ctx_third.cs, "f", ctx_third.vp) is not None)
 for gap in (0.0, 1.0):
-    hit, msg = refusal(build, car_file(f"third_gap_{gap:g}.car", over={11: gap}))
-    ok(f"front third gap {gap:g} m with a live rubber table passes", not hit)
+    ctx_gap = build(car_file(f"third_gap_{gap:g}.car", over={11: gap}))
+    ok(f"front third gap {gap:g} m with a live rubber table builds (the live front damper keeps a third element)",
+       ctx_gap.m23.nx == 23)
 
 # (2) vp_overrides: keys the car path does not read are refused; an allowed key passes and changes the build
 hit, msg = refusal(build, BASE, vp_overrides={"Cd_scale": 1.1, "LMUY": 0.95, "k_arb_f": 1.0e4})
@@ -508,9 +510,9 @@ def vendor(cs_dir):
     ok(f"GP3 2013 builds, front third gap {gap3:g} m passes, result stem holds '_car_{slug}' ({name})",
        gap3 >= 0.5 and f"_car_{slug}" in name)
 
-    hit, msg = refusal(build, str(f2[0]), circuit="chassissim:Adelaide", chassissim_dir=cs_dir)
-    ok(f"Formula 2 car raises the third-element ValueError naming the rear axle: {msg[:70]!r}",
-       hit and "rear third bump rubber" in msg and "third element" in msg)
+    c_f2 = build(str(f2[0]), circuit="chassissim:Adelaide", chassissim_dir=cs_dir)
+    ok(f"Formula 2 car builds with a rear third element: nx {c_f2.m23.nx}",
+       c_f2.m23.nx == 23 and V.third_element(c_f2.cs, "r", c_f2.vp) is not None)
 
     c_gt3 = build(str(gt3[0]), circuit="chassissim:Adelaide", chassissim_dir=cs_dir)
     ok(f"GT3 car builds: nx {c_gt3.m23.nx}, ATD off", c_gt3.m23.nx == 23 and c_gt3.pt.ATD == 0)
