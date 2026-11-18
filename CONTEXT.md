@@ -79,3 +79,17 @@ _Avoid_: bumps, bump file, road roughness
 **Gear envelope**:
 The largest wheel force that the engine can give at each speed, over all gears. It replaces a gear choice, which the nonlinear program cannot make.
 _Avoid_: CVT, ideal gearbox, gear map
+
+**Differential type**:
+The rule that splits the drive force between the two driven wheels: open, super, spool, custom map or Detroit. The car file gives it per axle. The faster wheel always loses force.
+_Avoid_: diff mode, LSD setting
+
+### Suspension
+
+**Roll-centre height**:
+The height of the roll centre above the contact patches of an axle. It changes with the wheel travel.
+_Avoid_: stored roll-centre value, roll axis height
+
+**Dynamic camber**:
+The camber of a wheel against the road. It is the static camber, plus the camber change from the wheel travel, plus the body roll angle.
+_Avoid_: camber gain, kinematic camber

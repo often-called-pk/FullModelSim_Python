@@ -69,7 +69,7 @@ default because the SX graph is large (peak commit ~8 GB at BCN N=465).
 Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (58 today) are plain scripts whose assertions run at module top level (no
+files (67 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -129,6 +129,15 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_chassissim_circuit.py`: ChassisSim phase 1 T1. Readers on synthetic files (CRLF, tabs, spaces in names, NaN and short files). `load_circuit`: k sign flip, grip, bump and alt paths and flags, case-insensitive lookup, orphans without an ini block, listed files kept out of the orphans. `install_dir`, the `cs_<name>` stems, init file names, the plot folder, the grip product with LMUX / LMUY, a fake-solver MLTP build. Vendor section (SKIP without `CHASSISSIM_DIR`): every ini circuit with a curvature file (12 of 14) loads, Eastern Creek 971 points to 3824.181 m, a QSS lap
 - `test_read_ld.py`: ChassisSim phase 1 T2. Synthetic `.ld` files: values raw/100, units, t, lap ids, map forms and errors. Also an int factor without wrap, a channel at another rate and a list that ends on the data pointer. Vendor section (SKIP without `CHASSISSIM_DIR`): all 14 shipped `.ld` read, GP3 lap 1 vs its `.ldx`, corr(ay, v^2 k) > 0.99
 - `test_carfile.py`: ChassisSim phase 1 T3. Synthetic records of every tag round-trip with exact float bits. Every cut of a synthetic file raises ValueError or decodes to a record prefix. Bad counts, unknown tags and the encode refusals raise ValueError. `write` never overwrites. Vendor section (SKIP without `CHASSISSIM_DIR`): all 31 shipped files round-trip byte for byte. The GP3 2013 variants pin the measured record sets (the frontdamper20000 names do not describe all of their content)
+- `test_cs_car.py`: ChassisSim phase 2 T1. A synthetic car file of every `CAR_FIELDS` cid decodes into the car record (units, tyre tables 3 to 5, hardpoints, bump steer, gap flags). `car_vp` is strict: a missing field raises ValueError. A bump steer table that is not zero raises at `suspension_curves`. Vendor section: the GP3 record and its static loads
+- `test_vehmodel_cs.py`: ChassisSim phase 2 T3. It builds a synthetic car with a fake IPOPT. Tyre pins: load floor, slip curve tail, 0.9 lateral cap, locked wheel, and Fx peak = Fy peak x table 4. Chassis pins: springs with a non-constant motion ratio, bump rubbers, dampers and bars. Other pins: aero axis order, gear envelope, brake split, refusals and the dynamic camber with roll. Vendor section: the GP3 builds with nx 23 and static loads equal to the corner weights
+- `test_cs_qss.py`: ChassisSim phase 2 T5. It checks `build_envelope_cs` against hand formulas. Pins: the lateral cap, the axle forces through the motion-ratio law, the roll centre from the curves and the aero clamp. Also brake bias 0 and 1, the drive table = NLP gear envelope, and a repeated call below 0.5 s. Vendor section: GP3 QSS lap within 15 % of 76.742 s
+- `test_cs_wiring.py`: ChassisSim phase 2 T4. It pins the car refusals (message text), the `_car_` stems and the `car_file` tag. A saved car result seeds the next car solve with full+duals, and a 4EM result seeds it cold. Also `seed_m23`, `limit_prices` and the `MLTP_screen` stem for a car
+- `test_cs_kinematics.py`: ChassisSim phase 2 T6. Front-view solve: parallel arms give no camber change and a roll centre on the ground. A swing arm gives its camber gain. A geometry with no solution and a flat datum raise ValueError. Table 4 decode, dynamic camber with roll in the model, QSS camber sensitivity. Vendor section: GP3 roll centres against the log (median within 7 mm), rear camber gain 0.0233 deg/mm
+- `test_cs_diff.py`: ChassisSim phase 2 T7. The five rear differential types. Every type: F_rl + F_rr = P, the faster wheel loses, mirror symmetry. The one-way map: deadband, lock 0.1 P, never below 0. Spool K dv, Detroit slope at most K_SPOOL, super split by the Fx capacity. Types 0, 6 and None raise ValueError. Vendor section: the GP3 map
+- `test_axle_balance.py`: ChassisSim phase 2 T9. The `balance` channel equals the hand formula on the stored Sturn optimum (fake IPOPT), both physics, the plot trace, and a GP3 build
+- `test_cs_aero.py`: ChassisSim phase 2 T8. Map scale (peak 1 times the scalar, zero-map rule). Sideslip, DRS and speed corrections against closed forms, in that order. The DRS gate (wrap, empty zone), the sideslip sign constant and the refusals. A car without corrections keeps its graph. Vendor section: the GP3 map peaks 3.48 and 0.96
+- `test_cs_rubber.py`: ChassisSim phase 2 T11. Rubber gap flag 1 (gap as stored) and flag 0 (gap less the static deflection, a hand value), gap 0 gives no rubber node. NLP and QSS share the gap. Flag 2, a zero spring rate and a third-spring rate raise ValueError. Vendor section: the GP3, F2 and GT3 gaps, the F3 refusal, the F2 and GT3 builds
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6). F2: `FORWARD` sends a key only when set and not default, and `mode='qss'` drops the NLP-only keys and runs `MLTP_screen`. `RunConfig` folds `pt_overrides` into `vp_overrides`, and `setup_tag()` == the MLTP tag. `result_paths`, `freeze_support` first in `__main__`, the Advanced-tab combos and the More options box. 4 Motors ticks Homotopy
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -426,6 +435,31 @@ no periodic start. The `Base Grip factor` sets `ctx.grip`. vehModel and the QSS 
 alt file paths (the model reads them in phase 3). Stems, init files and plot folders use `importfile.circuit_slug`:
 `cs_<name>`. Eastern Creek, default 4EM call (Linux, MUMPS, cold): the 7-state init ends `Error_In_Step_Computation` after
 1027 iterations. The 23-state solve takes 85 iterations to 86.970 s (100 s wall, peak RSS 2.3 GB). QSS 91.024 s (+4.7%).
+ChassisSim cars (phase 2, 2026-11-18, `vehModel_cs.py`, `functions/chassissim.load_car`). `car='chassissim:<path>'` builds the
+car of a `.car` file in place of the 4EM car. It needs `physics='corrected'`. A car refuses the options that it cannot honour:
+`start_state='rolling'`, `state_scaling='typical'`, `atd_tbr`, `Electric_4Motors='On'`, an `AeroConfig` other than 'Static',
+`between_knots` other than 'matlab', `collocation='radau'` and a 7-state init `warm_start`. ATD goes Off with one warning, and the
+ladder is 'qss23'. `MLTP_initial`, `optimise_design` and `setup_sweep` refuse a car. The model keeps nx 23 with the inputs
+`T_drive`, `T_brake` and `delta`. Tyre: the peak force F'(Fz) of table 3 at the background temperature, the normalised slip
+curve, a 0.9 lateral cap and a load floor. Table 5 scales F' at the dynamic camber. Table 4 is the Fx camber factor: the Fx peak
+is the Fy peak times table 4 (ChassisSim log, 2778 samples). Engine: a smooth maximum over the gears. Aero: the ride-height
+maps, scaled to peak 1 and multiplied by the car scalars (cids 121, 122). Then come the sideslip correction, single DRS by zone
+and the speed correction. Suspension: the motion-ratio law, springs, damper tables, bump rubbers at the damper and bars of k/2
+per wheel. A rubber gap with flag 1 is the compression from static. Flag 0 takes off the static spring deflection less the
+preload. A gap of 0 means no rubber. A front-view solve of the hardpoints gives the roll-centre height above the contact
+patches and the camber against the wheel travel. The ground datum comes from the stored roll-centre heights (cids 55, 59, 63,
+67). The dynamic camber adds the body roll angle. The rear differential follows the file: open, super, spool, custom map or
+Detroit. The QSS (`ggv.build_envelope_cs`) uses the same functions, without DRS. Result stems get `_car_<file name>` before the
+physics part, and the knob `car_file` (absolute path) sets the tag. A warm start between the 4EM car and a ChassisSim car starts
+cold. These raise ValueError: bump steer that is not zero, a geometry with no solution over +-50 mm, a gap flag other than 0
+or 1. So do a third spring with a rate (the F3) and a differential type outside 1 to 5. A steer correction, a roll split, 2-D
+steer maps, wake maps and multiple DRS zones raise too. No shipped car uses them, and their form is not decoded. GP3 2013 at Eastern Creek
+(MUMPS, cold, qss23): the fixed line (`n_bounds=(-0.05, 0.05)`) takes 451 iterations to 75.543 s. ChassisSim gives 76.742 s
+(-1.56 %). Overlay: corr ay 0.995, RMS speed 2.79 m/s, RMS ay 1.64 m/s^2. Free line 72.009 s, QSS 74.094 s. ChassisSim uses only
+0.80 of the tyre capacity at its apexes. Its apex speed comes from a feasibility search on a transient with a driver model and
+bumps. The optimal control has no such margin. The F2 and GT3 cars build at Adelaide, but their fixed-line laps do not match
+ChassisSim yet. F2: 64.057 s against 72.084 s. GT3: 106.485 s against 77.602 s. The cause is not known. Not built: bump steer,
+steer camber from castor, third springs, rubber hysteresis and the stability index (phase 6).
 Track QA (2026-10-18, `functions/track_qa.py`): every real track goes through `check_track` at load
 (turning, closure, sign agreement with x,y, spacing, monotonic s). An error raises ValueError (no bypass
 kwarg), other issues give one warning. BCN warns (turning -1.023 laps): kept as is, the parity gates pin its
