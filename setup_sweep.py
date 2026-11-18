@@ -188,16 +188,17 @@ def _model_hash(circuit, circuits_dir="Circuits", data_dir="Data", tyre_set="MF2
     data = [os.path.join(data_dir, "DATA_AA.mat")]
     if circuit in _REAL_CIRCUITS:
         data.append(os.path.join(circuits_dir, _REAL_CIRCUITS[circuit]))
-    from functions import chassissim
-    if circuit.startswith(chassissim.PREFIX):
-        cs = chassissim.install_dir(chassissim_dir)
-        data += [chassissim.load_circuit(circuit[len(chassissim.PREFIX):], cs).curvature,
-                 os.path.join(cs, "Circ_prop.ini")]
-        data = [d for d in data if os.path.isfile(d)]
     if str(tyre_set).startswith("file:"):
         data.append(tyre_set[5:])
-    return S.fingerprint([S.model_hash(_CODE_FILES, root=_REPO),
-                          S.model_hash(data, root=os.getcwd())])
+    parts = [S.model_hash(_CODE_FILES, root=_REPO), S.model_hash(data, root=os.getcwd())]
+    from functions import chassissim
+    if circuit.startswith(chassissim.PREFIX):
+        # The files of a ChassisSim circuit, by their names inside the install folder. So the hash does not
+        # depend on where the install folder is.
+        cs = chassissim.install_dir(chassissim_dir)
+        tr = chassissim.load_circuit(circuit[len(chassissim.PREFIX):], cs)
+        parts.append(S.model_hash([os.path.relpath(tr.curvature, cs), "Circ_prop.ini"], root=cs))
+    return S.fingerprint(parts)
 
 
 def _casadi_version():

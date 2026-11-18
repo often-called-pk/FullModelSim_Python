@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import io
 import os
+import shutil
 import tempfile
 import warnings
 
@@ -363,6 +364,10 @@ with tempfile.TemporaryDirectory() as tmp:
     with open(ini_p, "wb") as f:
         f.write(ini_bytes)
     ok("model hash: back to h0 after restoring Circ_prop.ini", _model_hash(g12, chassissim_dir=gdir) == h0)
+    with tempfile.TemporaryDirectory() as moved:
+        gcopy = shutil.copytree(gdir, os.path.join(moved, "elsewhere"))
+        ok("model hash: a copy of the install in another folder gives the same hash",
+           _model_hash(g12, chassissim_dir=gcopy) == h0)
 
     nan_root = os.path.join(tmp, "NanInstall")
     os.makedirs(os.path.join(nan_root, "Circuits"))

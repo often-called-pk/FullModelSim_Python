@@ -422,7 +422,7 @@ circuit from the ChassisSim install folder: the kwarg `chassissim_dir` (a route 
 with `bp_<name>.dat` and `alt_rcamb_<name>.txt`. ChassisSim curvature is right-turn positive, so the loader negates k. The
 traces do not close (Eastern Creek turns -0.646 laps in file sign). So the track keeps s and k only, with no x, y, no closure check and
 no periodic start. The `Base Grip factor` sets `ctx.grip`. vehModel and the QSS envelope multiply their own copy of LMUX and LMUY by it
-(skipped at 1.0), so `ctx.mf` keeps the units of `vp_overrides`. `load_circuit` also returns the bump and
+(skipped at 1.0), so `ctx.mf` keeps the units of `vp_overrides`. The 7-state init ignores it (a seed only). `load_circuit` also returns the bump and
 alt file paths (the model reads them in phase 3). Stems, init files and plot folders use `importfile.circuit_slug`:
 `cs_<name>`. Eastern Creek, default 4EM call (Linux, MUMPS, cold): the 7-state init ends `Error_In_Step_Computation` after
 1027 iterations. The 23-state solve takes 85 iterations to 86.970 s (100 s wall, peak RSS 2.3 GB). QSS 91.024 s (+4.7%).
