@@ -69,7 +69,7 @@ default because the SX graph is large (peak commit ~8 GB at BCN N=465).
 Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (55 today) are plain scripts whose assertions run at module top level (no
+files (57 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -126,6 +126,8 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_tir.py`: C5. Reader: sections, comments, quotes, D exponent, CRLF. `tyre_set='file:'` round trip of MF205 (graph hash equal), FNOMIN, overrides win. Errors and warnings (FNOMIN missing, 0 or text). Git with core.ignorecase=false: no `.tir` of any case tracked, and the ignore rule takes `.TIR`. `mf_pressure` floats and the MF 6.1 factors at +10%. Full-model sites: SVx / SVy unmoved, camber stiffness, INFLPRES as a symbol. QSS lap at +10% == lap at the mu factors. Two same-name files get two tags. Parity export
 - `test_telemetry_logs.py`: E5. `read_monster` round trip and sign pair. `read_csv`: map forms, JSON map, units-row check, metadata rows, beacons (also in ms), streaming peak. `split_laps`. `project` on BCN / Sturn: |s err| < 0.3 m, |n err| < 0.03 m, centreline guard. `time_delta`. `overlay_report`: lap pick, panels, sign warning. Synthetic data, no solve, no `Data/DATA_AA.mat`
 - `test_correlate.py`: E6-E8. `gamma`, and `identifiable` (it refuses LFZO and Fz0_shift). `grip_fit` on QSS logs: LMUY within 0.01, LMUX within 0.03 noise free. `check_ax` and NaN dropouts. `drag_fit`: exact with ax, torque-scale error. `lift_fit`: matlab refused, corrected equilibria, a NaN dropout. A fit model at Cd_scale or Cl_scale 1.2 gives the same absolute value. `run_stage` + ledger: frozen stages, stale marks, another physics or config refused. Import without casadi. `nlp_forecast`: old values from the model (INFLPRES, alpha_FL), and V9
+- `test_chassissim_circuit.py`: ChassisSim phase 1 T1. Readers on synthetic files (CRLF, tabs, spaces in names, NaN and short files). `load_circuit`: k sign flip, grip, bump and alt paths and flags, case-insensitive lookup, orphans without an ini block, listed files kept out of the orphans. `install_dir`, the `cs_<name>` stems, init file names, the plot folder, the grip product with LMUX / LMUY, a fake-solver MLTP build. Vendor section (SKIP without `CHASSISSIM_DIR`): every ini circuit loads, Eastern Creek 971 points to 3824.181 m, a QSS lap
+- `test_read_ld.py`: ChassisSim phase 1 T2. Synthetic `.ld` files: values raw/100, units, t, lap ids, map forms and errors. Also an int factor without wrap, a channel at another rate and a list that ends on the data pointer. Vendor section (SKIP without `CHASSISSIM_DIR`): all 14 shipped `.ld` read, GP3 lap 1 vs its `.ldx`, corr(ay, v^2 k) > 0.99
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6). F2: `FORWARD` sends a key only when set and not default, and `mode='qss'` drops the NLP-only keys and runs `MLTP_screen`. `RunConfig` folds `pt_overrides` into `vp_overrides`, and `setup_tag()` == the MLTP tag. `result_paths`, `freeze_support` first in `__main__`, the Advanced-tab combos and the More options box. 4 Motors ticks Homotopy
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -412,6 +414,16 @@ name is treated as **synthetic** and its curvature
 is generated analytically by `_synthetic_curvature` (`Straight`, `Hairpin`, `Sturn`, `Circle`,
 `ZigZag`, `ZigZagMirror`, `VirtualTrack`), no `.mat` needed. Guard: if `ATD` **and**
 `Electric_4Motors` are both `On`, it forces `ATD=Off` with a warning.
+ChassisSim circuits (phase 1, 2026-11-18, `functions/chassissim.py`, pinned by `tests/test_chassissim_circuit.py`). The
+program spec is `docs/superpowers/specs/2026-11-18-chassissim-integration-design.md`. `circuit='chassissim:<name>'` reads a
+circuit from the ChassisSim install folder: the kwarg `chassissim_dir` (a route key), else the env `CHASSISSIM_DIR`. The name is the
+`Circuit name` of `Circ_prop.ini` (case-insensitive). Else it is `Circuits/tr_<name>.txt` of a circuit without an ini block,
+with `bp_<name>.dat` and `alt_rcamb_<name>.txt`. ChassisSim curvature is right-turn positive, so the loader negates k. The
+traces do not close (Eastern Creek turns -0.646 laps). So the track keeps s and k only, with no x, y, no closure check and
+no periodic start. The `Base Grip factor` multiplies `ctx.mf.LMUX` and `LMUY` (skipped at 1.0). `load_circuit` also returns the bump and
+alt file paths (the model reads them in phase 3). Stems, init files and plot folders use `importfile.circuit_slug`:
+`cs_<name>`. Eastern Creek, default 4EM call (Linux, MUMPS, cold): the 7-state init ends `Error_In_Step_Computation` after
+1027 iterations. The 23-state solve takes 85 iterations to 86.970 s (100 s wall, peak RSS 2.3 GB). QSS 91.024 s (+4.7%).
 Track QA (2026-10-18, `functions/track_qa.py`): every real track goes through `check_track` at load
 (turning, closure, sign agreement with x,y, spacing, monotonic s). An error raises ValueError (no bypass
 kwarg), other issues give one warning. BCN warns (turning -1.023 laps): kept as is, the parity gates pin its
@@ -470,7 +482,11 @@ merged last so it beats every default, the screening preset and the warm-start r
   `split_laps(t, dist, beacon, gap, drop)` and `project(log, track)`: s and n on the centreline, n left positive, no shift
   or rotation estimate. `project` warns when the median |n| of the moving samples is above 8 m. Last, `time_delta(sim, lap)`
   and `overlay_report(data, log, path, lap=None, step=1.0)`: 5 panels on s, and a warning when the `corr` of ay or delta is
-  below 0. No AiM channel map ships (signs unverified). `correlate.py` (E6 to E8, 2026-10-28, pinned by
+  below 0. No AiM channel map ships (signs unverified). `read_ld(path, channel_map=None)` (ChassisSim phase 1, pinned by
+  `tests/test_read_ld.py`) reads a MoTeC `.ld` log. It reads int16 and int32 channels with shift 0, mul 1 and scale 1, one
+  streamed read per mapped channel. `LD_MAP` gives the `read_monster` keys plus r and lap, so `overlay_report` takes a ChassisSim log
+  (s = Lap Distance) without `project`. Signs measured on the GP3 Eastern Creek logs (Table C of `docs/logging_spec.md`): ay
+  left positive, steer and yaw rate right positive. The logs hold no positions. `correlate.py` (E6 to E8, 2026-10-28, pinned by
   `tests/test_correlate.py`) uses numpy and scipy, and casadi only in `nlp_forecast`. `STAGES` = grip, drag, downforce.
   `run_stage(stage, log, circuit, ledger=None, link=True, lap=None, tags=None, **useropts_kwargs)` fits one stage with the
   QSS. It appends a record to a JSON ledger. One ledger holds one car (circuit, config such as Static_ATDOn_EM4Off,
