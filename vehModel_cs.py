@@ -37,8 +37,9 @@ def _smin(a, b, e):
 
 
 def _clamp(v, lo, hi, e):
-    """Keep v inside [lo, hi], smoothly (error e/2 at the edges)."""
-    return _smin(_smax(v, lo, e), hi, e)
+    """Keep v smoothly inside [lo + e, hi - e], so that it stays inside the grid [lo, hi] of a curve.
+    The error is below e within e of an edge, and tiny farther in."""
+    return _smin(_smax(v, lo + e, e), hi - e, e)
 
 
 def _sp(z):
@@ -47,8 +48,11 @@ def _sp(z):
 
 
 def _curve(x, y, ext=0.0, n=200):
-    """Return f(v): a C2 curve through (x, y). PCHIP samples on a uniform grid feed a cubic B-spline.
-    ext > 0 extends both ends on the end slope by ext x range. Else the end values hold. v is clamped to the grid."""
+    """Return f(v): a C2 curve through (x, y). PCHIP samples feed a cubic B-spline.
+    Inside the table the node step is at most half the smallest table spacing (n nodes at least), and every table
+    abscissa and the origin are nodes, so the knees of the table stay.
+    ext > 0 extends both ends on the end slope by ext x range, on a coarse grid. Else the end values hold.
+    v is clamped inside the grid, because a casadi B-spline returns 0 outside its grid."""
     x, y = np.asarray(x, float), np.asarray(y, float)
     o = np.argsort(x, kind="stable")
     x, y = x[o], y[o]
@@ -57,11 +61,12 @@ def _curve(x, y, ext=0.0, n=200):
     p = PchipInterpolator(x, y)
     lo, hi = x[0], x[-1]
     e = ext * (hi - lo)
-    xs = np.linspace(lo - e, hi + e, n)
-    # The table abscissae and the origin are nodes, so a knee of the table stays. Grid points next to a node go.
-    nodes = np.r_[x[(x > lo) & (x < hi)], [0.0] if lo - e < 0 < hi + e else []]
-    if nodes.size:
-        xs = np.union1d(xs[np.min(np.abs(xs[:, None] - nodes[None, :]), axis=1) > 0.05 * (xs[1] - xs[0])], nodes)
+    step = min((hi - lo) / (n - 1), 0.5 * np.min(np.diff(x)))
+    xs = np.linspace(lo, hi, int(np.ceil((hi - lo) / step)) + 1)
+    if e > 0:
+        xs = np.r_[np.linspace(lo - e, lo, 20)[:-1], xs, np.linspace(hi, hi + e, 20)[1:]]
+    nodes = np.r_[x, [0.0] if lo - e < 0 < hi + e else []]
+    xs = np.union1d(xs[np.min(np.abs(xs[:, None] - nodes[None, :]), axis=1) > 0.05 * step], nodes)
     d = p.derivative()
     ys = np.where(xs < lo, y[0] + d(lo) * (xs - lo), np.where(xs > hi, y[-1] + d(hi) * (xs - hi), p(np.clip(xs, lo, hi))))
     lo, hi = lo - e, hi + e
@@ -79,18 +84,20 @@ def _surf(tab, e=5e-4):
 
 def _slip_curve(T, cap=None):
     """Return h(v) = fn(v)/v for the normalised slip table of a tyre. fn is odd, so h is even and positive.
-    cap clips the table values (the lateral cap). The table gets two more points on its last slope, then fn holds.
-    Past S_MAX the curve holds fn, so h = fn / v and the force stays at fn x F'. h(0) = fn'(0)."""
+    The table gets two more points on a falling or flat last slope, then fn holds. cap clips fn (the lateral cap).
+    Past S_MAX the force holds at fn x F', because c = min(v, S_MAX) and h = fn(c) / v x c. h(0) = fn'(0)."""
     x, y = np.asarray(T["slip_x"], float), np.asarray(T["slip_y"], float)
-    keep = np.r_[True, np.diff(x) > 0]
+    if np.any(np.diff(x) < 0):
+        raise ValueError("The slip table of the tyre must have increasing x.")
+    keep = np.r_[True, np.diff(x) > 0]      # exact duplicates go
     x, y = x[keep], y[keep]
     if x.size < 2 or x[0] != 0 or y[0] != 0:
         raise ValueError("The slip table of the tyre must start at (0, 0) and have 2 or more points with increasing x.")
-    if cap is not None:
-        y = np.minimum(y, cap)
-    sl, dx = (y[-1] - y[-2]) / (x[-1] - x[-2]), x[-1] - x[-2]
+    sl, dx = min((y[-1] - y[-2]) / (x[-1] - x[-2]), 0.0), x[-1] - x[-2]
     x = np.r_[x, x[-1] + dx, x[-1] + 2 * dx]
     y = np.r_[y, np.maximum(y[-1] + sl * dx, 0.05), np.maximum(y[-1] + 2 * sl * dx, 0.05)]
+    if cap is not None:
+        y = np.minimum(y, cap)
     p = PchipInterpolator(np.r_[-x[:0:-1], x], np.r_[-y[:0:-1], y])
     sg = np.linspace(0.0, S_MAX, 201)
     fn = p(np.minimum(sg, x[-1]))
@@ -98,8 +105,8 @@ def _slip_curve(T, cap=None):
     h[0], h[1:] = float(p.derivative()(0.0)), fn[1:] / sg[1:]
     f = ca.interpolant("slip", "bspline", [sg], h)
 
-    def hv(v):                  # v >= 1e-3 in the model
-        c = _smax(_smin(v, S_MAX, 4e-3), 0.0, 4e-3)
+    def hv(v):                  # v >= 1e-3 in the model. c stays inside (0, S_MAX), so inside the grid.
+        c = _smin(v, S_MAX, 4e-3)
         return f(c) * c / v
     return hv
 
@@ -124,8 +131,8 @@ def _gear_envelope(cs, R, v):
     """Return (F_env, om_engine) for the wheel speed v [m/s] (SX or float).
     F_env is the smooth maximum over the gears of the drive force: efficiency x torque(engine speed) x ratio / R.
     Below idle the clutch holds the engine at idle. Above the limit a tanh window (2% of the limit) fades the torque.
-    The log-sum-exp overestimates the true maximum by F_ref ln(2) / B_GEAR (0.9% of F_ref) at a gear crossing,
-    and less elsewhere. om_engine is the engine speed of the gears, weighted by their share of F_env. It holds at idle
+    The log-sum-exp overestimates the true maximum by up to F_ref ln(n) / B_GEAR where n gears give nearly equal force
+    (0.9% of F_ref for n = 2 at a gear crossing), and less elsewhere. om_engine is the engine speed of the gears, weighted by their share of F_env. It holds at idle
     under the clutch."""
     e = cs.engine
     te = _curve(e.torque_curve["x"], e.torque_curve["y"])
@@ -143,20 +150,22 @@ def _gear_envelope(cs, R, v):
 
 
 def gear_envelope_numeric(cs, R, v):
-    """F_env [N] at the wheel speeds v [m/s] (numpy array): the function of the NLP, evaluated. One source."""
+    """Return F_env [N] at the wheel speeds v [m/s] (numpy array). It evaluates the function of the NLP, so the QSS and the NLP share one source."""
     x = ca.SX.sym("v")
     fn = ca.Function("F_env", [x], [_gear_envelope(cs, R, x)[0]]).map(int(np.size(v)))
     return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
 
 
-def _rubber(cs, c, mr0):
-    """Return F(xs): the bump rubber force on the wheel [N] at the strut travel xs [m, SX]. The rubber starts at the
-    ground gap. A table (flag 1: damper travel past the gap in m, force in N) gives the law. Else the rate does."""
+def _rubber(cs, c):
+    """Return F(xs): the bump rubber force on the wheel [N] at the strut travel xs [m, SX].
+    The rubber and its gap sit at the damper. The compression is sm(xs) - gap, with sm the spring travel of the
+    motion-ratio law, and the wheel force is mr(xs) x the rubber force. The onset is smooth (softplus, width W_RUBBER).
+    A table (flag 1: compression in m, force in N) gives the law. Else the rate does."""
     rub, gap = getattr(cs.susp, f"rubber_{c}"), float(getattr(cs.susp, f"gap_{c}"))
-    if rub["flag"] == 1:
-        tab = _curve(np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]], ext=1.0)
-        return lambda xs: mr0 * tab(mr0 * W_RUBBER * _sp((xs - gap) / W_RUBBER))
-    return lambda xs: rub["rate"] * mr0 ** 2 * W_RUBBER * _sp((xs - gap) / W_RUBBER)
+    sm, mr = _mr(getattr(cs.susp, f"mr_{c}"))
+    law = (_curve(np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]], ext=1.0) if rub["flag"] == 1
+           else (lambda comp: rub["rate"] * comp))
+    return lambda xs: mr(xs) * law(W_RUBBER * _sp((sm(xs) - gap) / W_RUBBER))
 
 
 def roll_centres(cs):
@@ -250,7 +259,7 @@ def vehModel_cs(ctx):
         mr0 = float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
         F0 = getattr(vp, f"m_c_{c}") * vp.g             # static sprung corner load
         spring = (F0 / mr0 + sp["rate"] * sm(xs[c])) * mr(xs[c])
-        rubber = _rubber(cs, c, mr0)(xs[c])
+        rubber = _rubber(cs, c)(xs[c])
         dm = getattr(cs.susp, f"damper_{c}")
         v, bump, reb = np.asarray(dm["velocity"], float), np.asarray(dm["bump"], float), np.asarray(dm["rebound"], float)
         if v.size < 2 or not (np.any(bump) or np.any(reb)):
@@ -391,11 +400,10 @@ def cs_path_constraints(ca, m, ctx):
 
 def cs_seed_inputs(ctx, m, prof, s):
     """Scaled seed of the three inputs at the stations s [m] from the QSS profile: the tyre force that holds the
-    profile acceleration (ladder.lon_model) goes to T_drive or T_brake, delta is 0."""
-    from functions.ladder import lon_model
-    lon = lon_model(ctx, "m23")
+    profile acceleration (mass and resistance of the car envelope prof['env']) goes to T_drive or T_brake. delta is 0."""
+    env = prof["env"]
     s = np.asarray(s, float).reshape(-1)
     v, ax = np.interp(s, prof["s"], prof["v"]), np.interp(s, prof["s"], prof["ax"])
-    F = lon["M"] * ax + lon["c0"] + lon["c2"] * v * v
+    F = env.M * ax + env.F_res(v)
     u = np.vstack([np.maximum(F, 0.0), np.minimum(F, 0.0), np.zeros_like(v)]) / np.asarray(m.u_s, float)[:, None]
     return np.clip(u, np.asarray(m.u_min)[:, None], np.asarray(m.u_max)[:, None])

@@ -11,7 +11,7 @@ The result is an ESTIMATE, never an optimum: the line is fixed to the
 centreline (n = 0, the track width is not used), and the transient states of
 the 23-state model (suspension, wheel spin, yaw/side-slip dynamics) are absent.
 
-numpy-only at runtime: this module never imports casadi.
+The 4EM path is numpy-only at runtime. The car path (build_envelope_cs) imports casadi.
 
 Modelling choices (mirroring vehModel.py / MLTP.build_path_constraints)
 -----------------------------------------------------------------------
@@ -127,7 +127,7 @@ class Envelope:
     F_drag: np.ndarray = None     # [N]     aero drag on v_grid (diagnostics)
     Fz_front: np.ndarray = None   # [N]     front-axle load, static + aero (no transfer)
     Fz_rear: np.ndarray = None    # [N]     rear-axle load, static + aero (no transfer)
-    F_drive_tab: np.ndarray = None  # [N]     drive force on v_grid (a car's gear envelope); None: torque / power / rpm
+    F_drive_tab: np.ndarray = None  # [N]     drive force on v_grid (a car: its gear envelope). None: torque, power and rpm
     info: dict = field(default_factory=dict)
 
     def F_res(self, v):
@@ -342,7 +342,7 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     docstring for every modelling choice. Cost ~5 ms (numpy, vectorised in v).
     """
     if getattr(ctx, "cs", None) is not None:      # a ChassisSim car has its own tyre, aero and drive data
-        return build_envelope_cs(ctx, v_grid, n_v)
+        return build_envelope_cs(ctx, v_grid)       # a car: 0.1 m/s grid, n_v does not apply
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
     # MF 6.1 pressure (Besselink et al. 2010): the screen reads the peak friction only, so the two mu factors fold into
     # the copy of the grip scales. vehModel cannot do this, because LMUX and LMUY also scale SVx and SVy there.
@@ -478,8 +478,9 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
 # ============================================================================
 # Stage (a) for a ChassisSim car
 # ============================================================================
-def build_envelope_cs(ctx, v_grid=None, n_v=40):
-    """Return the Envelope of a ChassisSim car (ctx.cs), on the speed grid v_grid.
+def build_envelope_cs(ctx, v_grid=None):
+    """Return the Envelope of a ChassisSim car (ctx.cs), on the speed grid v_grid (default: 0.1 m/s steps from 2 m/s
+    to the top speed, so the gear steps of the drive force stay sharp).
 
     It mirrors vehModel_cs quasi-statically. The tyre peak force is F'(Fz) x tyre grip x ctx.grip, with the
     load floor, the static camber factor and the peak of the slip curve. The aero maps are read at the
@@ -488,8 +489,8 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
     The drive force is the gear envelope (the same smooth maximum as the NLP). Brakes: the brake force and
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     """
-    from scipy.interpolate import PchipInterpolator, RectBivariateSpline
-    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, roll_centres, gear_envelope_numeric, _rubber
+    from scipy.interpolate import PchipInterpolator
+    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, roll_centres, gear_envelope_numeric, _rubber, _surf
     import casadi as ca
     vp, cs = ctx.vp, ctx.cs
     grip = getattr(ctx, "grip", 1.0)
@@ -499,7 +500,8 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
     t_f, t_r = geo.track_front, geo.track_rear
     L = vp.l_f + vp.l_r
     v_cap = float(eng.rpm_limit * Rr / np.min(eng.gears))
-    v = np.linspace(2.0, v_cap, int(n_v)) if v_grid is None else np.sort(np.asarray(v_grid, float).reshape(-1))
+    v = (np.linspace(2.0, v_cap, int(round((v_cap - 2.0) / 0.1)) + 1) if v_grid is None
+         else np.sort(np.asarray(v_grid, float).reshape(-1)))
 
     # ---- tyre peak force per corner (lateral and longitudinal) ---------------
     def peak_fn(T):
@@ -523,11 +525,12 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
         return PK[l](0.5 * Fz + dF, lat) + PK[r](0.5 * Fz - dF, lat)
 
     # ---- aero at the quasi-static ride heights (fixed point) -----------------
-    def surf(tab):
-        x, z = np.asarray(tab["x"], float), np.asarray(tab["z"], float)
-        sp = RectBivariateSpline(x, z, np.asarray(tab["data"], float))
-        return lambda a, b: sp.ev(np.clip(a, x[0], x[-1]), np.clip(b, z[0], z[-1]))
-    cla, cda, cab = surf(aero.cla_map), surf(aero.cda_map), surf(aero.balance_map)
+    a_, b_ = ca.SX.sym("a"), ca.SX.sym("b")             # the surfaces of the NLP, evaluated (mapped over the speeds)
+    aero_fn = ca.Function("aero", [a_, b_], [_surf(aero.cla_map)(a_, b_), _surf(aero.cda_map)(a_, b_),
+                                              _surf(aero.balance_map)(a_, b_)]).map(v.size)
+
+    def aero_at(rr, rf):
+        return [np.asarray(o).ravel() for o in aero_fn(rr.reshape(1, -1), rf.reshape(1, -1))]
     off = aero.offset or 0.0
     rho = aero.rho if aero.rho else 1.225
     q = 0.5 * rho * v * v
@@ -536,28 +539,26 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
     kt_f, kt_r = ty["fl"]["kz"] + ty["fr"]["kz"], ty["rl"]["kz"] + ty["rr"]["kz"]
     rh_f0, rh_r0 = 0.5 * (geo.ride_height_fl + geo.ride_height_fr), 0.5 * (geo.ride_height_rl + geo.ride_height_rr)
     xv = ca.SX.sym("x")
-    rub = {c: ca.Function("rub", [xv], [_rubber(cs, c, float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0]))(xv)]).map(v.size)
-           for c in C4}
+    xg = np.linspace(0.0, 0.15, 600)                    # strut travel grid: spring + rubber force of an axle, once
+    F_ax = {}
+    for a, (l, r) in (("f", ("fl", "fr")), ("r", ("rl", "rr"))):
+        fr = ca.Function("rub", [xv], [_rubber(cs, l)(xv) + _rubber(cs, r)(xv)]).map(xg.size)
+        F_ax[a] = (kw[l] + kw[r]) * xg + np.asarray(fr(xg.reshape(1, -1))).ravel()      # increasing in the travel
 
-    def travel(Fa, a):       # strut travel of axle a under the extra axle load Fa: springs and bump rubbers (monotone)
-        l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
-        lo, hi = np.zeros_like(Fa), np.full_like(Fa, 0.2)
-        for _ in range(60):
-            mid = 0.5 * (lo + hi)
-            f = (kw[l] + kw[r]) * mid + np.asarray(rub[l](mid.reshape(1, -1))).ravel() + np.asarray(rub[r](mid.reshape(1, -1))).ravel()
-            lo, hi = np.where(f < Fa, mid, lo), np.where(f < Fa, hi, mid)
-        return 0.5 * (lo + hi)
+    def travel(Fa, a):       # strut travel of axle a under the extra axle load Fa: springs and bump rubbers
+        return np.interp(Fa, F_ax[a], xg)
     rh_f, rh_r = np.full_like(v, rh_f0), np.full_like(v, rh_r0)
     for _ in range(100):
-        Ld = q * cla(rh_r, rh_f)
-        ab = cab(rh_r, rh_f) + off
+        cl_, cd_, ab_ = aero_at(rh_r, rh_f)
+        Ld, ab = q * cl_, ab_ + off
         Ffa, Fra = ab * Ld, (1 - ab) * Ld
         nf, nr = rh_f0 - travel(Ffa, "f") - Ffa / kt_f, rh_r0 - travel(Fra, "r") - Fra / kt_r
         done = max(np.max(np.abs(nf - rh_f)), np.max(np.abs(nr - rh_r))) < 1e-9
         rh_f, rh_r = 0.5 * (rh_f + nf), 0.5 * (rh_r + nr)         # damped
         if done:
             break
-    F_lift, F_drag, AB = q * cla(rh_r, rh_f), q * cda(rh_r, rh_f), cab(rh_r, rh_f) + off
+    cl_, cd_, ab_ = aero_at(rh_r, rh_f)
+    F_lift, F_drag, AB = q * cl_, q * cd_, ab_ + off
     Fz_f = vp.Wfl0 + vp.Wfr0 + AB * F_lift
     Fz_r = vp.Wrl0 + vp.Wrr0 + (1.0 - AB) * F_lift
     M, h_x = float(vp.m), vp.hcg
@@ -596,7 +597,7 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
             cf = axle("f", f, 0.0, False) / bias if bias > 0 else np.inf
             cr = axle("r", r, 0.0, False) / (1.0 - bias) if bias < 1 else np.inf
         return np.minimum(cf, cr)
-    hi_x = 2.0 * (axle("f", Fz_f, 0.0, False) + axle("r", Fz_r, 0.0, False)) / min(bias, 1.0 - bias, 0.5) + 1.0
+    hi_x = 2.0 * (axle("f", Fz_f, 0.0, False) + axle("r", Fz_r, 0.0, False)) + 1.0
     Fx_trac = _bisect_fixed_point(trac_capacity, np.zeros_like(v), hi_x)
     Fx_brk = _bisect_fixed_point(brk_capacity, np.zeros_like(v), hi_x)
 

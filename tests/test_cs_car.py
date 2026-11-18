@@ -136,6 +136,8 @@ def build_records(omit=()):
         add(2, cid, arb(5, cid))                                          # motion ratio coefficients
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)                                       # one byte
+    for cid in range(204, 208):
+        add(6, cid, 1)                                                    # rubber ground-gap flags, one byte
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
     add(2, 110, GEARS)
     for cid, ((nx, nz), _) in MAPS.items():
@@ -234,6 +236,8 @@ ok("motion ratio coefficients 23-30 read as stored arrays of 5",
 ok("gaps 7-12 read as stored",
    all(abs(getattr(car.susp, f"gap_{n}") - EXPLICIT[7 + i]) < 1e-12
        for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))))
+ok("rubber ground-gap flags 204-207 (fl, fr, rl, rr) read as 1",
+   all(getattr(car.susp, f"gap_flag_{c}") == 1 for c in CORNERS))
 ok("damper velocity in mm/s read as m/s, bump and rebound in N as stored (rebound positive)",
    all(np.allclose(getattr(car.susp, f"damper_{c}")["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
        and np.allclose(getattr(car.susp, f"damper_{c}")["bump"], BUMP, rtol=0, atol=0)
@@ -367,6 +371,8 @@ def vendor(cs):
     ok(f"6 gears ({len(c.engine.gears)} read)", len(c.engine.gears) == 6)
     ok("aero maps are 7 x 5 (cla, cda, balance)",
        all(getattr(c.aero, m)["data"].shape == (7, 5) for m in ("cla_map", "cda_map", "balance_map")))
+    ok("rubber ground-gap flags are all 1 (GP3)",
+       all(getattr(c.susp, f"gap_flag_{k}") == 1 for k in CORNERS))
     ok("damper velocities are in m/s, below 1 m/s",
        all(float(np.max(np.abs(getattr(c.susp, f"damper_{k}")["velocity"]))) < 1.0 for k in CORNERS))
 

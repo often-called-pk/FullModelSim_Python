@@ -145,7 +145,8 @@ def _corners(group, base, prefix=""):
 #   tag 7 (x, y)   tag 9 (x, z, data)   tag 11 (preload, rate, x, y)   tag 12 (unused, force)
 # The file stores springs, bars and dampers in SI, so no field needs lbf/in. It stores a ride height in mm
 # and a damper velocity in mm/s.
-# ponytail: skipped the cids that the sheet leaves unnamed (54-68, 94, 95, 97, 126, 150-153). Add one when a task needs it.
+# ponytail: skipped the cids that the sheet leaves unnamed (54, 56, 58, 60, 62, 64, 66, 68, 94, 95, 97, 126, 150-153).
+# Add one when a task needs it.
 CAR_FIELDS = {
     84: ("mass.total", 1.0), 85: ("mass.unsprung_front", 1.0), 86: ("mass.unsprung_rear", 1.0),
     87: ("mass.Ix", 1.0), 88: ("mass.Iy", 1.0), 89: ("mass.Iz", 1.0), 96: ("mass.front_share", 1.0),
@@ -157,6 +158,7 @@ CAR_FIELDS = {
     **{117 + i: (f"geom.ride_height_{c}", MM) for i, c in enumerate(_C4)},
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))},
+    **{204 + i: (f"susp.gap_flag_{c}", 1.0) for i, c in enumerate(_C4)},     # 1 = the gap is measured on the ground
     **_corners("susp", 13, "rubber_"), 17: ("susp.rubber_third_f", 1.0), 18: ("susp.rubber_third_r", 1.0),
     19: ("susp.arb_f", 1.0), 21: ("susp.arb_r", 1.0),
     **_corners("susp", 23, "mr_"), 27: ("susp.mr_arb_f", 1.0), 28: ("susp.mr_arb_r", 1.0),

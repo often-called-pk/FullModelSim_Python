@@ -19,21 +19,23 @@ import tempfile
 import warnings
 from pathlib import Path
 
+import time
+
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from functions import carfile
 from functions.ggv import build_envelope
+B_GEAR = 80.0          # vehModel_cs.B_GEAR, the sharpness of the gear maximum
 from MLTP_screen import MLTP_screen
 import vehModel_cs as VCS
-from vehModel_cs import gear_envelope_numeric, roll_centres
+from vehModel_cs import _surf, roll_centres
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
 G = 9.81
 TMP = tempfile.TemporaryDirectory()
 CIRC = "Synth Ring"
-B_GEAR = 80.0          # vehModel_cs.B_GEAR, the sharpness of the gear maximum
 BRAKE_FORCE = 14000.0  # cid 107 of the synthetic car
 
 
@@ -105,7 +107,8 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-EXPLICIT.update({c: 0.5 + 0.01 * c for c in range(7, 13)})            # suspension gaps
+EXPLICIT.update({c: 0.003 + 0.0005 * (c - 7) for c in range(7, 11)})  # ground gaps at the dampers, 3-4.5 mm
+EXPLICIT.update({c: 0.5 + 0.01 * c for c in range(11, 13)})          # third-element gaps
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
@@ -185,6 +188,8 @@ def build_records(cda_scale=1.0, peak_scale=1.0):
         add(1, cid, v)
     for cid, v in zip((55, 59, 63, 67), (0.06, 0.08, 0.10, 0.12)):   # roll-centre heights [m], middle values
         add(1, cid, v)
+    for cid in (204, 205, 206, 207):                                  # rubber gaps are ground gaps (flag 1)
+        add(6, cid, 1)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -292,13 +297,47 @@ ok("build_envelope(ctx) on the same ctx gives the same drive table",
 ctx4 = qss(None, Electric_4Motors="On")
 ok("4EM ctx: F_drive_tab is None", ctx4.envelope.F_drive_tab is None)
 
-idx = [0, 5, 10, 20, 30, env.v_grid.size - 1]
-Rr = ctx.cs.tyre.rl["radius"]
-F_model = gear_envelope_numeric(ctx.cs, Rr, env.v_grid[idx])
-rel = np.abs(env.F_drive_tab[idx] - F_model) / np.abs(F_model)
-ok(f"F_drive_tab equals vehModel_cs gear_envelope_numeric within 1e-9 relative at {len(idx)} speeds "
-   f"(max {rel.max():.2e})", bool(rel.max() < 1e-9))
-ok(f"F_drive_tab is positive over the grid (min {env.F_drive_tab.min():.1f} N)", bool(np.all(env.F_drive_tab > 0)))
+# drive table: the 0.1 m/s grid of a car, equal to the numpy max over the gears of the car engine curve (independent
+# of vehModel_cs), within the log-sum-exp bound F_ref ln(n) / B_GEAR above the max and a 2e-3 F_ref slack (the
+# NLP's 5 rpm smooth idle clip and the spline differ from PCHIP at the two ends of the speed range).
+def drive_max_gears(cs, v):
+    e = cs.engine
+    Rr = cs.tyre.rl["radius"]
+    x, y = np.asarray(e.torque_curve["x"], float), np.asarray(e.torque_curve["y"], float)
+    te = PchipInterpolator(x, y)
+    F_ref = float(e.efficiency * te(np.linspace(e.rpm_idle, e.rpm_limit, 400)).max() * np.max(e.gears) / Rr)
+    dw = 0.01 * e.rpm_limit
+    fg = []
+    for Gr in np.asarray(e.gears, float):
+        w = v * Gr / Rr
+        win = 0.5 * (1.0 + np.tanh((e.rpm_limit - w) / dw))
+        fg.append(e.efficiency * te(np.clip(np.maximum(w, e.rpm_idle), x.min(), x.max())) * Gr / Rr * win)
+    return np.max(np.vstack(fg), axis=0), F_ref, len(fg)
+
+
+dstep = np.diff(env.v_grid)
+ok(f"car QSS grid is 0.1 m/s steps (min {dstep.min():.4f}, max {dstep.max():.4f} over {env.v_grid.size} nodes)",
+   bool(np.allclose(dstep[:-1], 0.1, rtol=0.0, atol=1e-3)))
+ok(f"F_drive_tab has one value per node (length {env.F_drive_tab.size})",
+   env.F_drive_tab is not None and env.F_drive_tab.size == env.v_grid.size)
+mx, F_ref, n_g = drive_max_gears(ctx.cs, env.v_grid)
+bound_hi = F_ref * np.log(n_g) / B_GEAR
+ft = env.F_drive_tab
+slack = 2e-3 * F_ref
+viol = np.maximum(mx - slack - ft, ft - (mx + bound_hi + slack))
+sel = env.v_grid >= 25.0
+ok(f"F_drive_tab within max-over-gears + F_ref ln({n_g})/B_GEAR (+2e-3 F_ref slack) at every node "
+   f"(max violation {viol.max():.2e} N)", bool(np.all(viol <= 0.0)))
+ok(f"F_drive_tab equals the max over gears within 1e-4 F_ref for 25..278 m/s (max dev "
+   f"{np.max(np.abs(ft[sel] - mx[sel])):.2f} N, F_ref {F_ref:.0f} N)",
+   bool(np.max(np.abs(ft[sel] - mx[sel])) < 1e-4 * F_ref + bound_hi))
+ok(f"F_drive_tab is positive over the grid (min {ft.min():.1f} N)", bool(np.all(ft > 0)))
+ok("n_v does not apply to a car: build_envelope(ctx, n_v=5) keeps the 0.1 m/s grid",
+   quiet(build_envelope, ctx, n_v=5).v_grid.size == env.v_grid.size)
+t0 = time.perf_counter()
+quiet(build_envelope, ctx)
+dt = time.perf_counter() - t0
+ok(f"build_envelope_cs on the synthetic car takes less than 0.5 s ({1e3 * dt:.0f} ms)", dt < 0.5)
 
 print("[cs_qss] envelope pieces")
 # 0.9 lateral cap: the lateral peak of each corner is min(peak, LAT_CAP) x the table. The test recomputes the
@@ -322,16 +361,39 @@ ok(f"the cap lowers the lateral limit ({env.ay_max[0] / G:.3f} g < {env_free.ay_
 ok("the cap leaves the longitudinal capacity alone (Fx_trac and Fx_brk unchanged)",
    bool(np.allclose(env_free.Fx_trac, env.Fx_trac, rtol=1e-12, atol=0.0)
         and np.allclose(env_free.Fx_brk, env.Fx_brk, rtol=1e-12, atol=0.0)))
-# quasi-static ride heights: >= 0 at 70 m/s (or the car's top speed when lower), and falling with speed to the top.
-# The aero map clamps at its grid edge, so a bottomed-out car stays bounded (ruling: the synthetic top speed of
-# 278 m/s with 166 kN downforce is a gearing artefact).
+# quasi-static ride heights with the ground-gap rubbers on: finite over the grid. At 70 m/s the value is documented,
+# not gated: the model has no ground contact (ChassisSim clamps the aero map), so a car that bottoms out at 70 m/s
+# can show a negative height (ruling round 2).
 rh_f, rh_r = env.info["rh_f"], env.info["rh_r"]
-v_ref = min(70.0, float(env.v_grid[-1]))
-rf_ref, rr_ref = np.interp(v_ref, env.v_grid, rh_f), np.interp(v_ref, env.v_grid, rh_r)
-ok(f"quasi-static ride heights >= 0 at {v_ref:.1f} m/s: front {1e3 * rf_ref:.2f} mm, rear {1e3 * rr_ref:.2f} mm",
-   bool(rf_ref >= 0.0 and rr_ref >= 0.0))
+ok("quasi-static ride heights finite over the grid (rubber at the damper)",
+   bool(np.all(np.isfinite(rh_f)) and np.all(np.isfinite(rh_r))))
+rf70, rr70 = np.interp(70.0, env.v_grid, rh_f), np.interp(70.0, env.v_grid, rh_r)
+print(f"  [doc] quasi-static ride height at 70 m/s: front {1e3 * rf70:.2f} mm, rear {1e3 * rr70:.2f} mm "
+      "(no ground contact in the model; a negative value is a bottomed-out car, not gated)")
 ok("quasi-static ride heights fall monotonically with speed up to the top speed",
    bool(np.all(np.diff(rh_f) <= 1e-12) and np.all(np.diff(rh_r) <= 1e-12)))
+
+F_brk = float(env.F_brk_trq)
+res = env.F_res(env.v_grid)
+ok(f"brake check: F_brk_trq equals cid 107 ({BRAKE_FORCE:.0f} N): {F_brk:.1f} N", abs(F_brk - BRAKE_FORCE) < 1e-6)
+ok("brake check: ax_brk x M_eff minus the resistance never exceeds the car brake force at any speed",
+   bool(np.all(env.ax_brk * env.M_eff - res <= F_brk * (1 + 1e-9) + 1e-6)))
+ok("Fx_brk (tyre) is finite and positive on the grid",
+   bool(np.all(np.isfinite(env.Fx_brk)) and np.all(env.Fx_brk > 0)))
+ok(f"ay_max positive on the grid (min {env.ay_max.min() / G:.2f} g)", bool(np.all(env.ay_max > 0)))
+ok(f"ay_max grows with speed with the car downforce: {env.ay_max[0] / G:.2f} g at {env.v_grid[0]:.1f} m/s, "
+   f"{env.ay_max[-1] / G:.2f} g at {env.v_grid[-1]:.1f} m/s", bool(env.F_lift[-1] > 0 and env.ay_max[-1] > env.ay_max[0]))
+ok("aero downforce positive at the top speed (F_lift)", bool(env.F_lift[-1] > 0))
+# downforce: the lift at each node is q x CLA of the car map at the quasi-static ride heights of that node (the
+# vehModel_cs surface, the same function as the NLP)
+rho = ctx.cs.aero.rho if ctx.cs.aero.rho else 1.225
+q = 0.5 * rho * env.v_grid ** 2
+cla = _surf(ctx.cs.aero.cla_map)
+cla_at = np.array([float(cla(r, f)) for r, f in zip(env.info["rh_r"], env.info["rh_f"])])
+lift_ref = q * cla_at
+e_lift = np.max(np.abs(env.F_lift - lift_ref) / np.maximum(np.abs(lift_ref), 1.0))
+ok(f"downforce: F_lift = q x CLA(rh_f, rh_r) at the fixed-point ride heights (max rel {e_lift:.1e})",
+   bool(e_lift < 1e-6))
 
 print("[cs_qss] lap")
 lap = float(ctx.data.lap_time)

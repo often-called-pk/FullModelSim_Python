@@ -28,6 +28,7 @@ import functions.transcription as T
 from functions import carfile
 from MLTP import MLTP
 import vehModel_cs as V
+from scipy.interpolate import PchipInterpolator
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
@@ -127,7 +128,8 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-EXPLICIT.update({c: 0.5 + 0.01 * c for c in range(7, 13)})            # suspension gaps
+GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.010, 12: 0.010}   # rubber ground gaps, m (a few mm)
+EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
@@ -153,13 +155,13 @@ def tyre_sizes(d):
     return [2 * d3, 2 * d4, 2 * d4, g(d1, d2), g(d6, d7), 2 * d6, 2 * d4, g(d1, d2), 2 * d3, 2 * d6, 2 * d5, 2 * d5, 2 * d5]
 
 
-def tyre_record(i, corner):
+def tyre_record(i, corner, toe=None):
     t = TYRE[corner]
     dims = t["dims"]
     d1, d2, d3, _, d5, d6, _ = dims
     tabs = [arb(k, 10 * i + j) for j, k in enumerate(tyre_sizes(dims))]
     A, B = arb(d1, 20 + i), arb(d1, 30 + i)
-    load = 1000.0 * np.arange(1, d1 + 1)
+    load = np.linspace(1000.0, 25000.0, d1)              # N, up to 25 kN (the load floor is tested at 20 kN)
     tabs[3] = np.concatenate([load, TYRE_TEMPS, np.stack([A, B], axis=1).ravel()])
     tabs[0][:d3] = np.linspace(0.0, 2.0, d3)                 # slip abscissae: from 0, increasing
     tabs[0][d3:] = np.array([0.0, 0.97, 0.97])[:d3]          # slip values: from 0, flat after the knee at 1
@@ -168,7 +170,7 @@ def tyre_record(i, corner):
     py = t["kz"] * (1.0 + 0.01 * np.arange(d5))
     tabs[10] = np.concatenate([px, py])
     sc = arb(18, 40 + i)
-    sc[0], sc[1], sc[2], sc[4], sc[5], sc[6] = t["toe"], t["camber"], t["castor"], t["radius"], PRESSURE, TYRE_BG
+    sc[0], sc[1], sc[2], sc[4], sc[5], sc[6] = (t["toe"] if toe is None else toe), t["camber"], t["castor"], t["radius"], PRESSURE, TYRE_BG
     sc[7], sc[8], sc[9], sc[11], sc[15] = t["drag"], 0.11 + 0.01 * i, 0.12 + 0.01 * i, 0.7 + 0.1 * i, 1.05 + 0.1 * i
     return 13, 80 + i, (list(dims), sc, tabs)
 
@@ -188,7 +190,7 @@ def mirror_car(R, toe=0.0):
     return R
 
 
-def build_records(arb_front=None, mirror=False, toe=0.0):
+def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
     R = []
 
     def add(tag, cid, v):
@@ -205,9 +207,11 @@ def build_records(arb_front=None, mirror=False, toe=0.0):
     for cid, rate in arb_rates.items():
         add(11, cid, (1, 0.0, rate, np.array([0.0, 0.1]), np.array([0.0, 300.0])))
     for cid in range(23, 31):
-        add(2, cid, np.array([1.0, 0.1, -0.05, 0.02, 0.0]) * (1 + 0.05 * np.sin(cid)))   # motion ratio, positive
+        add(2, cid, np.array([1.0 + 0.05 * np.sin(cid), 0.0, 0.0, 0.0, 0.0]))   # constant motion ratio, near 1
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)
+    for cid in range(204, 208):
+        add(6, cid, 1)                                   # rubber gap flags: 1 = ground gap
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
     add(2, 110, GEARS)
     for cid in (127, 131, 135):
@@ -219,16 +223,18 @@ def build_records(arb_front=None, mirror=False, toe=0.0):
     for cid in HARD:
         add(10, cid, (0, arb(18, cid)))
     for i, c in enumerate(CORNERS):
-        add(*tyre_record(i, c))
+        add(*tyre_record(i, c, (toes or {}).get(c)))
     if mirror:
         R = mirror_car(R, toe)
+    if over:
+        R = [(t, c, over[c]) if c in over else (t, c, v) for t, c, v in R]
     R.append((carfile.END_TAG, carfile.END_CID, None))
     return R
 
 
-def write_car(name, arb_front=None, mirror=False, toe=0.0):
+def write_car(name, arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
     path = os.path.join(TMP.name, name)
-    carfile.write(build_records(arb_front, mirror, toe), path)
+    carfile.write(build_records(arb_front, mirror, toe, toes, over), path)
     return path
 
 
@@ -403,20 +409,119 @@ rt = rates(cs_toe, static_x(cs_toe, 30.0))
 ok(f"symmetric toe 0.3 deg on a straight: dvy, dr zero (|dvy| {abs(rt[1]):.1e}, |dr| {abs(rt[2]):.1e} per s)",
    abs(rt[1]) < 1e-9 and abs(rt[2]) < 1e-9)
 
-# 5. rubber table (flag 1): force at the travel past the gap (wheel frame: table at mr0 (travel - gap), times mr0)
-mr0 = float(ctx.cs.susp.mr_fl[0])
-gap = float(ctx.cs.susp.gap_fl)
-rub = ctx.cs.susp.rubber_fl
-xs = ca.SX.sym("xs")
-fr_fun = ca.Function("R", [xs], [V._rubber(ctx.cs, "fl", mr0)(xs)])
-f_r = float(fr_fun(gap + 0.01))
-exp_r = mr0 * float(np.interp(mr0 * 0.01, np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]]))
-ok(f"rubber table (flag {rub['flag']}) at 10 mm past the gap: {f_r:.2f} N vs table {exp_r:.2f} N",
-   rub["flag"] == 1 and abs(f_r - exp_r) < 0.02 * abs(exp_r))
-
 # 6. residual gate: mirror car, toe 0, vertical rows at the static point below 1e-2 per s
 rv = np.abs(rates(cs_sym, static_x(cs_sym))[ROWS_VERT])
 ok(f"mirror car, toe 0: vertical rows at the static point < 1e-2 per s (max {rv.max():.2e})", rv.max() < 1e-2)
+
+# 1. slip law: locked-ish wheel at normalised slip ~11 gives |Fx| = fn_end F' (1 %); h(1e-3) = fn'(0) (1 %)
+rl = ctx.cs.tyre.rl
+x = static_x(ctx, 30.0)
+x[7] = -1.6 * 30.0 / rl["radius"]                              # slip ratio -1.6: normalised slip 1.6 / 0.14 ~ 11
+fx, mu, fz, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fx_rl, m.mu_rl_x, m.fz_rl, m.sx_rl])
+                  .call([x / m.x_s, np.zeros(m.nu), 0.0])]
+fn_end = float(rl["slip_y"][-1])
+ok(f"normalised slip {abs(sx) / rl['peak_slip_ratio']:.1f} >= 10: |Fx| = fn_end F' ({abs(fx):.4f} vs {fn_end * mu * fz:.4f} N)",
+   abs(sx / rl["peak_slip_ratio"]) >= 10 and abs(abs(fx) / (fn_end * mu * fz) - 1) < 0.01)
+xk, yk = np.asarray(rl["slip_x"], float), np.asarray(rl["slip_y"], float)
+odd = PchipInterpolator(np.r_[-xk[::-1], xk[1:]], np.r_[-yk[::-1], yk[1:]])
+slope0 = float(odd.derivative()(0.0))
+h1 = float(V._slip_curve(rl)(1e-3))
+ok(f"h(1e-3) = fn'(0) within 1 % ({h1:.5f} vs {slope0:.5f})", abs(h1 / slope0 - 1) < 0.01)
+
+# 2. load floor: fze at fz = 0 is the floor (finite); at fz = 20 kN the load peak is evaluated at fz = fze, so
+#    Fp / mu = fz within 0.1 % (the load table reaches 25 kN; the PCHIP reference is the table itself)
+x = static_x(ctx, 30.0)
+x[21] = 0.0                                                    # zt_rl = 0: fz = 0
+mu0 = float(ca.Function("M", [m.x, m.u, m.pv], [m.mu_rl_x]).call([x / m.x_s, np.zeros(m.nu), 0.0])[0])
+fp0 = float(PchipInterpolator(rl["load"], rl["fy_peak"])(rl["load"][0])) * rl["grip"]
+fze0 = fp0 / mu0
+x = static_x(ctx, 30.0)
+x[21] = 20000.0 / ctx.vp.kt                                    # zt_rl: fz = 20 kN
+mu20 = float(ca.Function("M", [m.x, m.u, m.pv], [m.mu_rl_x]).call([x / m.x_s, np.zeros(m.nu), 0.0])[0])
+fp20 = float(PchipInterpolator(rl["load"], rl["fy_peak"])(20000.0)) * rl["grip"]
+fze20 = fp20 / mu20
+ok(f"load floor: fze at fz 0 is ~20 N ({fze0:.3f}, finite), at 20 kN fze equals fz ({fze20:.1f} vs 20000)",
+   np.isfinite(mu0) and 19.5 < fze0 < 20.5 and abs(fze20 / 20000.0 - 1) < 1e-3)
+
+# 3. slip table with decreasing x raises ValueError
+ok("slip table with decreasing x raises ValueError",
+   raises(ValueError, V._slip_curve, {"slip_x": [0.0, 2.0, 1.0], "slip_y": [0.0, 1.0, 1.0]}))
+
+# 4. T_brake rate bounds: the 4EM normalised ramp (torque rate / Tbrake_max) times the brake force
+ub_ref = float(np.ravel(ctx.c.ub.T_brake)[0]) / ctx.vp.Tbrake_max * ctx.cs.brake.force
+lb_ref = float(np.ravel(ctx.c.lb.T_brake)[0]) / ctx.vp.Tbrake_max * ctx.cs.brake.force
+ok(f"T_brake rate bounds equal the 4EM ramp x brake force (ub {float(np.ravel(ctx.duk_ub)[1]):.4g} vs {ub_ref:.4g}, "
+   f"lb {float(np.ravel(ctx.duk_lb)[1]):.4g} vs {lb_ref:.4g})",
+   abs(float(np.ravel(ctx.duk_ub)[1]) - ub_ref) < 1e-9 * abs(ub_ref) and abs(float(np.ravel(ctx.duk_lb)[1]) - lb_ref) < 1e-9 * abs(lb_ref))
+
+# 5. refusals: cid 111 = 0.3 and a gap flag 0 raise ValueError
+ok("torque split 0.3 (cid 111) raises ValueError", raises(ValueError, build, write_car("split.car", over={111: 0.3})))
+ok("rubber gap flag 0 (cid 204) raises ValueError", raises(ValueError, build, write_car("flag.car", over={204: 0})))
+
+# 6. throttle channel = T_drive / F_env (share of the drive available at this speed)
+x = static_x(ctx, 30.0)
+thr_expr = dict(m.veh_extra)["throttle"]
+thr = float(ca.Function("t", [m.x, m.u, m.pv], [thr_expr]).call([x / m.x_s, np.array([0.4, 0.0, 0.0]), 0.0])[0])
+fenv = float(ca.Function("F", [m.x, m.u, m.pv], [m.F_env]).call([x / m.x_s, np.zeros(m.nu), 0.0])[0])
+f_ref = V.drive_scale(ctx.cs, ctx.cs.tyre.rl["radius"])
+ok(f"throttle = T_drive / F_env: {thr:.6f} vs {0.4 * f_ref / fenv:.6f}",
+   abs(thr - 0.4 * f_ref / fenv) < 1e-9)
+
+# 7. toe per wheel: fl 0.5 deg, fr 0.2 deg. On a straight each slip angle carries its own toe
+ct = build(write_car("toe.car", toes={"fl": 0.5, "fr": 0.2}))
+x = static_x(ct, 30.0)
+sa_fl, sa_fr = [float(v) for v in ca.Function("S", [ct.m23.x, ct.m23.u, ct.m23.pv], [ct.m23.sa_fl, ct.m23.sa_fr])
+                .call([x / ct.m23.x_s, np.zeros(ct.m23.nu), 0.0])]
+t_fl, t_fr = ct.cs.tyre.fl["toe"], ct.cs.tyre.fr["toe"]
+ok(f"own toe per wheel: sa_fl = +toe_fl ({sa_fl:.5f} vs {t_fl:.5f}), sa_fr = -toe_fr ({sa_fr:.5f} vs {-t_fr:.5f})",
+   abs(sa_fl - t_fl) < 1e-9 and abs(sa_fr + t_fr) < 1e-9 and abs(t_fl - t_fr) > 1e-3)
+
+
+# 8. clamp: 50 mm below the front grid (and the rear grid) lift and drag stay non-zero and hold the edge value
+def aero_at(ctx_, zs):
+    mm_ = ctx_.m23
+    xx = static_x(ctx_, 30.0)
+    xx[9] = zs
+    lift, drag = [float(v) for v in ca.Function("A", [mm_.x, mm_.u, mm_.pv], [mm_.f_lift, mm_.f_drag])
+                  .call([xx / mm_.x_s, np.zeros(mm_.nu), 0.0])]
+    return lift, drag
+
+
+L1, D1 = aero_at(ctx, -0.06575)           # front -48 mm (grid edge 2 mm), rear -45 mm
+L2, D2 = aero_at(ctx, -0.07775)           # front -60 mm, rear -57 mm
+ok(f"aero held outside the grid: lift {L1:.2f} / {L2:.2f} N, drag {D1:.3f} / {D2:.3f} N (nonzero, within 1 %)",
+   abs(L1) > 1 and abs(D1) > 1e-3 and abs(L1 / L2 - 1) < 0.01 and abs(D1 / D2 - 1) < 0.01)
+
+# 8b. damper beyond the table: the force at 6 m/s is non-zero; the extension is linear (end slope)
+mm = ctx.m23
+fz_fl = ca.Function("Z", [mm.x, mm.u, mm.pv], [mm.fzs_fl])
+x0 = static_x(ctx, 30.0)
+F0 = float(fz_fl.call([x0 / mm.x_s, np.zeros(mm.nu), 0.0])[0])
+
+
+def fzs_at(v):
+    xx = static_x(ctx, 30.0)
+    xx[15] = v                                 # wheel speed: the damper velocity of the front left
+    return float(fz_fl.call([xx / mm.x_s, np.zeros(mm.nu), 0.0])[0]) - F0
+
+
+g6 = fzs_at(6.0)
+slope_a = (fzs_at(3.0) - fzs_at(1.0)) / 2.0
+slope_b = (fzs_at(1.02) - fzs_at(1.0)) / 0.02
+ok(f"damper at 6 m/s non-zero ({g6:.1f} N); linear end extension (slope {slope_a:.1f} vs {slope_b:.1f} N per m/s)",
+   abs(g6) > 1.0 and abs(slope_a / slope_b - 1) < 0.02)
+
+# 9. rubber frame: compression = MR x travel - gap. No force 10 onset widths before the gap; table past it
+mr0 = float(ctx.cs.susp.mr_fl[0])
+gap = float(ctx.cs.susp.gap_fl)
+xs = ca.SX.sym("xs")
+fr_fun = ca.Function("R", [xs], [V._rubber(ctx.cs, "fl")(xs)])
+f_off = float(fr_fun((gap - 10 * V.W_RUBBER) / mr0))
+rub = ctx.cs.susp.rubber_fl
+f_on = float(fr_fun((gap + 0.01) / mr0))
+exp_on = mr0 * float(np.interp(0.01, np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]]))
+ok(f"rubber frame: {f_off:.4f} N 10 onset widths before the gap; {f_on:.2f} N at 10 mm past it (table {exp_on:.2f} N)",
+   abs(f_off) < 0.01 and abs(f_on / exp_on - 1) < 0.02)
 
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):

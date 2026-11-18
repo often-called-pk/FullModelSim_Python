@@ -73,11 +73,15 @@ T1 car record, T2 chassis helper, T3 `vehModel_cs` core, T4 car source wiring, T
 ### Validation V1 (Opus): first real GP3 solve
 - [ ] `MLTP(car=<GP3 base>, circuit='chassissim:Eastern Creek', physics='corrected', linear_solver='mumps', save=True, results_dir=<scratch>)`, cold. Record status, iterations, lap, wall, RSS. If it fails, diagnose (systematic-debugging) before T6.
 
-### Task 6: Kinematics curves (item 10)
+### Task 6: Kinematics curves (item 10) and the dynamic camber
 
-**Files:** modify `functions/chassissim.py` (numpy solve), `vehModel_cs.py`. Tests: `tests/test_cs_kinematics.py`.
-- [ ] Solve the double-wishbone geometry from the hardpoints (cids 49-52) once per car: camber, toe and roll-centre height vs wheel travel (and roll for the RC), fitted to low-order polynomials over the travel range. vehModel_cs uses them in place of the static values.
-- [ ] Tests: a synthetic parallel-equal-arm geometry gives zero camber gain, a known swing-arm geometry gives its analytic camber gain and RC height. Vendor: GP3 curves finite and smooth over the travel range.
+**Files:** modify `functions/chassissim.py` (numpy solve, CAR_FIELDS for bump steer), `vehModel_cs.py`, `functions/ggv.py` (QSS camber). Tests: `tests/test_cs_kinematics.py` (Haiku). Read `teammate_p2_answers.md` and the ledger notes on cids 54-68.
+- [ ] Frame: the car stores hardpoints in the car frame = geometry file + (0.1, 0, -0.02) m, a constant datum transform (not the ride height). Rows: lower inner front, lower inner aft, lower outer, upper inner front, upper inner aft, upper outer. Datum: front axle centreline on the ground, x rearward, z up.
+- [ ] Solve the double wishbone once per car from the hardpoints (front view, per axle, numpy): camber and roll-centre height vs wheel travel (bump positive) and vs roll, over the travel range of the car. Fit low-order polynomials. Gate: the static roll-centre heights equal the values ChassisSim stores (cids 55, 59, 63, 67: front 0.0727 m, rear 0.1043 m on GP3) within 5 mm; if not, stop and report (the teammate then decodes the ChassisSim solver).
+- [ ] Toe vs travel from the stored bump-steer tables (cids 74-77, tag 7, x = travel m, y = toe change; zero on GP3), not from the hardpoints (the rows hold no tie-rod point).
+- [ ] vehModel_cs: dynamic camber per corner = static camber + camber(travel) + camber from roll; the camber factor of the tyre (table T5, `camber_x` / `camber_y`, 1.0 at the static camber) at that dynamic camber multiplies F' (ChassisSim: a major front-limit mechanism at the loaded apex). Roll-centre height vs travel feeds the jacking terms. Toe change adds to the static toe.
+- [ ] QSS: the camber factor of each axle at the quasi-static travel and roll of the apex.
+- [ ] Tests: a synthetic equal-length parallel double wishbone gives zero camber gain and an RC on the ground; a known swing-arm geometry gives its analytic camber gain and RC height; the camber factor enters F' (a camber away from the optimum lowers Fy). Vendor: GP3 static RC within 5 mm of the stored values; curves finite and smooth over the travel range.
 
 ### Task 7: Differentials (item 7, D8)
 
