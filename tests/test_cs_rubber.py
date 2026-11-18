@@ -26,6 +26,7 @@ import numpy as np
 import functions.transcription as T
 import vehModel_cs as V
 from functions import carfile
+from functions import chassissim as CSM
 from functions.chassissim import load_car
 from MLTP import MLTP
 from MLTP_screen import MLTP_screen
@@ -108,7 +109,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,
     390: 350.0,
 }
-EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.010, 12: 0.010})
+EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0})   # third gaps 0: no third element
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
@@ -458,7 +459,17 @@ def vendor(cs_dir):
        + " ".join(f"{g[c]*1e3:.2f}" for c in CORNERS),
        all(g[c] is not None and abs(g[c] - want[c]) < 5e-4 for c in CORNERS))
 
-    ctx_f2 = build(str(f2), circuit="Adelaide", chassis_dir=cs_dir)
+    # The F2 car has a rear third bump rubber that can engage: the model refuses it (chassissim.third_refusal).
+    # The F2 checks below need its model, so they build it with that refusal stood aside, after the refusal is checked.
+    hit, msg = refusal(build, str(f2), circuit="Adelaide", chassis_dir=cs_dir)
+    ok(f"F2 raises the third-element ValueError naming the rear axle: {msg[:60]!r}",
+       hit and "rear third bump rubber" in msg and "third element" in msg)
+    _third_refusal = CSM.third_refusal
+    CSM.third_refusal = lambda cs: None
+    try:
+        ctx_f2 = build(str(f2), circuit="Adelaide", chassis_dir=cs_dir)
+    finally:
+        CSM.third_refusal = _third_refusal
     e = {c: hand_eff_gap(ctx_f2.cs, ctx_f2.vp, c) for c in CORNERS}
     ok("F2 builds (physics corrected, Adelaide): nx 23 and nu 3", ctx_f2.m23.nx == 23 and ctx_f2.m23.nu == 3)
     ok("F2 effective gaps about 0 / 0 / 16 / 16 mm within 0.5 mm: " + " ".join(f"{e[c]*1e3:.2f}" for c in CORNERS),
@@ -479,7 +490,16 @@ def vendor(cs_dir):
     err = float(np.max(np.abs(ld - wt) / wt))
     ok(f"GT3 static loads equal the corner weights within 0.5 %: max {100 * err:.4f} %", err < 0.005)
 
+    # The F3 car's front third rubber engages, so the third-element refusal comes first. The third-spring
+    # refusal is checked with that refusal stood aside.
     hit, msg = refusal(build, str(f3), circuit="Adelaide", chassis_dir=cs_dir)
+    ok(f"F3 raises the third-element ValueError naming the front axle: {msg[:60]!r}",
+       hit and "front third bump rubber" in msg and "third element" in msg)
+    CSM.third_refusal = lambda cs: None
+    try:
+        hit, msg = refusal(build, str(f3), circuit="Adelaide", chassis_dir=cs_dir)
+    finally:
+        CSM.third_refusal = _third_refusal
     ok(f"F3 raises ValueError with the third-spring text: {msg!r}", hit and msg == REFUSE_THIRD)
 
 

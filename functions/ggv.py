@@ -342,7 +342,9 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     docstring for every modelling choice. Cost ~5 ms (numpy, vectorised in v).
     """
     if getattr(ctx, "cs", None) is not None:      # a ChassisSim car has its own tyre, aero and drive data
-        return build_envelope_cs(ctx, v_grid)       # a car: 0.1 m/s grid, n_v does not apply
+        if load_model != "vehModel":
+            raise ValueError(f"A ChassisSim car has one load model. load_model must be 'vehModel', got {load_model!r}.")
+        return build_envelope_cs(ctx, v_grid)     # a car: 0.1 m/s grid, n_v does not apply
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
     # MF 6.1 pressure (Besselink et al. 2010): the screen reads the peak friction only, so the two mu factors fold into
     # the copy of the grip scales. vehModel cannot do this, because LMUX and LMUY also scale SVx and SVy there.
@@ -482,6 +484,7 @@ def _camber_tables(cs, T):
     """Return (camf, t4f): the camber factor T5(camber) and the Fx camber factor T4(camber, load) of the NLP.
     Both NLP functions are sampled once per tyre on fine grids and then read by linear interpolation (error about
     1e-5). The samples are kept on the car record, so a setup sweep pays the cost once."""
+    # ponytail: keyed by id(T). It goes stale if a tyre dict is replaced in place. userOpts reloads the car per call.
     cache = cs.__dict__.setdefault("_qss_camber", {})
     if id(T) not in cache:
         import casadi as ca

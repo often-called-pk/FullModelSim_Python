@@ -243,6 +243,15 @@ def _conv(tag, v, f):
     return v
 
 
+def file_sha8(path):
+    """Return the first 8 hex digits of the sha256 of the file bytes."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:8]
+
+
 def load_car(path):
     """Read a ChassisSim car file and return its consumed fields in SI.
 
@@ -260,8 +269,7 @@ def load_car(path):
     lower inner aft, lower outer, upper inner front, upper inner aft and upper outer.
     """
     path = os.path.abspath(path)
-    with open(path, "rb") as fh:
-        sha8 = hashlib.sha256(fh.read()).hexdigest()[:8]
+    sha8 = file_sha8(path)
     recs = {c: (t, v) for t, c, v in carfile.decode(path)}
     groups = {}
     for name, _ in CAR_FIELDS.values():
@@ -316,6 +324,58 @@ def aero_refusals(cs):
         raise ValueError(f"The car file {cs.path} uses the steer correction (cids 434 to 436). The car model does not build it.")
     if a.multi_drs_366 == 1:
         raise ValueError(f"The car file {cs.path} uses the multiple DRS zones (cid 366). The car model does not build it.")
+
+
+def check_car(cs):
+    """Raise one ValueError that lists every field the car model or the QSS reads and the car file lacks.
+    An aero map correction, a DRS value or a speed table counts only when its enable is 1."""
+    C = ("fl", "fr", "rl", "rr")
+    need = {f"mass.{n}": getattr(cs.mass, n) for n in ("total", "unsprung_front", "unsprung_rear", "Ix", "Iy", "Iz", "front_share")}
+    for grp, obj, names in (
+            ("geom", cs.geom, ("wheelbase", "track_front", "track_rear", "cg_height", *(f"rc_height_{c}" for c in C),
+                               *(f"ride_height_{c}" for c in C))),
+            ("hardpoints", cs.hardpoints, ("front_l", "rear_l")),
+            ("susp", cs.susp, (*(f"{p}_{c}" for p in ("spring", "mr", "gap", "damper") for c in C),
+                               "arb_f", "arb_r", "mr_arb_f", "mr_arb_r", "spring_third_f", "spring_third_r")),
+            ("aero", cs.aero, ("cla", "cda", "cla_map", "cda_map", "balance_map")),
+            ("engine", cs.engine, ("efficiency", "torque_curve", "rpm_idle", "rpm_limit", "gears")),
+            ("diff", cs.diff, ("rear_type",)),
+            ("brake", cs.brake, ("force", "front_bias")),
+            ("tyre", cs.tyre, C)):
+        need.update({f"{grp}.{n}": getattr(obj, n) for n in names})
+    for c in C:                     # the rubber and its flag matter only when the corner has a gap
+        if getattr(cs.susp, f"gap_{c}") not in (None, 0):
+            need.update({f"susp.{p}_{c}": getattr(cs.susp, f"{p}_{c}") for p in ("gap_flag", "rubber")})
+    a = cs.aero
+    if a.drs_336 == 1:
+        need.update({f"aero.drs_{c}": getattr(a, f"drs_{c}") for c in range(337, 342)})
+    for n in ("cla", "cda", "ab"):
+        if getattr(a, f"sp_on_{n}") == 1:
+            need[f"aero.sp_{n}"] = getattr(a, f"sp_{n}")
+    missing = sorted(k for k, v in need.items() if v is None)
+    if missing:
+        raise ValueError(f"The car file {cs.path} lacks the fields {missing}. A ChassisSim car needs them.")
+
+
+def third_refusal(cs):
+    """Raise ValueError for a third bump rubber that can engage. The model has no third element."""
+    for ax, name in (("f", "front"), ("r", "rear")):
+        gap = getattr(cs.susp, f"gap_third_{ax}") or 0.0
+        if table_live(getattr(cs.susp, f"rubber_third_{ax}")) and 0 < float(gap) < 0.5:
+            raise ValueError(f"The {name} third bump rubber of the car file {cs.path} can engage (gap {float(gap):g} m). "
+                             "The model has no third element yet.")
+
+
+# vp keys that the car model reads. The car record wins for t, kt, Rw, f and the tyre, aero and engine data.
+CAR_VP_KEYS = frozenset({"mb", "md", "muf", "mur", "wB", "l", "hcg", "I_x", "I_y", "I_z", "Jw", "g"})
+
+
+def vp_refusal(vp_overrides):
+    """Raise ValueError for a vp_overrides key that the car model does not read."""
+    bad = sorted(set(vp_overrides or ()) - CAR_VP_KEYS)
+    if bad:
+        raise ValueError(f"A ChassisSim car does not read the vp_overrides keys {bad}. The car file gives them. "
+                         f"The car model reads {sorted(CAR_VP_KEYS)}.")
 
 
 # ChassisSim has no wheel inertia (its lap simulation has no wheel-spin states). FullModelSim needs one.

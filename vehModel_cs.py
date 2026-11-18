@@ -424,7 +424,7 @@ def vehModel_cs(ctx):
            "rl": fx["rl"], "rr": fx["rr"]}
     fyg = {"fl": fy["fl"]*ca.cos(delta) + fx["fl"]*ca.sin(delta), "fr": fy["fr"]*ca.cos(delta) + fx["fr"]*ca.sin(delta),
            "rl": fy["rl"], "rr": fy["rr"]}
-    # roll centres: the curve of the axle at the mean wheel travel (static value = the stored height). Jacking and Mx as vehModel.
+    # roll centres: the curve of the axle at the mean wheel travel (rc_h(0) = the stored height minus the ground datum zg: the height above the contact patches). Jacking and Mx as vehModel.
     hRC = {a: poly_sx(k.rc_h, 0.5 * (xs[a + "l"] + xs[a + "r"]), k.lo, k.hi) for a, k in (("f", curves.f), ("r", curves.r))}
     fj = {"fl": -fyg["fl"] * (2*hRC["f"]/t_f), "fr": +fyg["fr"] * (2*hRC["f"]/t_f),
           "rl": -fyg["rl"] * (2*hRC["r"]/t_r), "rr": +fyg["rr"] * (2*hRC["r"]/t_r)}

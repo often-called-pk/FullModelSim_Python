@@ -137,7 +137,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.010, 12: 0.010}   # rubber ground gaps, m (a few mm)
+GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m; third gaps 0 (no third element)
 EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])

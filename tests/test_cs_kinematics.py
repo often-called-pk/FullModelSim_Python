@@ -268,7 +268,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,
     390: 350.0,
 }
-EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.010, 12: 0.010})
+EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0})   # third gaps 0: no third element
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])

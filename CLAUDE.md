@@ -438,7 +438,7 @@ alt file paths (the model reads them in phase 3). Stems, init files and plot fol
 ChassisSim cars (phase 2, 2026-11-18, `vehModel_cs.py`, `functions/chassissim.load_car`). `car='chassissim:<path>'` builds the
 car of a `.car` file in place of the 4EM car. It needs `physics='corrected'`. A car refuses the options that it cannot honour:
 `start_state='rolling'`, `state_scaling='typical'`, `atd_tbr`, `Electric_4Motors='On'`, an `AeroConfig` other than 'Static',
-`between_knots` other than 'matlab', `collocation='radau'` and a 7-state init `warm_start`. ATD goes Off with one warning, and the
+`between_knots` other than 'matlab', `collocation='radau'` and a 7-state init `warm_start`. ATD goes Off without a warning, and the
 ladder is 'qss23'. `MLTP_initial`, `optimise_design` and `setup_sweep` refuse a car. The model keeps nx 23 with the inputs
 `T_drive`, `T_brake` and `delta`. Tyre: the peak force F'(Fz) of table 3 at the background temperature, the normalised slip
 curve, a 0.9 lateral cap and a load floor. Table 5 scales F' at the dynamic camber. Table 4 is the Fx camber factor: the Fx peak
@@ -449,16 +449,20 @@ per wheel. A rubber gap with flag 1 is the compression from static. Flag 0 takes
 preload. A gap of 0 means no rubber. A front-view solve of the hardpoints gives the roll-centre height above the contact
 patches and the camber against the wheel travel. The ground datum comes from the stored roll-centre heights (cids 55, 59, 63,
 67). The dynamic camber adds the body roll angle. The rear differential follows the file: open, super, spool, custom map or
-Detroit. The QSS (`ggv.build_envelope_cs`) uses the same functions, without DRS. Result stems get `_car_<file name>` before the
-physics part, and the knob `car_file` (absolute path) sets the tag. A warm start between the 4EM car and a ChassisSim car starts
+Detroit. The QSS (`ggv.build_envelope_cs`) uses the same functions, without DRS and at zero sideslip. Result stems get
+`_car_<file name>` before the physics part, and the knob `car_file` (the absolute path and a short file hash) sets the tag. A warm start between the 4EM car and a ChassisSim car starts
 cold. These raise ValueError: bump steer that is not zero, a geometry with no solution over +-50 mm, a gap flag other than 0
 or 1. So do a third spring with a rate (the F3) and a differential type outside 1 to 5. A steer correction, a roll split, 2-D
-steer maps, wake maps and multiple DRS zones raise too. No shipped car uses them, and their form is not decoded. GP3 2013 at Eastern Creek
+steer maps, wake maps and multiple DRS zones raise too. No shipped car uses them, and their form is not decoded. A third
+bump rubber that can engage (gap above 0 and below 0.5 m) raises, because the model has no third element. So do `vp_overrides`
+keys that a car does not read, `homotopy`, `refine` with DRS and a QSS `load_model` other than the default. A car file that
+lacks a field the model reads raises one message that lists the fields. GP3 2013 at Eastern Creek
 (MUMPS, cold, qss23): the fixed line (`n_bounds=(-0.05, 0.05)`) takes 451 iterations to 75.543 s. ChassisSim gives 76.742 s
 (-1.56 %). Overlay: corr ay 0.995, RMS speed 2.79 m/s, RMS ay 1.64 m/s^2. Free line 72.009 s, QSS 74.094 s. ChassisSim uses only
 0.80 of the tyre capacity at its apexes. Its apex speed comes from a feasibility search on a transient with a driver model and
-bumps. The optimal control has no such margin. The F2 and GT3 cars build at Adelaide, but their fixed-line laps do not match
-ChassisSim yet. F2: 64.057 s against 72.084 s. GT3: 106.485 s against 77.602 s. The cause is not known. Not built: bump steer,
+bumps. The optimal control has no such margin. The GT3 builds at Adelaide, but its fixed-line lap does not match ChassisSim
+yet: 106.485 s against 77.602 s. The cause is not known. The F2 refuses for its rear third bump rubber. Before that refusal
+its lap was 64.057 s against 72.084 s. Not built: bump steer,
 steer camber from castor, third springs, rubber hysteresis and the stability index (phase 6).
 Track QA (2026-10-18, `functions/track_qa.py`): every real track goes through `check_track` at load
 (turning, closure, sign agreement with x,y, spacing, monotonic s). An error raises ValueError (no bypass

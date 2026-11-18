@@ -273,7 +273,7 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0,
         raise ValueError(f"continue_from='auto': the stored default result does not fit this NLP. {note}")
     if mode == "cold":
         print(f"[MLTP] warm start ignored: {note}. The solve starts cold "
-              f"({'from the QSS seed' if getattr(ctx, 'cs', None) is not None else 'from the 7-state init'}).")
+              "(from the cold seed of the ladder).")
         return None, None, mode
     print(f"[MLTP] warm start from a full result: {note} -> {mode}")
     return warmstart_guesses_full(ctx, m, src, disc), warm, mode
@@ -460,6 +460,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
     if ropts is not None and getattr(ctx.track, "drs", None) is not None:
         raise ValueError("refine does not work with a car that has a DRS zone. The refine defect uses the curvature only.")
+    if ctx.cs is not None and homotopy is not None and homotopy is not False:
+        raise ValueError("A ChassisSim car does not accept homotopy. The friction homotopy scales the MF coefficients, "
+                         "and the car does not use them.")
     if ctx.cs is not None and ladder not in ("qss23",):
         print("[MLTP] note: a ChassisSim car has no 7-state model, so the ladder is qss23.")
     lname, chain = resolve_ladder("qss23" if ctx.cs is not None else ladder)   # cold-start ladder
@@ -713,7 +716,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                    f"converged to a lap {100.0 * lap_rise(out, cur):.2f}% slower than the pass it refines "
                    f"({out['lap']:.4f} s vs {cur['lap']:.4f} s: a worse local optimum)")
             print(f"[MLTP] refine: the reseeded N={disc_new['N']} solve {why}; retrying once from the "
-                  "7-state init")
+                  + ("cold seed of the ladder" if ctx.cs is not None else "7-state init"))
             out["payload"] = None
             g0 = _init_guesses(disc_new)        # its own time goes to elapsed['init']
             t1 = time.time()

@@ -27,6 +27,7 @@ from functions import carfile
 from functions import ladder as LD
 from functions.context import Ctx
 from functions.importfile import load_solution, result_stem
+from functions.ggv import build_envelope
 from functions.sensitivity import limit_prices
 from functions.transcription import discretise
 from MLTP import MLTP
@@ -144,7 +145,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.010, 12: 0.010}   # rubber ground gaps, m (a few mm)
+GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m; third gaps 0 (no third element)
 EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
@@ -404,15 +405,115 @@ name_q = os.path.basename(q.out_path)
 ok(f"QSS stem holds '_car_' and ends '_qss.mat' ({name_q})", "_car_" in name_q and name_q.endswith("_qss.mat"))
 
 
+print("[cs_wiring] 7. final fix wave: refusals and checks")
+FIX = os.path.join(TMP.name, "fix")
+os.makedirs(FIX, exist_ok=True)
+
+
+def car_without(name, cids, **kw):
+    """Synthetic car file with the records of cids left out (kw as build_records)."""
+    path = os.path.join(FIX, name)
+    carfile.write([r for r in build_records(**kw) if r[1] not in cids], path)
+    return path
+
+
+def car_file(name, **kw):
+    """Synthetic car file with the values of kw['over'] (as build_records)."""
+    path = os.path.join(FIX, name)
+    carfile.write(build_records(**kw), path)
+    return path
+
+
+# (1) third bump rubber: a live front rubber with a 1 cm gap is refused, gap 0 and 1.0 m pass
+hit, msg = refusal(build, car_file("third_live.car", over={11: 0.01}))
+ok(f"live front third rubber (gap 0.01 m) raises ValueError naming the front axle and the third element: {msg[:60]!r}",
+   hit and "front third bump rubber" in msg and "third element" in msg)
+for gap in (0.0, 1.0):
+    hit, msg = refusal(build, car_file(f"third_gap_{gap:g}.car", over={11: gap}))
+    ok(f"front third gap {gap:g} m with a live rubber table passes", not hit)
+
+# (2) vp_overrides: keys the car path does not read are refused; an allowed key passes and changes the build
+hit, msg = refusal(build, BASE, vp_overrides={"Cd_scale": 1.1, "LMUY": 0.95, "k_arb_f": 1.0e4})
+ok(f"vp_overrides Cd_scale, LMUY, k_arb_f raise ValueError listing them: {msg[:60]!r}",
+   hit and all(k in msg for k in ("Cd_scale", "LMUY", "k_arb_f")))
+mb0 = float(c_car.vp.mb)
+c_mb = quiet(build, BASE, vp_overrides={"mb": mb0 + 20.0})
+ok(f"vp_overrides mb (allowed) passes and changes the build (vp.mb {mb0:.1f} -> {float(c_mb.vp.mb):.1f})",
+   abs(float(c_mb.vp.mb) - (mb0 + 20.0)) < 1e-9)
+
+# (3) homotopy with a car: refused before any solver exists
+solver_calls = []
+
+
+def counted(*a, **k):
+    solver_calls.append(1)
+    return fake(*a, **k)
+
+
+T._make_solver = counted
+try:
+    hit, msg = refusal(build, BASE, homotopy=True)
+finally:
+    T._make_solver = fake
+ok(f"car with homotopy=True raises ValueError before any solve (solver calls {len(solver_calls)}): {msg[:50]!r}",
+   hit and "homotopy" in msg and not solver_calls)
+
+# (4) a car file without fields the model reads: one ValueError listing every missing field
+hit, msg = refusal(build, car_without("no_brake_rear_damper.car", (107, 33)))
+ok(f"car without the brake force and the rear left damper: one ValueError listing both: {msg[:70]!r}",
+   hit and "brake.force" in msg and "susp.damper_rl" in msg and msg.count("lacks the fields") == 1)
+
+# (5) a car has one QSS load model: load_model other than 'vehModel' is refused (screen and envelope)
+hit, msg = refusal(MLTP_screen, circuit=CHASSIS, car=CAR, chassissim_dir=INSTALL, physics="corrected",
+                   save=False, verbose=False, load_model="nominal")
+ok(f"MLTP_screen with load_model='nominal' and a car raises ValueError: {msg[:60]!r}",
+   hit and "load_model must be 'vehModel'" in msg)
+ctx_n = Ctx()
+quiet(userOpts, ctx_n, circuit=CHASSIS, car=CAR, chassissim_dir=INSTALL, physics="corrected")
+hit, msg = refusal(build_envelope, ctx_n, load_model="nominal")
+ok("build_envelope with load_model='nominal' and a car raises ValueError", hit and "load_model must be 'vehModel'" in msg)
+
+# (6) ATD On with a car: no ATD warning, and the build has ATD off (the car takes its differential from the file)
+with warnings.catch_warnings(record=True) as seen, contextlib.redirect_stdout(io.StringIO()):
+    warnings.simplefilter("always")
+    c_atd = build_loud(BASE, ATD="On")
+atd_w = [str(w.message) for w in seen if "ATD" in str(w.message)]
+ok(f"ATD='On' with a car: no ATD warning and the build has ATD off (pt.ATD {c_atd.pt.ATD}, ATD {c_atd.ATD})",
+   not atd_w and c_atd.pt.ATD == 0 and c_atd.ATD == "Off")
+
+# (7) DRS car with its zone outside the circuit (the circuit runs 0 to 600 m)
+hit, msg = refusal(build, car_file("drs_outside.car", over={336: 1.0, 340: 700.0, 341: 800.0}))
+ok(f"DRS car with the zone outside the circuit raises ValueError saying 'outside': {msg[:70]!r}",
+   hit and "outside" in msg)
+
+# (8) rear differential type 4 without its differential map
+hit, msg = refusal(build, car_without("diff4_no_map.car", (116,), over={113: 4.0}))
+ok(f"rear diff type 4 without its map raises ValueError: {msg[:60]!r}", hit and "differential map" in msg)
+
+
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
-    print("[cs_wiring] vendor GP3 2013 Eastern Creek")
-    car_path = Path(cs_dir).parent / "Models" / "GP3 2013" / "Eastern Creek, AU" / "def_GP3 2013.car"
-    ok("GP3 2013 Eastern Creek car file found", car_path.is_file())
-    c = build(str(car_path), circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir, save=True,
+    models = Path(cs_dir).parent / "Models"
+    print("[cs_wiring] vendor: GP3 2013, Formula 2, GT3 (folder globs, no file names)")
+    gp3 = sorted(models.glob("GP3*/*/def*.car"))
+    f2 = sorted(models.glob("Formula 2/*/*.car"))
+    gt3 = [p for p in sorted(models.glob("GT3/*/*.car")) if any(p.parent.glob("*.ld"))]
+    ok("GP3 2013, Formula 2 and GT3 car files found by folder globs", bool(gp3) and bool(f2) and bool(gt3))
+
+    c = build(str(gp3[0]), circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir, save=True,
               results_dir=os.path.join(TMP.name, "gp3"))
     name = os.path.basename(c.out_path)
-    ok(f"GP3 result stem holds '_car_def_GP3_2013' ({name})", "_car_def_GP3_2013" in name)
+    slug = gp3[0].stem.replace(" ", "_")
+    gap3 = float(c.cs.susp.gap_third_f)
+    ok(f"GP3 2013 builds, front third gap {gap3:g} m passes, result stem holds '_car_{slug}' ({name})",
+       gap3 >= 0.5 and f"_car_{slug}" in name)
+
+    hit, msg = refusal(build, str(f2[0]), circuit="chassissim:Adelaide", chassissim_dir=cs_dir)
+    ok(f"Formula 2 car raises the third-element ValueError naming the rear axle: {msg[:70]!r}",
+       hit and "rear third bump rubber" in msg and "third element" in msg)
+
+    c_gt3 = build(str(gt3[0]), circuit="chassissim:Adelaide", chassissim_dir=cs_dir)
+    ok(f"GT3 car builds: nx {c_gt3.m23.nx}, ATD off", c_gt3.m23.nx == 23 and c_gt3.pt.ATD == 0)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

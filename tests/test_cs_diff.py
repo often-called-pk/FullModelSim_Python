@@ -103,7 +103,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,
     390: 350.0,
 }
-EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.010, 12: 0.010})
+EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0})   # third gaps 0: no third element
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
@@ -364,14 +364,14 @@ ok(f"super: F_rl + F_rr = P at the unequal loads (err {abs(fl + fr - 5000.0):.1e
    abs(fl + fr - 5000.0) <= 1e-9 * 5000.0)
 
 print("[cs_diff] unknown differential types")
-for label, rt, omit, tok in (("0", 0.0, (), "0.0"), ("6", 6.0, (), "6.0"), ("None", None, (113,), "None")):
+for label, rt, omit, tok in (("0", 0.0, (), "differential type 0.0"), ("6", 6.0, (), "differential type 6.0"),
+                             ("None", None, (113,), "lacks the fields ['diff.rear_type']")):
     msg = ""
     try:
         build(write_car(f"diff_bad_{label}.car", rt, omit))
     except ValueError as e:
         msg = str(e)
-    ok(f"rear type {label}: ValueError naming 'differential type {tok}' ({msg[:60]!r})",
-       f"differential type {tok}" in msg)
+    ok(f"rear type {label}: ValueError naming '{tok}' ({msg[:60]!r})", tok in msg)
 
 print("[cs_diff] open-diff graph unchanged")
 car1, ev1 = BUILD[1], ev[1]

@@ -16,7 +16,6 @@ out of the box on any platform.
 
 import os
 import functools
-import hashlib
 import inspect
 import json
 import numbers
@@ -290,14 +289,10 @@ def car_id(car):
     sha8 = the first 8 hex digits of the sha256 of the file bytes (as chassissim.load_car). An edited file gives
     a new id. Raise ValueError for a file that does not exist."""
     path = os.path.abspath(str(car)[len("chassissim:"):])
-    h = hashlib.sha256()
     try:
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
+        return f"{path}#{chassissim.file_sha8(path)}"
     except OSError as e:
         raise ValueError(f"Cannot read the car file {path}: {e}") from e
-    return f"{path}#{h.hexdigest()[:8]}"
 
 
 def setup_knobs(kw):
@@ -513,6 +508,9 @@ def userOpts(ctx,
                 raise ValueError(f"A ChassisSim car does not accept {name}={locals()[name]!r}. {why}")
         ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):])
         ctx.car = f"{ctx.cs.path}#{ctx.cs.sha8}"
+        chassissim.check_car(ctx.cs)
+        chassissim.third_refusal(ctx.cs)
+        chassissim.vp_refusal(vp_overrides)
         flags = [getattr(ctx.cs.susp, f"gap_flag_{c}") for c in ("fl", "fr", "rl", "rr")]
         if any(f not in (0, 1) for f in flags):
             raise ValueError("The car file holds a bump rubber gap flag (cids 204 to 207) other than 0 or 1.")
@@ -572,8 +570,7 @@ def userOpts(ctx,
         raise ValueError(f"Unknown AeroConfig '{AeroConfig}'.")
     vp.ActAero = actaero_map[AeroConfig]
 
-    if ctx.cs is not None and ATD == "On":
-        warnings.warn("A ChassisSim car has no ATD. ATD is set to Off.")
+    if ctx.cs is not None:          # the car takes its differential from the file
         ATD = "Off"
 
     # conflict guard (ATD and 4 motors cannot both be on) -- matches MATLAB warning
