@@ -2,7 +2,7 @@
 
 resample() gives the channels at equal steps of distance or time. export_monster() writes a ChassisSim
 monster file. export_csv() writes the same table as a CSV with a header row.
-read_monster() and read_csv() read a logger file as the same channels. split_laps() cuts a log into laps.
+read_monster(), read_csv() and read_ld() read a logger file as the same channels. split_laps() cuts a log into laps.
 project() adds the track position s and n to a log. overlay_report() writes a Plotly page that compares
 a log lap with the simulation. Plotly loads only inside overlay_report().
 `data` is the result of MLTP (ctx.data) or of load_solution(). It needs OPT_d, s_full, t_full, x_full and
@@ -12,6 +12,7 @@ import csv
 import itertools
 import json
 import os
+import struct
 import warnings
 
 import numpy as np
@@ -326,3 +327,89 @@ def overlay_report(data, log, path, lap=None, step=1.0):
                             f"{get_field(data, 'start_state', '?')}), delta at the end {dt[-1]:+.3f} s")
     fig.write_html(path, include_plotlyjs=True, full_html=True)
     return dict(lap=k, log_time=T_log, sim_time=T_sim, delta_end=float(dt[-1]), corr=corr, laps=table, fig=fig)
+
+
+_LD_DTYPE = {(5, 4): "<i4", (3, 2): "<i2"}                     # (class, size) of a channel record -> numpy dtype
+# key: (names, unit, factor). The first name that the file holds wins. Signs are model signs (left positive).
+LD_MAP = {
+    "s": (("Lap Distance",), "m", 1.0),
+    "vx": (("Speed FL", "Wheel Speed FL"), "km/h", 1 / 3.6),
+    "ax": (("G Force - Longitudinal",), "G", G),
+    "ay": (("G Force - Lateral",), "G", G),
+    "delta": (("Steered Angle",), "deg", -np.pi / 180),
+    "r": (("Yaw rate",), "deg/s", -np.pi / 180),
+    "xs_fl": (("Damper Position - Front L",), "mm", 1e-3), "xs_fr": (("Damper Position - Front R",), "mm", 1e-3),
+    "xs_rl": (("Damper Position - Rear L",), "mm", 1e-3), "xs_rr": (("Damper Position - Rear R",), "mm", 1e-3),
+    "throttle": (("Throttle Pos",), "%", 0.01),
+    "om_gear": (("Engine RPM",), "rpm", np.pi / 30),
+}
+
+
+def _ld_channels(fh):
+    """Return the channel records of an open .ld file as dicts (name, unit, count, rate, offset, format)."""
+    head = fh.read(0x58)
+    if len(head) < 0x58 or int.from_bytes(head[:4], "little") != 0x40:
+        raise ValueError("The file is not a MoTeC .ld file. Its first 4 bytes are not 0x40.")
+    ptr, n_ch = int.from_bytes(head[8:12], "little"), int.from_bytes(head[0x56:0x58], "little")
+    out = []
+    while ptr and len(out) < n_ch:
+        fh.seek(ptr)
+        m = fh.read(124)
+        if len(m) < 124:
+            raise ValueError("The channel list of the .ld file is cut short.")
+        nxt, off, n, _, cls, size, rate, sh, mul, sc, dec = struct.unpack_from("<4xIIIHHHHhhhh", m)
+
+        def text(a, b):
+            return m[a:b].split(b"\0")[0].decode("latin1").strip()
+        out.append(dict(name=text(32, 64), unit=text(72, 84), n=n, rate=rate, off=off, dec=dec, cls=(cls, size),
+                        scale=(sh, mul, sc)))
+        ptr = nxt
+    return out
+
+
+def read_ld(path, channel_map=None):
+    """Read a ChassisSim MoTeC .ld log as a dict of SI channels with model signs. The reader streams the file:
+    it reads the channel list and then only the mapped channels.
+    channel_map is {channel: name} or {channel: (name or names, unit, factor)}. A tuple of names takes the first
+    name that the file holds. The channel is factor * value. The unit of the map must equal the unit of the file.
+    Without a map, LD_MAP applies and the reader skips channels that the file lacks. With a map, a missing
+    channel raises ValueError.
+    The result has t (sample number / rate of the first mapped channel). A channel with another rate or count is
+    interpolated onto t. When s (Lap Distance) is mapped, the result also has lap, the count of distance wraps.
+    A ChassisSim log starts with a short lead-in (lap 0), then the simulated lap (lap 1) and a tail (lap 2).
+    Signs (measured on ChassisSim .ld files, see docs/logging_spec.md Table C): the log shows ay to the left and
+    steer and yaw rate to the right. LD_MAP flips steer and yaw rate to the model sign. xs_* is the damper travel.
+    The reader supports int16 and int32 channels with shift 0, mul 1 and scale 1. It raises ValueError
+    for any other channel that it must read."""
+    ent = {}
+    for k, v in (LD_MAP if channel_map is None else channel_map).items():
+        v = (v, None, 1.0) if isinstance(v, str) else tuple(v)
+        ent[k] = ((v[0],) if isinstance(v[0], str) else tuple(v[0]), v[1], v[2])
+    with open(path, "rb") as fh:
+        chs = {c["name"]: c for c in _ld_channels(fh)}
+    out, t0, r0 = {}, None, None
+    for k, (names, unit, f) in ent.items():
+        c = next((chs[n] for n in names if n in chs), None)
+        if c is None:
+            if channel_map is not None:
+                raise ValueError(f"The file holds none of the channels {names!r}.")
+            continue
+        if unit is not None and c["unit"] != unit:
+            raise ValueError(f"Channel {c['name']!r} has the unit {c['unit']!r}. The map says {unit!r}.")
+        if c["scale"] != (0, 1, 1) or c["cls"] not in _LD_DTYPE:
+            raise ValueError(f"Channel {c['name']!r} has an unsupported format (class and size {c['cls']}, "
+                             f"shift, mul and scale {c['scale']}). The reader supports int16 and int32 with 0, 1, 1.")
+        raw = np.fromfile(path, dtype=_LD_DTYPE[c["cls"]], count=c["n"], offset=c["off"])
+        if raw.size != c["n"]:
+            raise ValueError(f"Channel {c['name']!r} is cut short: {raw.size} of {c['n']} samples.")
+        v = f * raw * 10.0 ** -c["dec"]
+        if t0 is None:
+            t0, r0 = np.arange(c["n"]) / c["rate"], c["rate"]
+        elif c["n"] != t0.size or c["rate"] != r0:
+            v = np.interp(t0, np.arange(c["n"]) / c["rate"], v)
+        out[k] = v
+    if t0 is not None:
+        out["t"] = t0
+        if "s" in out:
+            out["lap"] = np.cumsum(np.r_[0, np.diff(out["s"]) < -0.5 * out["s"].max()])
+    return out
