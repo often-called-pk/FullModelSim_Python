@@ -180,7 +180,7 @@ def _now():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _model_hash(circuit, circuits_dir="Circuits", data_dir="Data", tyre_set="MF205"):
+def _model_hash(circuit, circuits_dir="Circuits", data_dir="Data", tyre_set="MF205", chassissim_dir=None):
     """Hash of the code (next to this file) and the data (relative to the working
     directory) a confirmation depends on; location independent. A tyre file
     (tyre_set='file:<path>') is data too: a change to that file changes the hash."""
@@ -188,6 +188,12 @@ def _model_hash(circuit, circuits_dir="Circuits", data_dir="Data", tyre_set="MF2
     data = [os.path.join(data_dir, "DATA_AA.mat")]
     if circuit in _REAL_CIRCUITS:
         data.append(os.path.join(circuits_dir, _REAL_CIRCUITS[circuit]))
+    from functions import chassissim
+    if circuit.startswith(chassissim.PREFIX):
+        cs = chassissim.install_dir(chassissim_dir)
+        data += [chassissim.load_circuit(circuit[len(chassissim.PREFIX):], cs).curvature,
+                 os.path.join(cs, "Circ_prop.ini")]
+        data = [d for d in data if os.path.isfile(d)]
     if str(tyre_set).startswith("file:"):
         data.append(tyre_set[5:])
     return S.fingerprint([S.model_hash(_CODE_FILES, root=_REPO),
@@ -430,7 +436,8 @@ def _worker_init(spec):
         if spec["root"] not in sys.path:
             sys.path.insert(0, spec["root"])
         _W["model_hash"] = _model_hash(spec["circuit"], spec.get("circuits_dir", "Circuits"),
-                                       spec.get("data_dir", "Data"), spec.get("tyre_set", "MF205"))
+                                       spec.get("data_dir", "Data"), spec.get("tyre_set", "MF205"),
+                                       spec.get("chassissim_dir"))
         _W["pinned"] = None
         if spec.get("pin_hsl") and str(spec.get("linear_solver", "ma57")).startswith("ma"):
             import ctypes
@@ -1126,7 +1133,8 @@ class _Sweep:
         import scipy
         self._resolve_seed()
         self.mhash = _model_hash(self.circuit, kw.get("circuits_dir", "Circuits"),
-                                 kw.get("data_dir", "Data"), kw.get("tyre_set", "MF205"))
+                                 kw.get("data_dir", "Data"), kw.get("tyre_set", "MF205"),
+                                 kw.get("chassissim_dir"))
         fp_in = dict(specs=self.kept, dropped=self.dropped, n_samples=self.n, sampler=self.sampler,
                      seed=self.seed, circuit=self.circuit, vi=self.vi, ni=self.ni,
                      config=[self.AeroConfig, self.eATD, self.eEM4], TyreModel=self.TyreModel,
@@ -1295,7 +1303,7 @@ class _Sweep:
                     circuits_dir=self.kw.get("circuits_dir", "Circuits"),
                     data_dir=self.kw.get("data_dir", "Data"), pin_hsl=bool(self.pin_hsl),
                     linear_solver=self.kw.get("linear_solver", "ma57"), hsl_dir=self.kw.get("hsl_dir"),
-                    tyre_set=self.kw.get("tyre_set", "MF205"))
+                    tyre_set=self.kw.get("tyre_set", "MF205"), chassissim_dir=self.kw.get("chassissim_dir"))
         self.runner = _Runner(max(self.P, 1), spec, inline=(self.P == 0), say=self.say)
         if self.hub is not None:
             return

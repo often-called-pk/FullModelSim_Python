@@ -25,7 +25,7 @@ The binary `.car` file in which ChassisSim stores one car. It holds the mass, ge
 _Avoid_: car model, setup file
 
 **Text inputs**:
-The plain-text files that ChassisSim reads beside a car file: aeromaps, circuit curvature, altitude and road camber, grip factors, suspension hardpoints, tyre load curves, and the lists of springs, bars and wing levels.
+The plain-text files that ChassisSim reads beside a car file. They hold aeromaps, circuit curvature, altitude and road camber, grip factors, suspension hardpoints and tyre load curves. They also hold the lists of springs, bars and wing levels.
 _Avoid_: ini files, data files
 
 ### Tyres
@@ -63,11 +63,11 @@ The origin of the circuit data that one solve uses: a FullModelSim circuit or a 
 _Avoid_: track file, track source
 
 **ChassisSim circuit**:
-A circuit that ChassisSim text inputs define: the curvature of the driven line, plus an optional altitude and road-camber file, grip factors and a road profile. It has no track width.
+A circuit that ChassisSim text inputs define. It has the curvature of the driven line. It can also have an altitude and road-camber file, grip factors and a road profile. It has no track width.
 _Avoid_: ChassisSim track, curvature file
 
 **Grip factor**:
-A multiplier on tyre grip that belongs to the circuit: one base value for the whole circuit, times an optional value that changes along the track.
+A multiplier on tyre grip that belongs to the circuit. It is one base value for the whole circuit, times an optional value that changes along the track.
 _Avoid_: friction factor, track grip, mu scale
 
 **Road profile**:

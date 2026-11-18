@@ -21,7 +21,7 @@
 - D16 QSS: full QSS path for ChassisSim cars (tyre peak at background temperature, gear envelope, aeromap at quasi-static ride heights, DRS in zones, circuit grip/grade/banking).
 - D17 STBI correction map: teammate decodes the per-step stability formula first, then decide. Until then the map is read, not applied.
 - D18 Comparison: MoTeC `.ld` reader feeding the E5 log tools (overlay channel by channel).
-- D19 Acceptance: gate 1 decoded data exact (variants differ only in their changed field, values match the `Car_*.ini` lists where they overlap). Gate 2 fixed-line GP3 lap within 2% of ChassisSim. Channel RMS reported, no hard gate. Free-line lap <= fixed-line lap.
+- D19 Acceptance: gate 1 decoded data exact (byte round trip of every shipped car, GP3 variant record sets pinned as measured, values match the `Car_*.ini` lists where they overlap). Gate 2 fixed-line GP3 lap within 2% of ChassisSim. Channel RMS reported, no hard gate. Free-line lap <= fixed-line lap.
 - D20 EV energy model (pack SoC, sag, regen budget, pack thermal, motor envelope): separate later plan, after the owner supplies pack data.
 - D21 API: `car='chassissim:<path to .car>'`, `circuit='chassissim:<name>'`, install folder from kwarg `chassissim_dir` or env `CHASSISSIM_DIR`.
 - D22 GUI: car and circuit combos, full setup editing. D23 edits saved as a new `.car` (D9 gate first).
@@ -39,7 +39,7 @@
 
 ## Data facts (measured 2026-11-18, binding)
 - Curvature files: 2 columns `k [1/m] s [m]`, no header, CRLF, tab or space, irregular spacing 0.15-7.6 m. Right turn positive (docs + Brands Hatch clockwise +0.985 laps, Phillip Island anticlockwise -1.025 laps). FullModelSim negates k. Traces do not close (Eastern Creek -0.646 laps, end gap 971 m): load as open `s, k`, no closure correction, no periodic start.
-- `Circ_prop.ini`: `[CircuitN]` blocks, keys `Circuit name`, `Circuit file name`, `Base Grip factor`, `Circuit bp name/flag`, optional gsf/bsf/alt keys. Eastern Creek = base grip 1.0, `tr_eastcreek.txt`, `bump_profile_ec.dat`. Four curvature files have no block (orphans: Brands Hatch, Magny Cours, Portimao, FSAE).
+- `Circ_prop.ini`: `[CircuitN]` blocks, keys `Circuit name`, `Circuit file name`, `Base Grip factor`, `Circuit bp name/flag`, optional gsf/bsf/alt keys. Eastern Creek = base grip 1.0, `tr_eastcreek.txt`, `bump_profile_ec.dat`. Four curvature files have no block (orphans: Brands Hatch, Magny Cours, Portimao, FSAE Sample circuit).
 - alt/camber: line 1 base altitude m, rows `s, pitch rad, camber rad`, one row fewer than the curvature file. Only Brands Hatch and Portimao, camber all 0. Bump: `FL FR RL RR [mm] s [m]`.
 - `.ld`: 124-byte channel records, int32 dec 2 (value = raw/100), 50 Hz, no time channel. Sim files: 203 channels, 3 segments (lead-in, lap, 4 s tail) split at the Lap Distance wrap. Signs measured on GP3 Eastern Creek against the curvature: `G Force - Lateral` left positive (corr -0.999 with v^2 k right-positive), `Steered Angle` and `Yaw rate` right positive. Gate lap time = the variant's `.ldx` fastest time (= `.ld` lap 1, up to 0.03 s above the true lap). `rc_data.dat` (44-column CSV, flying lap, true lap time) holds only the LAST run of its folder.
 

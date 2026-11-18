@@ -79,6 +79,9 @@ def _stop_force(xs):
 
 def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
+    g = getattr(ctx, "grip", 1.0)               # circuit base grip: scales both mu factors
+    if g != 1.0:
+        mf = SimpleNamespace(**{**vars(mf), "LMUX": mf.LMUX * g, "LMUY": mf.LMUY * g})
     phys = getattr(ctx, "physics", "matlab")    # "corrected": opt-in physics fixes (userOpts)
     Steering = getattr(ctx, "Steering", "NA") if Steering is None else Steering
     CamberGain = getattr(ctx, "CamberGain", "Off") if CamberGain is None else CamberGain

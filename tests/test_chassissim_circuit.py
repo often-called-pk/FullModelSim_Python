@@ -8,11 +8,13 @@ it prints SKIP.
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
+import hashlib
 import io
 import os
 import tempfile
 import warnings
 
+import casadi as ca
 import numpy as np
 
 import functions.transcription as T
@@ -23,6 +25,7 @@ from functions.importfile import circuit_slug, result_stem
 from MLTP import MLTP
 from MLTP_initial import MLTP_initial
 from MLTP_screen import MLTP_screen
+from setup_sweep import _model_hash
 from userOpts import setup_knobs, userOpts
 
 N_OK = 0
@@ -51,9 +54,14 @@ def raises(exc, fn, *a, **kw):
     return False
 
 
-def fake(ca, nlp, opts, info=None):
+GRAPHS = []  # sha256 of each NLP function (w -> f, g) handed to the fake solver, in build order
+
+
+def fake(ca_, nlp, opts, info=None):
     """Stand-in for functions.transcription._make_solver: returns the start point, no iterations."""
     def solver(**k):
+        fg = ca.Function("fg", [nlp["x"]], [nlp["f"], nlp["g"]])
+        GRAPHS.append(hashlib.sha256(fg.serialize().encode()).hexdigest())
         return {"x": k["x0"], "f": 0.0, "lam_g": np.zeros(nlp["g"].numel()), "lam_x": np.zeros(nlp["x"].numel())}
     solver.stats = lambda: {"iter_count": 0, "return_status": "Fake"}
     if info is not None:
@@ -116,6 +124,23 @@ def build_install(root):
     alt = "12.5\t\t\r\n0.0\t0.001\t0.002\r\n600.0\t-0.003\t0.004\r\n1200.0\t0.0\t0.0\r\n"
     write_text(os.path.join(circ, "alt_beta.txt"), alt)
     write_text(os.path.join(circ, "alt_rcamb_Orphan.txt"), alt)
+    return root
+
+
+def blk(i, name, f, g):
+    return (f"[Circuit{i}]\r\nCircuit name = {name}\r\nCircuit file name = {f}\r\nBase Grip factor = {g}\r\n"
+            "Circuit bp name = default.dat\r\nCircuit bp flag = 0\r\n\r\n")
+
+
+def build_grip(root):
+    """Install with three circuits on one curvature: grip 1.2 (G12), 1.1 (G11), 1.0 (G10)."""
+    circ = os.path.join(root, "Circuits")
+    os.makedirs(circ)
+    write_text(os.path.join(root, "Circ_prop.ini"),
+               "[Total Circ prop]\r\nTotal circuits = 3\r\n\r\n"
+               + blk(0, "G12", "tr_g12.txt", "1.2") + blk(1, "G11", "tr_g11.txt", "1.1") + blk(2, "G10", "tr_g10.txt", "1.0"))
+    for n in ("g12", "g11", "g10"):
+        write_curv(os.path.join(circ, f"tr_{n}.txt"), S, K)
     return root
 
 
@@ -235,16 +260,21 @@ with tempfile.TemporaryDirectory() as tmp:
     print("== userOpts grip")
     ctx = Ctx()
     quiet(userOpts, ctx, circuit="chassissim:Alpha Park", chassissim_dir=root)
-    ok("userOpts: grip 1.1 gives LMUX 1.1", ctx.mf.LMUX == 1.1)
-    ok("userOpts: grip 1.1 gives LMUY 1.1", ctx.mf.LMUY == 1.1)
-    ctx = Ctx()
-    quiet(userOpts, ctx, circuit="chassissim:Alpha Park", chassissim_dir=root, vp_overrides={"LMUY": 0.9})
-    ok("userOpts: grip 1.1 multiplies a LMUY override of 0.9 to 0.99", abs(ctx.mf.LMUY - 0.99) < 1e-12)
-    ok("userOpts: LMUX stays 1.1 with the LMUY override", ctx.mf.LMUX == 1.1)
+    ok("userOpts: grip 1.1 sets ctx.grip 1.1", ctx.grip == 1.1)
+    ok("userOpts: grip 1.1 leaves ctx.mf.LMUX a float 1.0", type(ctx.mf.LMUX) is float and ctx.mf.LMUX == 1.0)
+    ok("userOpts: grip 1.1 leaves ctx.mf.LMUY a float 1.0", type(ctx.mf.LMUY) is float and ctx.mf.LMUY == 1.0)
     ctx = Ctx()
     quiet(userOpts, ctx, circuit="chassissim:Beta Ring", chassissim_dir=root)
-    ok("userOpts: grip 1.0 leaves LMUX a float 1.0", type(ctx.mf.LMUX) is float and ctx.mf.LMUX == 1.0)
-    ok("userOpts: grip 1.0 leaves LMUY a float 1.0", type(ctx.mf.LMUY) is float and ctx.mf.LMUY == 1.0)
+    ok("userOpts: grip 1.0 sets ctx.grip 1.0", ctx.grip == 1.0)
+    ok("userOpts: grip 1.0 leaves ctx.mf.LMUX a float 1.0", type(ctx.mf.LMUX) is float and ctx.mf.LMUX == 1.0)
+    ok("userOpts: grip 1.0 leaves ctx.mf.LMUY a float 1.0", type(ctx.mf.LMUY) is float and ctx.mf.LMUY == 1.0)
+    ctx = Ctx()
+    quiet(userOpts, ctx, circuit="chassissim:Alpha Park", chassissim_dir=root, vp_overrides={"LMUY": 0.9})
+    ok("userOpts: LMUY override 0.9 stays 0.9 in ctx.mf", ctx.mf.LMUY == 0.9)
+    ok("userOpts: grip 1.1 stays in ctx.grip with the LMUY override", ctx.grip == 1.1)
+    alpha_c = quiet(cs.load_circuit, "Alpha Park", root)
+    ok("load_circuit: curvature is the absolute curvature file path",
+       os.path.isabs(alpha_c.curvature) and alpha_c.curvature.endswith("tr_alpha park.txt"))
 
     print("== stems and plot folder")
     stem = result_stem("chassissim:Eastern Creek, AU", "Static_ATDOn_EM4Off")
@@ -263,8 +293,8 @@ with tempfile.TemporaryDirectory() as tmp:
     ok("MLTP: builds and returns a ctx", res is not None and hasattr(res, "track"))
     ok("MLTP: built track s equals the file s", np.array_equal(res.track.s, S))
     ok("MLTP: built track k equals the negated file k", np.array_equal(res.track.k, -K))
-    ok("MLTP: grip 1.1 reaches ctx.mf.LMUX", res.mf.LMUX == 1.1)
-    ok("MLTP: grip 1.1 reaches ctx.mf.LMUY", res.mf.LMUY == 1.1)
+    ok("MLTP: grip 1.1 is kept in ctx.grip", res.grip == 1.1)
+    ok("MLTP: ctx.mf.LMUX stays a float 1.0 with grip 1.1", type(res.mf.LMUX) is float and res.mf.LMUX == 1.0)
 
     plots = os.path.join(tmp, "Plots")
     quiet(MLTP, circuit="chassissim:Alpha Park", chassissim_dir=root, save=False, plot=True,
@@ -280,6 +310,75 @@ with tempfile.TemporaryDirectory() as tmp:
           results_dir=res_dir, linear_solver="mumps", tyre_set="CopyB")
     ok("MLTP_initial: writes init_cs_Beta_Ring.mat and init_cs_Beta_Ring_CopyB.mat only",
        sorted(os.listdir(res_dir)) == ["init_cs_Beta_Ring.mat", "init_cs_Beta_Ring_CopyB.mat"])
+
+    print("== grip: equivalence, product, model hash, QA error")
+    gdir = build_grip(os.path.join(tmp, "Grip"))
+    g12, g11, g10 = "chassissim:G12", "chassissim:G11", "chassissim:G10"
+
+    def qss_lap(circuit, **kw):
+        return float(quiet(MLTP_screen, circuit=circuit, chassissim_dir=gdir, save=False, verbose=False, **kw).data.lap_time)
+
+    def nlp_hash(circuit, **kw):
+        GRAPHS.clear()
+        quiet(MLTP, circuit=circuit, chassissim_dir=gdir, save=False, plot=False, warm_start=None,
+              linear_solver="mumps", **kw)
+        return GRAPHS[-1]  # the 23-state NLP is built last
+
+    ctx = Ctx()
+    quiet(userOpts, ctx, circuit=g12, chassissim_dir=gdir)
+    ok("grip 1.2 circuit: ctx.grip 1.2, ctx.mf.LMUX and LMUY stay float 1.0",
+       ctx.grip == 1.2 and type(ctx.mf.LMUX) is float and ctx.mf.LMUX == 1.0 and ctx.mf.LMUY == 1.0)
+    la = qss_lap(g12)
+    lb = qss_lap(g10, vp_overrides={"LMUX": 1.2, "LMUY": 1.2})
+    ok("grip 1.2 == grip 1.0 with LMUX = LMUY = 1.2: QSS lap bit for bit", la == lb)
+    ok("grip 1.2 changes the QSS lap against grip 1.0 alone", la != qss_lap(g10))
+    ha = nlp_hash(g12)
+    hb = nlp_hash(g10, vp_overrides={"LMUX": 1.2, "LMUY": 1.2})
+    ok("grip 1.2 == grip 1.0 with LMUX = LMUY = 1.2: 23-state graph hash equal", ha == hb)
+    ok("grip 1.2 changes the 23-state graph against grip 1.0 alone", ha != nlp_hash(g10))
+
+    lp = qss_lap(g11, vp_overrides={"LMUY": 0.9})
+    lq = qss_lap(g10, vp_overrides={"LMUX": 1.1, "LMUY": 0.9 * 1.1})
+    ctx = Ctx()
+    quiet(userOpts, ctx, circuit=g11, chassissim_dir=gdir, vp_overrides={"LMUY": 0.9})
+    ok("grip 1.1 with LMUY 0.9: ctx.mf.LMUY == 0.9", ctx.mf.LMUY == 0.9)
+    ok("grip 1.1 with LMUY 0.9 == grip 1.0 with LMUX 1.1, LMUY 0.9*1.1: QSS lap bit for bit", lp == lq)
+
+    curv = os.path.join(gdir, "Circuits", "tr_g12.txt")
+    ini_p = os.path.join(gdir, "Circ_prop.ini")
+    with open(curv, "rb") as f:
+        curv_bytes = f.read()
+    with open(ini_p, "rb") as f:
+        ini_bytes = f.read()
+    h0 = _model_hash(g12, chassissim_dir=gdir)
+    ok("model hash: equal when nothing changes", h0 == _model_hash(g12, chassissim_dir=gdir))
+    write_curv(curv, S, K * 1.01)
+    ok("model hash: changes with the curvature file bytes", _model_hash(g12, chassissim_dir=gdir) != h0)
+    with open(curv, "wb") as f:
+        f.write(curv_bytes)
+    ok("model hash: back to h0 after restoring the curvature file", _model_hash(g12, chassissim_dir=gdir) == h0)
+    with open(ini_p, "wb") as f:
+        f.write(ini_bytes + b"; changed\r\n")
+    ok("model hash: changes with Circ_prop.ini", _model_hash(g12, chassissim_dir=gdir) != h0)
+    with open(ini_p, "wb") as f:
+        f.write(ini_bytes)
+    ok("model hash: back to h0 after restoring Circ_prop.ini", _model_hash(g12, chassissim_dir=gdir) == h0)
+
+    nan_root = os.path.join(tmp, "NanInstall")
+    os.makedirs(os.path.join(nan_root, "Circuits"))
+    write_text(os.path.join(nan_root, "Circ_prop.ini"),
+               "[Total Circ prop]\r\nTotal circuits = 1\r\n\r\n" + blk(0, "Nan Track", "tr_nan.txt", "1.0"))
+    write_text(os.path.join(nan_root, "Circuits", "tr_nan.txt"),
+               "nan\t0.0\r\n" + "".join(f"{float(k)!r}\t{float(s)!r}\r\n" for k, s in zip(K[1:], S[1:])))
+    try:
+        quiet(userOpts, Ctx(), circuit="chassissim:Nan Track", chassissim_dir=nan_root)
+        msg = ""
+    except ValueError as e:
+        msg = str(e)
+    nan_file = os.path.join(os.path.abspath(nan_root), "Circuits", "tr_nan.txt")
+    ok("QA error: nan curvature raises ValueError naming the curvature file", nan_file in msg)
+    ok("QA error: message ends with 'Check the curvature file.'", "Check the curvature file." in msg)
+    ok("QA error: message has no k_from_xy hint", "k_from_xy" not in msg)
 
 # ---- vendor section: real ChassisSim install, only when CHASSISSIM_DIR is set ----
 REAL = os.environ.get("CHASSISSIM_DIR")

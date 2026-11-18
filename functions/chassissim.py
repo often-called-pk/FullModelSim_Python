@@ -89,7 +89,7 @@ def _find(folder, name):
 
 
 def load_circuit(name, cs_dir):
-    """Load a circuit by its ChassisSim name. Return SimpleNamespace(s, k, grip, bump, alt).
+    """Load a circuit by its ChassisSim name. Return SimpleNamespace(s, k, grip, bump, alt, curvature).
 
     k uses the model sign (left turn positive), so it is the file value with the sign flipped.
     bump and alt are file paths, or None when the circuit has no such file or the flag is off.
@@ -123,4 +123,4 @@ def load_circuit(name, cs_dir):
         tr, grip = os.path.join(circ, hit), 1.0
         bump, alt = _find(circ, f"bp_{name}.dat"), _find(circ, f"alt_rcamb_{name}.txt")
     s, k = read_curvature(tr)
-    return SimpleNamespace(s=s, k=-k, grip=grip, bump=bump, alt=alt)
+    return SimpleNamespace(s=s, k=-k, grip=grip, bump=bump, alt=alt, curvature=os.path.abspath(tr))

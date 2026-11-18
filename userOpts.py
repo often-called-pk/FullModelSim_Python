@@ -80,13 +80,12 @@ def _synthetic_curvature(circuit):
     return None
 
 
-def _checked(track, circuit, path):
+def _checked(track, circuit, path, hint="Rebuild k from x, y with functions.track_qa.k_from_xy."):
     """Run the track QA: an error raises ValueError, other issues give one warning. Return the track."""
     _, issues = check_track(track)
     errors = [text for level, text in issues if level == "error"]
     if errors:
-        raise ValueError(f"Track '{circuit}' ({path}) fails the track QA: {'; '.join(errors)}. "
-                         "Rebuild k from x, y with functions.track_qa.k_from_xy.")
+        raise ValueError(f"Track '{circuit}' ({path}) fails the track QA: {'; '.join(errors)}. {hint}")
     if issues:
         warnings.warn(f"Track '{circuit}' QA: {'; '.join(text for _, text in issues)}")
     return track
@@ -96,7 +95,8 @@ def _load_track(circuit, circuits_dir, chassissim_dir=None):
     """Build (synthetic) or load (real) the track as a namespace with .s, .k[, .x, .y]."""
     if circuit.startswith(chassissim.PREFIX):
         cs_dir = chassissim.install_dir(chassissim_dir)
-        return _checked(chassissim.load_circuit(circuit[len(chassissim.PREFIX):], cs_dir), circuit, cs_dir)
+        tr = chassissim.load_circuit(circuit[len(chassissim.PREFIX):], cs_dir)
+        return _checked(tr, circuit, tr.curvature, hint="Check the curvature file.")
     if circuit in _REAL_CIRCUITS:
         path = os.path.join(circuits_dir, _REAL_CIRCUITS[circuit])
         if not os.path.exists(path):
@@ -544,10 +544,8 @@ def userOpts(ctx,
     # ---- track ------------------------------------------------------------
     ctx.track = _load_track(circuit, circuits_dir, chassissim_dir)
     tr = ctx.track
-    g = getattr(tr, "grip", 1.0)
-    if g != 1.0:  # circuit base grip, ChassisSim "Base Grip factor"
-        ctx.mf.LMUX *= g
-        ctx.mf.LMUY *= g
+    # The circuit base grip. vehModel and the QSS envelope apply it. ctx.mf keeps the override units.
+    ctx.grip = float(getattr(tr, "grip", 1.0))
     if ctx.periodic and getattr(tr, "x", None) is not None:
         # Spa, NBR: the file stops one step short of the start. Close the lap with a
         # sample at the start point so the periodic rows join the same position.

@@ -343,7 +343,8 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     # the copy of the grip scales. vehModel cannot do this, because LMUX and LMUY also scale SVx and SVy there.
     # A plain 1.0 factor leaves the default lap bit for bit the same.
     px_mu, _, py_mu, *_ = mf_pressure(mf)
-    mf = SimpleNamespace(**{**vars(mf), "LMUX": mf.LMUX * px_mu, "LMUY": mf.LMUY * py_mu})
+    g = getattr(ctx, "grip", 1.0)                         # circuit base grip (userOpts)
+    mf = SimpleNamespace(**{**vars(mf), "LMUX": mf.LMUX * px_mu * g, "LMUY": mf.LMUY * py_mu * g})
     aero_c = aero_coefficients(vp, getattr(ctx, "aero", None))
     EM4 = int(getattr(pt, "EM4", 0))
     ATD = int(getattr(pt, "ATD", 0))
