@@ -810,6 +810,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     veh_syms += [("xs_fl", m.xs_fl), ("xs_fr", m.xs_fr),                               # damper [m], > 0 in bump
                  ("xs_rl", m.xs_rl), ("xs_rr", m.xs_rr),
                  ("sf", m.sf)]                                                         # dt/ds [s/m]
+    # Axle balance: rear share minus front share of the grip limit, oversteer positive.
+    _L = {c: ca.sqrt((getattr(m, f"fx_{c}") / getattr(m, f"mu_{c}_x")) ** 2
+                     + (getattr(m, f"fy_{c}") / getattr(m, f"mu_{c}_y")) ** 2) for c in ("fl", "fr", "rl", "rr")}
+    veh_syms += [("balance", (_L["rl"] + _L["rr"]) / (m.fz_rl + m.fz_rr)
+                  - (_L["fl"] + _L["fr"]) / (m.fz_fl + m.fz_fr))]
     labels = [k for k, _ in veh_syms]
     f_veh = ca.Function("f_veh", [m.x, m.u, m.pv], [s for _, s in veh_syms], fn_opts(ctx))
     # One call on every point. The NLP dynamics use near-hold inputs at the collocation points, not u_full

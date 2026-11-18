@@ -195,6 +195,9 @@ def plot_friction(data):
     fig = go.Figure()
     for key, rho in friction_usage(data).items():
         fig.add_trace(go.Scatter(x=s_knot, y=rho, name=key))
+    veh = _as_dict(_get(data, "vehicle"))
+    if "balance" in veh:
+        fig.add_trace(go.Scatter(x=s_knot, y=_arr(veh["balance"]), name="axle balance (rear - front)"))
     fig.add_hline(y=1.0, line=dict(color="#e24b4a", dash="dash"),
                   annotation_text="grip limit")
     fig.update_layout(template="plotly_white", title="Friction-circle usage",
