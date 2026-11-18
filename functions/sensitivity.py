@@ -140,6 +140,8 @@ def limit_prices(data, Pmax=None):
     u = get_field(data, "u_opt")
     if u is not None and (np.asarray(u)[jm] < -1e-6 * r.u_s[jm, None]).any():
         Tmax = power = np.nan           # regen: the -Tmax and P >= -Preg bounds have no price here
+    if "T_drive" in keys:
+        Tmax = power = np.nan           # a ChassisSim car has no motor rating rows: these prices do not exist
     if r.ix["pathcol"].size:
         power = np.nan                  # B3: the collocation power rows carry part of the Pmax price, not summed here
     vi = np.nan if r.xi is not None and np.isnan(r.xi[0]) else -r.lg[r.ix["start"][0]] / r.x_s[0]

@@ -46,7 +46,7 @@ STRUCT_KEYS = ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g", "n_param", "n_perio
 # Setup knobs that change the NLP without always changing its sizes: (name, value of a result that has no such
 # field). plan_full_warm_start refuses the multipliers of a source that has another value (primal only).
 WARM_KNOBS = (("start_state", "matlab"), ("between_knots", "matlab"), ("collocation", "legendre"),
-              ("state_scaling", "matlab"))
+              ("state_scaling", "matlab"), ("car", "4em"))
 
 # neutral seeds for input channels a source result does not have (as in
 # MLTP.warmstart_guesses: equal torque split, wings at 0)
@@ -222,10 +222,10 @@ def default_source(path):
     Raise ValueError if:
 
       - the file is missing
-      - data.provenance.setup lists knobs other than tyre_file (the file is not a default-setup result)
+      - data.provenance.setup lists knobs other than tyre_file and car_file (the file is not a default-setup result)
       - nlp.return_status is not in GOOD_STATUS
 
-    The default result of a tyre file holds the knob tyre_file. Its tag is in the file name. A result saved
+    The default result of a tyre file or a car file holds the knob tyre_file or car_file. Its tag is in the file name. A result saved
     before E2 has no data.provenance. Its file name is then the only check. The caller checks that the result
     fits the new NLP."""
     from functions.importfile import load_solution
@@ -233,7 +233,7 @@ def default_source(path):
         raise ValueError(f"continue_from='auto' found no stored default result {path}. Solve the default setup "
                          "of this circuit, config, tyre set, physics, mesh and start state first.")
     data = load_solution(path)
-    knobs = sorted(set(as_dict(get_field(get_field(data, "provenance"), "setup"))) - {"tyre_file"})
+    knobs = sorted(set(as_dict(get_field(get_field(data, "provenance"), "setup"))) - {"tyre_file", "car_file"})
     if knobs:
         raise ValueError(f"continue_from='auto': {path} is not a default-setup result. It holds the knobs {knobs}.")
     status = str(get_field(get_field(data, "nlp"), "return_status", "unknown"))
@@ -351,6 +351,17 @@ def plan_full_warm_start(src, expected, use_duals=True, ipopt_overrides=None):
         "full+duals"                with the warm-start recipe, then any
                                     per-call ipopt_overrides on top
     """
+    x_src = get_field(src, "x_opt")
+    nx_new = get_field(expected, "nx")
+    if x_src is not None and nx_new is not None and np.shape(x_src)[0] != int(nx_new):
+        return None, "cold", (f"source result has {np.shape(x_src)[0]} states and the target has {int(nx_new)}; "
+                              "it is not a usable warm start")
+    car = get_field(expected, "car")
+    if car is not None:     # the inputs of a car (force, N) and of the 4EM car (torque, Nm) have other units
+        have = str(get_field(src, "car", None) or "4em").strip()
+        if have != str(car).strip() and "4em" in (have, str(car).strip()):
+            return None, "cold", (f"source result used car {have!r} and the target uses {str(car).strip()!r}; "
+                                  "a ChassisSim car and the 4EM car do not seed each other")
     tyre = get_field(expected, "tyre_set")
     if tyre is not None:
         have = str(get_field(src, "tyre_set", None) or "CopyB").strip()

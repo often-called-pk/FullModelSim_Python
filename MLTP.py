@@ -266,13 +266,14 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0,
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                     x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
                     start_state=ctx.start_state, between_knots=ctx.between_knots, collocation=ctx.collocation,
-                    state_scaling=ctx.state_scaling, hnames=hnames)
+                    state_scaling=ctx.state_scaling, car=ctx.car, hnames=hnames)
     warm, mode, note = plan_full_warm_start(src, expected, use_duals=use_duals,
                                             ipopt_overrides=getattr(ctx, "ipopt_overrides", None))
     if strict and warm is None:
         raise ValueError(f"continue_from='auto': the stored default result does not fit this NLP. {note}")
     if mode == "cold":
-        print(f"[MLTP] warm start ignored: {note}; running the 7-state init")
+        print(f"[MLTP] warm start ignored: {note}. The solve starts cold "
+              f"({'from the QSS seed' if getattr(ctx, 'cs', None) is not None else 'from the 7-state init'}).")
         return None, None, mode
     print(f"[MLTP] warm start from a full result: {note} -> {mode}")
     return warmstart_guesses_full(ctx, m, src, disc), warm, mode
@@ -311,8 +312,8 @@ def warmstart_refined(ctx, m, prev_disc, prev_sol, disc_new):
     xc0 = eval_states(prev_disc, Z, disc_new["s_col"])
     x_s = np.asarray(m.x_s, dtype=float).reshape(-1)
     for X in (x0, xc0):
-        X[5:] = quasi_static_states(ctx.vp, X[0] * x_s[0],
-                                    getattr(ctx, "physics", "matlab")) / x_s[5:, None]
+        X[5:] = quasi_static_states(ctx.vp, X[0] * x_s[0], "car" if ctx.cs is not None
+                                    else getattr(ctx, "physics", "matlab")) / x_s[5:, None]
     u0 = nlp_inputs(prev_disc, Uk, disc_new["s_knot"], ctx.OPT_uinter, ctx.linear_inputs)
     return {"x0": x0, "u0": u0, "xc0": xc0}
 
@@ -457,7 +458,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     setup_tag = knob_tag(knobs)
     cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
     ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
-    lname, chain = resolve_ladder("qss23" if ctx.cs is not None else ladder)   # cold-start ladder (a car: QSS seed only)
+    if ctx.cs is not None and ladder not in ("qss23",):
+        print("[MLTP] note: a ChassisSim car has no 7-state model, so the ladder is qss23.")
+    lname, chain = resolve_ladder("qss23" if ctx.cs is not None else ladder)   # cold-start ladder
     sched = None if homotopy is None or homotopy is False else homotopy_schedule(homotopy)
     if lname != "legacy":               # QSS rungs: MA57 reallocation failed twice from them
         ctx.opts["ipopt"].setdefault("ma57_pre_alloc", MA57_PRE_ALLOC)
@@ -470,9 +473,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         if warm_start is not None or sched is not None:
             raise ValueError("continue_from='auto' replaces warm_start and homotopy. Pass only one of them.")
         # The default result of a tyre file holds one knob, tyre_file, so its stem keeps the tag of that knob.
-        file_tag = knob_tag({"tyre_file": knobs["tyre_file"]}) if "tyre_file" in knobs else ""
+        # A car file is the same: the stem has its name, and the tag has the path and the sha8 of the file.
+        file_tag = knob_tag({k: knobs[k] for k in ("tyre_file", "car_file") if k in knobs})
         path = os.path.join(results_dir, result_stem(circuit, cfg, ctx.tyre_set, ctx.mesh_requested,
-                                                     ctx.physics, ctx.start_state, setup_tag=file_tag) + ".mat")
+                                                     ctx.physics, ctx.start_state, setup_tag=file_tag,
+                                                     car=ctx.car) + ".mat")
         warm_start, src_name = default_source(path), os.path.basename(path)
         print(f"[MLTP] continue_from=auto: {path}")
     elif isinstance(warm_start, (str, os.PathLike)):
@@ -486,6 +491,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     else:
         ws_kind, ws_src = resolve_source(warm_start, loader=importfile)
         if ws_kind == "init":
+            if ctx.cs is not None:
+                raise ValueError("A ChassisSim car cannot start from a 7-state init warm_start. "
+                                 "Pass a full result of the same car or warm_start=None.")
             if ladder not in (None, "auto", "legacy"):
                 raise ValueError(f"ladder={ladder!r} with a 7-state init warm_start: the init "
                                  "replaces the lower rungs; pass ladder='auto' or warm_start=None")
@@ -593,12 +601,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             if prof is None:
                 prof = qss_profile(ctx)
                 ladder_rec["qss_lap_s"] = float(prof["lap_time"])
-            if ctx.cs is None:
-                g = seed_m23(ctx, m, disc_, prof, ctx.input_keys)
-            else:                       # the state rows come from seed_m23. The car inputs come from the same profile.
-                from vehModel_cs import cs_seed_inputs
-                g = seed_m23(ctx, m, disc_, prof, ["delta"] * m.nu)
-                g["u0"] = cs_seed_inputs(ctx, m, prof, disc_["s_knot"])
+            g = seed_m23(ctx, m, disc_, prof, ctx.input_keys)
             dt = time.time() - t_q
             if not np.isfinite(ladder_rec["qss_wall_s"]):
                 ladder_rec["qss_wall_s"] = dt
@@ -898,7 +901,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         stem = result_stem(circuit, cfg, getattr(ctx, "tyre_set", "MF205"),
                            getattr(ctx, "mesh_requested", "auto"),
                            getattr(ctx, "physics", "matlab"), ctx.start_state, n_tag=ctx.n_tag,
-                           setup_tag=setup_tag)
+                           setup_tag=setup_tag, car=ctx.car)
         out_path = os.path.join(results_dir, f"{stem}.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         ctx.out_path = out_path

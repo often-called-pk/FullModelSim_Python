@@ -271,7 +271,8 @@ def plotSDI(source, save_dir="Plots", show=False):
                        _get(data, "mesh_requested", "auto"), _get(data, "physics", "matlab"),
                        _get(data, "start_state", "matlab"),
                        n_tag=str(_get(data, "n_tag", "") or ""),
-                       setup_tag=str(_get(data, "setup_tag", "") or ""))
+                       setup_tag=str(_get(data, "setup_tag", "") or ""),
+                       car=str(_get(data, "car", "") or "") or None)
     out_dir = os.path.join(save_dir, circuit_slug(circuit), stem[len(circuit_slug(circuit)) + 1:])
     os.makedirs(out_dir, exist_ok=True)
 

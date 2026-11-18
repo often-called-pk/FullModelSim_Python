@@ -1068,6 +1068,8 @@ class _Sweep:
             specs, self.dropped = S.validate_specs(param_specs)
         self.rewarn(rec)
 
+        if kw.get("car") is not None:
+            raise ValueError("The setup sweep does not support a ChassisSim car yet. Remove car from the arguments.")
         # 1. base ctx (bad base vp_overrides raise here)
         t0 = time.perf_counter()
         with warnings.catch_warnings(record=True) as rec:

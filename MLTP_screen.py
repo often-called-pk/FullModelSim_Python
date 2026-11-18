@@ -102,6 +102,8 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
     }
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
         data["setup_tag"] = setup_tag
+    if getattr(ctx, "car", "4em") != "4em":     # a ChassisSim car: path#sha8, as in an MLTP result
+        data["car"] = ctx.car
     ctx.data = SimpleNamespace(**data)
     ctx.envelope = env
     ctx.elapsed = {"setup": t1 - t0, "envelope": t2 - t1, "grid": t3 - t2,
@@ -115,7 +117,7 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
             getattr(ctx, "mesh_requested", "auto"),
             getattr(ctx, "physics", "matlab"),
             getattr(ctx, "start_state", "matlab"),
-            n_tag=getattr(ctx, "n_tag", ""), setup_tag=setup_tag) + "_qss.mat")
+            n_tag=getattr(ctx, "n_tag", ""), setup_tag=setup_tag, car=getattr(ctx, "car", None)) + "_qss.mat")
         sio.savemat(out_path, {"data": data}, do_compression=True)
         ctx.out_path = out_path
         if verbose:

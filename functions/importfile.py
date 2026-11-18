@@ -112,13 +112,15 @@ def circuit_slug(circuit):
 
 
 def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="matlab",
-                start_state="matlab", n_tag="", setup_tag=""):
+                start_state="matlab", n_tag="", setup_tag="", car=None):
     """File stem (no extension) of a saved MLTP result; casadi-free, so MLTP and
     the GUI build the same name.
 
     Rule: ``<circuit>_<cfg>`` (``circuit_slug``: ``cs_<name>`` for ``chassissim:<name>``), plus ``_<tyre_set>`` when tyre_set != "MF205"
     (e.g. ``_CopyB``, or ``_tir_<name>`` for ``file:<dir>/<name>.tir``: the base name only, so userOpts.setup_knobs
-    adds the full path as the knob ``tyre_file``), plus ``_physCorrected`` when physics == "corrected", plus
+    adds the full path as the knob ``tyre_file``), plus ``_car_<name>`` for a ChassisSim car (``car`` = the path of
+    the car file, optionally followed by ``#<sha8>``, as userOpts ``ctx.car``; None or "4em" = the 4EM car, no part;
+    the base name only, so the knob ``car_file`` tells two files with one name apart), plus ``_physCorrected`` when physics == "corrected", plus
     ``_start<State>`` when start_state != "matlab" (``_startRolling``,
     ``_startPeriodic``), plus ``_<n_tag>`` when n_tag is not empty (userOpts
     ``ctx.n_tag``: ``_hw3p5`` for n_bounds=3.5, ``_nbCustom`` for a (lo, hi) pair),
@@ -136,6 +138,8 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
         if tyre_set.startswith("file:"):
             tyre_set = "tir_" + re.sub(r"\W+", "_", re.split(r"[\\/]", tyre_set[5:])[-1].rsplit(".", 1)[0])
         stem += f"_{tyre_set}"
+    if car and car != "4em":
+        stem += "_car_" + re.sub(r"\W+", "_", re.split(r"[\\/]", car.split("#")[0])[-1].rsplit(".", 1)[0]).strip("_")
     if physics == "corrected":
         stem += "_physCorrected"
     if start_state != "matlab":

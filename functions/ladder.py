@@ -118,7 +118,8 @@ def quasi_static_states(vp, vx, physics="matlab"):
     physics='matlab': zt = W0 / kt. physics='corrected' (fix A1): zt is the static
     equilibrium of the corrected unsprung row, kt zt = m_u g + k xsi, with the per-corner
     unsprung mass (vp from a corrected vehParams). The seed has no aero lift (vp carries
-    no aero data) and no speed dependence besides the wheel speeds."""
+    no aero data) and no speed dependence besides the wheel speeds.
+    physics='car' (a ChassisSim car) gives zt = W0 / kt, the static tyre load of the car."""
     vx = np.asarray(vx, dtype=float).reshape(-1)
     n = vx.size
     z0 = np.zeros(n)
@@ -311,11 +312,13 @@ def seed_m23(ctx, m, disc, prof, input_keys):
       inputs   by ``input_keys`` (ctx.input_keys): T_motor, or T_motor_fl..rr with
                EM4 (each the total / 4), and T_brake from the longitudinal rule
                (lon_model 'm23'); ATD 0.25 each (they sum to 1, ATD_eq holds); FW / RW /
-               TW 0 (warmstart._NEUTRAL_INPUT, as warmstart_guesses); delta 0"""
+               TW 0 (warmstart._NEUTRAL_INPUT, as warmstart_guesses); delta 0
+      car      ctx.cs is set: rows 5-22 use physics 'car' and the inputs come from
+               vehModel_cs.cs_seed_inputs (T_drive, T_brake, delta)"""
     vp, pt = ctx.vp, ctx.pt
     e = float(ctx.OPT_e)
-    phys = getattr(ctx, "physics", "matlab")
-    lon = lon_model(ctx, "m23")
+    cs = getattr(ctx, "cs", None)
+    phys = "car" if cs is not None else getattr(ctx, "physics", "matlab")
 
     def rule(s):
         v, ax = _profile_at(prof, s)
@@ -324,6 +327,19 @@ def seed_m23(ctx, m, disc, prof, input_keys):
 
     Xk, v, ax = rule(disc["s_knot"])
     Xc = rule(disc["s_col"])[0]
+    x0 = _scaled(Xk, m.x_s, m.x_min, m.x_max)
+    xc0 = _scaled(Xc, m.x_s, m.x_min, m.x_max)
+    x_s = _vec(m.x_s)
+
+    def rederive(j):                    # chassis rows quasi-static at a clipped end knot
+        rows_ = quasi_static_states(vp, [x0[0, j] * x_s[0]], phys)[:, 0]
+        x0[5:, j] = np.clip(rows_ / x_s[5:], _vec(m.x_min)[5:], _vec(m.x_max)[5:])
+
+    _clip_ends(x0, m, getattr(ctx, "Xi", None), getattr(ctx, "Xf", None), e, rederive)
+    if cs is not None:                  # a car: T_drive, T_brake and delta from the force rule of its envelope
+        from vehModel_cs import cs_seed_inputs
+        return {"x0": x0, "u0": cs_seed_inputs(ctx, m, prof, disc["s_knot"]), "xc0": xc0}
+    lon = lon_model(ctx, "m23")
     keys = [str(key).strip() for key in input_keys]
     n_mot = sum(1 for key in keys if key.startswith("T_motor"))
     T_w, _ = wheel_torque(lon, vp, v, ax)
@@ -344,15 +360,6 @@ def seed_m23(ctx, m, disc, prof, input_keys):
     if len(rows) != int(m.nu):
         raise ValueError(f"seed_m23: {len(rows)} input channels for a model with nu = {m.nu}")
 
-    x0 = _scaled(Xk, m.x_s, m.x_min, m.x_max)
-    xc0 = _scaled(Xc, m.x_s, m.x_min, m.x_max)
-    x_s = _vec(m.x_s)
-
-    def rederive(j):                    # chassis rows quasi-static at a clipped end knot
-        rows_ = quasi_static_states(vp, [x0[0, j] * x_s[0]], phys)[:, 0]
-        x0[5:, j] = np.clip(rows_ / x_s[5:], _vec(m.x_min)[5:], _vec(m.x_max)[5:])
-
-    _clip_ends(x0, m, getattr(ctx, "Xi", None), getattr(ctx, "Xf", None), e, rederive)
     u0 = _scaled(np.vstack(rows), m.u_s, m.u_min, m.u_max)
     return {"x0": x0, "u0": u0, "xc0": xc0}
 

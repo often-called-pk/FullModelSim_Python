@@ -107,6 +107,8 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
              ATD=ATD, Electric_4Motors=Electric_4Motors, **useropts_kwargs)
     knobs = setup_knobs(dict(useropts_kwargs, vi=vi, ni=ni))
     setup_tag = knob_tag(knobs)
+    if ctx.cs is not None:
+        raise ValueError("optimise_design does not support a ChassisSim car yet. Use MLTP(car=...).")
     if ctx.start_state == "rolling":
         raise ValueError("optimise_design: start_state='rolling' is not supported, the start "
                          "equilibrium depends on the design parameters; use 'matlab' or 'periodic'")

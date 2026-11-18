@@ -57,6 +57,8 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
     # ---- setup ------------------------------------------------------------
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vi=vi, ni=ni, **useropts_kwargs)
+    if ctx.cs is not None:
+        raise ValueError("MLTP_initial builds a 7-state model. A ChassisSim car has none.")
     knobs = setup_knobs(dict(useropts_kwargs, vi=vi, ni=ni))
     vehModel_initial(ctx)
     m = ctx.m7

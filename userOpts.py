@@ -16,6 +16,7 @@ out of the box on any platform.
 
 import os
 import functools
+import hashlib
 import inspect
 import json
 import numbers
@@ -262,7 +263,7 @@ def _parse_n_bounds(n_bounds, s):
 # and so are load_model and ds_fine (MLTP_screen arguments).
 _NOT_SETUP = frozenset({"circuit", "AeroConfig", "ATD", "Electric_4Motors", "tyre_set", "physics", "start_state",
                         "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "chassissim_dir", "data_dir",
-                        "ipopt_overrides"})
+                        "ipopt_overrides", "car"})
 
 
 def _canon(v):
@@ -284,6 +285,21 @@ def _is_default(v, d):
     return (_canon(v) or None) == (_canon(d) or None)       # None, {} and [] are the same
 
 
+def car_id(car):
+    """'<absolute path>#<sha8>' of the car file in 'chassissim:<path>': the knob car_file and ctx.car of a car run.
+    sha8 = the first 8 hex digits of the sha256 of the file bytes (as chassissim.load_car). An edited file gives
+    a new id. Raise ValueError for a file that does not exist."""
+    path = os.path.abspath(str(car)[len("chassissim:"):])
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as e:
+        raise ValueError(f"Cannot read the car file {path}: {e}") from e
+    return f"{path}#{h.hexdigest()[:8]}"
+
+
 def setup_knobs(kw):
     """{name: value} of the setup knobs in ``kw`` that differ from their defaults, {} for the default setup.
 
@@ -292,7 +308,8 @@ def setup_knobs(kw):
     arguments, TyreModel, load_model and ds_fine are read, so save, plot, warm_start, ladder and the like never
     count. vp_overrides keeps the A5 keys and the entries that differ from the default of the tyre set. A (lo, hi)
     n_bounds pair is hashed by value (the stem says only 'nbCustom'). A number W is in the stem (hw<W>), so it is
-    not a knob. A file tyre set (C5) adds the knob ``tyre_file``, the absolute path. The stem has the base name
+    not a knob. A ChassisSim car adds the knob ``car_file`` (``car_id``: absolute path and sha8 of the file).
+    A file tyre set (C5) adds the knob ``tyre_file``, the absolute path. The stem has the base name
     only, so the tag tells two files with one name apart."""
     defaults = {k: p.default for k, p in inspect.signature(userOpts).parameters.items()
                 if p.default is not p.empty and k not in _NOT_SETUP}
@@ -314,6 +331,8 @@ def setup_knobs(kw):
     ts = kw.get("tyre_set", "MF205")
     if isinstance(ts, str) and ts.startswith("file:"):
         out["tyre_file"] = os.path.abspath(ts[5:])
+    if kw.get("car") is not None:
+        out["car_file"] = car_id(kw["car"])
     return out
 
 
@@ -474,6 +493,7 @@ def userOpts(ctx,
 
     # ---- ChassisSim car: read before vehParams. Its shared fields go under the user vp_overrides.
     ctx.cs = None
+    ctx.car = "4em"
     if car is not None:
         from functions import chassissim
         if not (isinstance(car, str) and car.startswith(chassissim.PREFIX)):
@@ -484,7 +504,15 @@ def userOpts(ctx,
             raise ValueError("A ChassisSim car has one engine. Electric_4Motors must be 'Off'.")
         if AeroConfig != "Static":
             raise ValueError("A ChassisSim car has fixed aero. AeroConfig must be 'Static'.")
+        for name, bad, why in (("start_state", start_state == "rolling", "The rolling start reads the 4EM model."),
+                               ("state_scaling", state_scaling != "matlab", "The typical scales fit the 4EM chassis states."),
+                               ("atd_tbr", atd_tbr is not None, "The car has no ATD."),
+                               ("between_knots", between_knots != "matlab", "The car model has no linear inputs yet."),
+                               ("collocation", collocation != "legendre", "Radau is not tested with the car model.")):
+            if bad:
+                raise ValueError(f"A ChassisSim car does not accept {name}={locals()[name]!r}. {why}")
         ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):])
+        ctx.car = f"{ctx.cs.path}#{ctx.cs.sha8}"
         flags = [getattr(ctx.cs.susp, f"gap_flag_{c}") for c in ("fl", "fr", "rl", "rr")]
         if flags != [1] * 4:
             raise ValueError("The car file must hold the bump rubber gap flags (cids 204 to 207) at 1. "
