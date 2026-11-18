@@ -33,14 +33,14 @@ def _rows(path, ncol=None):
             if not t:
                 continue
             if ncol is not None and len(t) != ncol:
-                raise ValueError(f"{path}: expected {ncol} columns, found {len(t)}.")
+                raise ValueError(f"{path}: a row has {len(t)} columns. The file needs {ncol}.")
             out.append([float(x) for x in t])
     return out
 
 
 def _increasing(path, s):
-    if len(s) < 3 or np.any(np.diff(s) <= 0):
-        raise ValueError(f"{path}: need 3 or more rows with strictly increasing distance.")
+    if len(s) < 3 or not np.all(np.diff(s) > 0):
+        raise ValueError(f"{path}: the file needs 3 or more rows, and the distance must increase from row to row.")
 
 
 def read_curvature(path):
@@ -62,8 +62,8 @@ def read_circ_prop(path):
 def read_alt_camber(path):
     """Read an alt_rcamb file. Return (base_alt m, s m, pitch rad, camber rad)."""
     rows = _rows(path)
-    if not rows or any(len(r) != 3 for r in rows[1:]):
-        raise ValueError(f"{path}: expected a base altitude line, then rows with 3 columns.")
+    if not rows or len(rows[0]) != 1 or any(len(r) != 3 for r in rows[1:]):
+        raise ValueError(f"{path}: line 1 must hold the base altitude only. The other rows need 3 columns.")
     base = rows[0][0]
     a = np.array(rows[1:], dtype=float).reshape(-1, 3)
     _increasing(path, a[:, 0])
@@ -94,11 +94,11 @@ def load_circuit(name, cs_dir):
     k uses the model sign (left turn positive), so it is the file value with the sign flipped.
     bump and alt are file paths, or None when the circuit has no such file or the flag is off.
     """
-    circ = os.path.join(cs_dir, "Circuits")
-    ini = _find(cs_dir, "Circ_prop.ini")
-    blocks = read_circ_prop(ini) if ini else []
-    want = name.strip().lower()
-    blk = next((b for b in blocks if b.get("Circuit name", "").strip().lower() == want), None)
+    circ = os.path.join(os.path.abspath(cs_dir), "Circuits")
+    ini = os.path.join(cs_dir, "Circ_prop.ini")
+    blocks = read_circ_prop(ini) if os.path.isfile(ini) else []
+    name = name.strip()
+    blk = next((b for b in blocks if b.get("Circuit name", "").strip().lower() == name.lower()), None)
     if blk is not None:
         tr = _find(circ, blk.get("Circuit file name", ""))
         if tr is None:
@@ -111,12 +111,16 @@ def load_circuit(name, cs_dir):
         grip = float(blk.get("Base Grip factor", 1.0))
         bump, alt = flagged("Circuit bp name", "Circuit bp flag"), flagged("Circuit alt rcamb name", "Circuit alt rcamb flag")
     else:
-        tr = _find(circ, f"tr_{name}.txt")
-        if tr is None:
-            orphans = [f[3:-4] for f in os.listdir(circ) if f.lower().startswith("tr_") and f.lower().endswith(".txt")]
-            known = sorted({b.get("Circuit name", "") for b in blocks} | set(orphans))
-            raise ValueError(f"Unknown ChassisSim circuit '{name}'. Known circuits: {', '.join(known)}.")
-        grip = 1.0
+        # A circuit without an ini block: its curvature file is tr_<name>.txt and no block lists that file.
+        listed = {b.get("Circuit file name", "").strip().lower() for b in blocks}
+        files = os.listdir(circ) if os.path.isdir(circ) else []
+        orphans = {f[3:-4]: f for f in files
+                   if f.lower().startswith("tr_") and f.lower().endswith(".txt") and f.lower() not in listed}
+        hit = next((f for o, f in orphans.items() if o.lower() == name.lower()), None)
+        if hit is None:
+            known = sorted({b.get("Circuit name", "").strip() for b in blocks} | set(orphans))
+            raise ValueError(f"ChassisSim has no circuit '{name}'. The known circuits are: {', '.join(known)}.")
+        tr, grip = os.path.join(circ, hit), 1.0
         bump, alt = _find(circ, f"bp_{name}.dat"), _find(circ, f"alt_rcamb_{name}.txt")
     s, k = read_curvature(tr)
     return SimpleNamespace(s=s, k=-k, grip=grip, bump=bump, alt=alt)

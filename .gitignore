@@ -207,6 +207,7 @@ Results/validation/
 # The pattern ignores the case of the extension, also on a clone with core.ignorecase=false.
 *.[tT][iI][rR]
 Data/tyres/
-*.car
-*.ld
-*.ldx
+# ChassisSim car files and MoTeC logs are vendor data: keep them out of the repo, in any case.
+*.[cC][aA][rR]
+*.[lL][dD]
+*.[lL][dD][xX]

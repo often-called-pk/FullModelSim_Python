@@ -1,6 +1,6 @@
 """Parse a saved solve .mat into summary numbers and list its Plotly plots.
 Path scheme mirrors MLTP.save (Results/<result_stem>.mat) and plotSDI
-(Plots/<circuit>/<cfg>/<name>.html), with cfg = <AeroConfig>_ATD<ATD>_EM4<EM4>.
+(Plots/<circuit_slug>/<cfg>/<name>.html), with cfg = <AeroConfig>_ATD<ATD>_EM4<EM4>.
 ``setup_tag`` is the 8 hex digits of the setup knobs that differ from their defaults
 (RunConfig.setup_tag()). It is "" for the default setup, whose stem has no tag.
 ``result_paths(rc)`` maps a RunConfig to the two paths that its solve writes.
@@ -27,7 +27,7 @@ def result_mat_path(output_dir, circuit, AeroConfig, ATD, EM4,
 
 def plot_dir(output_dir, circuit, AeroConfig, ATD, EM4,
              tyre_set="MF205", mesh_requested="auto", setup_tag="", **stem_kw):
-    # plotSDI names the folder after the result stem minus the "<circuit>_" prefix
+    # plotSDI names the folder after circuit_slug and the result stem minus the "<slug>_" prefix
     stem = result_stem(circuit, _cfg(AeroConfig, ATD, EM4), tyre_set, mesh_requested, setup_tag=setup_tag, **stem_kw)
     slug = circuit_slug(circuit)
     return os.path.join(output_dir, "Plots", slug, stem[len(slug) + 1:])

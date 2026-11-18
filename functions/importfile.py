@@ -19,6 +19,8 @@ import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
 
+from functions.chassissim import PREFIX
+
 try:                                                    # scipy layout differs by version
     from scipy.io.matlab import mat_struct
 except Exception:                                       # pragma: no cover
@@ -104,9 +106,8 @@ def n_tag(n_bounds):
 
 def circuit_slug(circuit):
     """Name part of a file stem: "cs_<name>" for "chassissim:<name>", else the circuit unchanged."""
-    prefix = "chassissim:"
-    if circuit.startswith(prefix):
-        return "cs_" + re.sub(r"\W+", "_", circuit[len(prefix):]).strip("_")
+    if circuit.startswith(PREFIX):
+        return "cs_" + re.sub(r"\W+", "_", circuit[len(PREFIX):]).strip("_")
     return circuit
 
 
@@ -115,7 +116,7 @@ def result_stem(circuit, cfg, tyre_set="MF205", mesh_requested="auto", physics="
     """File stem (no extension) of a saved MLTP result; casadi-free, so MLTP and
     the GUI build the same name.
 
-    Rule: ``<circuit>_<cfg>``, plus ``_<tyre_set>`` when tyre_set != "MF205"
+    Rule: ``<circuit>_<cfg>`` (``circuit_slug``: ``cs_<name>`` for ``chassissim:<name>``), plus ``_<tyre_set>`` when tyre_set != "MF205"
     (e.g. ``_CopyB``, or ``_tir_<name>`` for ``file:<dir>/<name>.tir``: the base name only, so userOpts.setup_knobs
     adds the full path as the knob ``tyre_file``), plus ``_physCorrected`` when physics == "corrected", plus
     ``_start<State>`` when start_state != "matlab" (``_startRolling``,

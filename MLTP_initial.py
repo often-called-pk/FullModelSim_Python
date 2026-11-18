@@ -30,7 +30,7 @@ import casadi as ca
 
 from functions.casadi_opts import fn_opts
 from functions.context import Ctx
-from functions.importfile import result_stem
+from functions.importfile import result_stem, circuit_slug
 from functions.ladder import SEEDS, MA57_PRE_ALLOC, qss_profile, seed_m7
 from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 from vehModel_initial import vehModel_initial
@@ -200,8 +200,8 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
         suffix = result_stem(circuit, "x", getattr(ctx, "tyre_set", "MF205"),
                              getattr(ctx, "mesh_requested", "auto"),
                              getattr(ctx, "physics", "matlab"), ctx.start_state,
-                             n_tag=ctx.n_tag, setup_tag=knob_tag(knobs))[len(circuit) + 2:]
-        save_path = os.path.join(results_dir, f"init_{circuit}{suffix}.mat")
+                             n_tag=ctx.n_tag, setup_tag=knob_tag(knobs))[len(circuit_slug(circuit)) + 2:]
+        save_path = os.path.join(results_dir, f"init_{circuit_slug(circuit)}{suffix}.mat")
         sio.savemat(save_path, {"data": {"init": init}}, do_compression=True)
         ctx.out_path = save_path
         print(f"Saved warm start -> {save_path}")
