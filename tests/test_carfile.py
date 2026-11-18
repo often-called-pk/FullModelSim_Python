@@ -1,9 +1,10 @@
 """ChassisSim v3.41 car-file codec of functions/carfile.py (ChassisSim phase 1).
 
-The synthetic checks build records of every supported tag, round-trip them and pin the ValueErrors. They write only
-into a temporary directory and run no solve. The vendor section runs only when CHASSISSIM_DIR names the ChassisSim
-install folder. It reads the 31 shipped car files, checks the encode(decode(f)) == f gate and pins the GP3 2013
-Eastern Creek variants. It writes nothing into the vendor folders.
+The synthetic checks build records of every supported tag from arbitrary values and from raw float bits, round-trip
+them, cut the file at every length and pin the ValueErrors of decode and encode. They write only into a temporary
+directory and run no solve. The vendor section runs only when CHASSISSIM_DIR names the ChassisSim install folder. It
+reads the 31 shipped car files, checks the encode(decode(f)) == f gate and pins the GP3 2013 Eastern Creek variants.
+It writes nothing into the vendor folders.
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_carfile.py
     CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_carfile.py
@@ -20,6 +21,8 @@ import numpy as np
 from functions.carfile import END_TAG, decode, decode_bytes, encode, write
 
 PASS = 0
+TYRE_DIMS = (2, 3, 4, 5, 6, 7, 8)
+TYRE_SIZES = [8, 10, 10, 11, 71, 14, 10, 11, 8, 14, 12, 12, 12]  # table lengths of TYRE_DIMS, worked out by hand
 
 
 def ok(name, cond):
@@ -54,7 +57,7 @@ def recs_equal(A, B):
 
 
 def close(a, b):
-    """Equal up to float32 resave noise: 1e-6 relative on floats, exact on bytes and ints."""
+    """Equal up to 1e-6 relative on floats. Bytes and ints compare exactly."""
     if isinstance(a, (tuple, list)):
         return isinstance(b, (tuple, list)) and len(a) == len(b) and all(close(x, y) for x, y in zip(a, b))
     if a is None or isinstance(a, (bytes, int)):
@@ -76,41 +79,68 @@ def read_bytes(path):
         return fh.read()
 
 
+def arb(n, s):
+    """n arbitrary finite numbers, different for each seed s."""
+    return np.sin(np.arange(n) * 0.9 + s) * 7.3 - 0.61
+
+
+def tyre_tables(s):
+    tabs = [arb(k, s + i) for i, k in enumerate(TYRE_SIZES)]
+    tabs[3][0] = np.nan
+    tabs[4][1] = -0.0
+    return tabs
+
+
+def bits(*u):
+    """float64 array from raw 64-bit patterns."""
+    return np.array(u, dtype=np.uint64).view('<f8')
+
+
+BIT_VALUES = {2: 0x8000000000000000, 3: 0x7FF80000DEADBEEF, 4: 0x7FF0000000000001}  # -0.0, NaN payload, sNaN
+BIT_ARRAY = [0x7FF8DEAD00000001, 0x7FF0000000000001, 0x8000000000000000, 0x3FF0000000000001]
+
+
 def sample_records():
-    """One record of every supported tag, with NaN and -0.0 inside float arrays. Tyre dims (2, 2, 3, 2, 2, 2, 2)."""
-    f = np.array
-    tyre_dims = (2, 2, 3, 2, 2, 2, 2)
-    # table sizes of tyre_dims, worked out by hand from the tyre layout (2*d3, 2*d4, 2*d4, g(d1, d2), ...)
-    tyre_sizes = [6, 4, 4, 8, 8, 4, 4, 8, 6, 4, 4, 4, 4]
-    tables = [np.arange(k, dtype=float) + 0.5 for k in tyre_sizes]
-    tables[3][0] = np.nan
-    tables[4][1] = -0.0
+    """One record of every supported tag, with arbitrary values, NaN, -0.0 and raw bit patterns."""
+    v7x, v7y = arb(3, 0.3), arb(3, 1.1)
+    v7x[1] = -0.0
+    v7y[0] = np.nan
+    z9z = arb(2, 0.7)
+    z9z[1] = -0.0
+    d9 = arb(6, 0.9)
+    d9[0] = np.nan
+    t10 = arb(6, 1.3)
+    t10[3], t10[4] = np.nan, -0.0
+    sy6 = arb(6, 2.3)
+    sy6[1], sy6[2] = -0.0, np.nan
+    dm21 = arb(21, 3.3)
+    tyre_s = arb(18, 3.7)
+    tyre_s[0], tyre_s[1] = np.nan, -0.0
     return [
-        (1, 1, 3.5),
-        (1, 2, -0.0),
-        (1, 3, float('nan')),
-        (2, 10, f([1.0, -0.0, np.nan, 2.5])),
-        (2, 11, f([])),
-        (6, 20, 0),
+        (1, 1, 2.718281828459045),
+        (1, 2, float(bits(BIT_VALUES[2])[0])),
+        (1, 3, float(bits(BIT_VALUES[3])[0])),
+        (1, 4, float(bits(BIT_VALUES[4])[0])),
+        (2, 10, bits(*BIT_ARRAY)),
+        (2, 11, np.array([])),
+        (6, 20, 37),
         (6, 21, 255),
-        (7, 30, (f([0.0, 1.0, -0.0]), f([np.nan, 2.0, 3.0]))),
+        (7, 30, (v7x, v7y)),
         (8, 40, b'ChassisSim \x00\xff'),
         (8, 41, b''),
-        (9, 50, (f([0.0, 1.0, 2.0]), f([0.5, -0.0]), f([np.nan, -0.0, 1.0, 2.0, 3.0, 4.0]))),  # nx 3, nz 2
-        (10, 60, (4, f([1.0, 2.0, 3.0, np.nan, -0.0, 6.0]))),  # flag 4, n = 2
-        (4, 70, f([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),  # n = 2, no flag
-        (4, 71, f([])),
-        (11, 80, (0, 0.002, 1.4e5, f(np.linspace(-1, 1, 6)), f([0.0, -0.0, np.nan, 1.0, 2.0, 3.0]))),
-        (11, 81, (1, -0.5, 2.0e5, f(np.linspace(0, 1, 11)), f(np.arange(11.0) * 0.1))),
-        (12, 90, (1, f([0.0, 0.0, 1000.0, 0.0, -0.0, 1000.0]), f(np.arange(21.0) * 1.5))),  # n = 7
-        (13, 100, (tyre_dims, f(np.arange(18.0) * 0.25 - 1.0), tables)),
+        (9, 50, (arb(3, 0.5), z9z, d9)),  # nx 3, nz 2
+        (10, 60, (4, t10)),  # flag 4, 2 values per column
+        (4, 70, arb(6, 1.7)),
+        (4, 71, np.array([])),
+        (11, 80, (0, 0.0173, 83113.7, arb(6, 2.1), sy6)),
+        (11, 81, (1, -0.5137, 190517.3, arb(11, 2.5), arb(11, 2.9))),
+        (12, 90, (1, arb(6, 3.0), dm21)),  # flag 1, n = 7
+        (13, 100, (TYRE_DIMS, tyre_s, tyre_tables(4.1))),
     ]
 
 
 print("[carfile] synthetic records: round trip")
 RECS = sample_records()
-ok("sample holds the tags 1, 2, 4, 6, 7, 8, 9, 10, 11, 12, 13",
-   {t for t, _, _ in RECS} == {1, 2, 4, 6, 7, 8, 9, 10, 11, 12, 13})
 FULL = RECS + [(END_TAG, END_TAG, None)]
 DATA = encode(FULL)
 DEC = decode_bytes(DATA)
@@ -118,41 +148,91 @@ ok("decode(encode(records)) gives equal values, in order", recs_equal(DEC, FULL)
 ok("the end pair decodes as (4000, 4000, None)", DEC[-1] == (END_TAG, END_TAG, None))
 ok("encode(decode(bytes)) is byte-equal", encode(DEC) == DATA)
 
+DEC_BY_CID = {c: v for _, c, v in DEC}
+ok("tag 1 keeps the bits of -0.0, a NaN with payload and an sNaN",
+   all(struct.pack('<d', DEC_BY_CID[c]) == struct.pack('<Q', u) for c, u in BIT_VALUES.items()))
+ok("tag 2 keeps the raw bits of its values", DEC_BY_CID[10].view('<u8').tolist() == BIT_ARRAY)
+ok("tyre record keeps its dims and 13 table lengths",
+   DEC_BY_CID[100][0] == TYRE_DIMS and [len(t) for t in DEC_BY_CID[100][2]] == TYRE_SIZES)
+
 DATA_NO_END = encode(RECS)
 DEC_NO_END = decode_bytes(DATA_NO_END)
 ok("a file without the end pair decodes, with no end record",
    recs_equal(DEC_NO_END, RECS) and DEC_NO_END[-1][0] != END_TAG)
 ok("a file without the end pair round-trips byte-equal", encode(DEC_NO_END) == DATA_NO_END)
 
-print("[carfile] errors")
-ok("truncated file (3 bytes cut) raises ValueError naming an offset",
+print("[carfile] cuts")
+bad_cuts, n_prefix = [], 0
+for cut in range(len(DATA)):
+    try:
+        dec = decode_bytes(DATA[:cut])
+    except ValueError:
+        continue
+    if len(dec) < len(FULL) and recs_equal(dec, FULL[:len(dec)]):
+        n_prefix += 1
+    else:
+        bad_cuts.append(cut)
+ok(f"every cut of the {len(DATA)} byte file: ValueError or a record prefix", not bad_cuts)
+ok("the cuts that decode are the record boundaries (one per record)", n_prefix == len(RECS))
+
+print("[carfile] decode errors")
+ok("empty bytes raise ValueError", err(lambda: decode_bytes(b'')) is not None)
+ok("3 bytes cut from the end raise ValueError naming an offset",
    (lambda m: m is not None and "offset" in m)(err(lambda: decode_bytes(DATA[:-3]))))
-ok("unknown tag 99 raises ValueError naming an offset",
-   (lambda m: m is not None and "offset" in m)(err(lambda: decode_bytes(rec(99, 1) + bytes(8)))))
+ok("unknown tag 99 raises at offset 0",
+   (lambda m: m is not None and "at offset 0 " in m)(err(lambda: decode_bytes(rec(99, 1, bytes(8))))))
 ok("tag 3 raises on decode", (lambda m: m is not None and "unknown" in m)(
     err(lambda: decode_bytes(rec(3, 1, bytes(16))))))
 ok("tag 5 raises on decode", (lambda m: m is not None and "unknown" in m)(
     err(lambda: decode_bytes(rec(5, 1, bytes(16))))))
+ok("negative count at offset 8 raises",
+   (lambda m: m is not None and "offset 8" in m)(err(lambda: decode_bytes(rec(2, 1, struct.pack('<i', -1))))))
+ok("spring flag 2 at offset 12 raises",
+   (lambda m: m is not None and "offset 12" in m)(
+       err(lambda: decode_bytes(rec(11, 1, struct.pack('<i', 0) + bytes([2]) + bytes(16))))))
+ok(f"data after the end pair raises at offset {len(DATA)}",
+   (lambda m: m is not None and f"offset {len(DATA)}." in m)(err(lambda: decode_bytes(DATA + bytes(4)))))
+
+PREFIX = rec(1, 5, struct.pack('<d', 0.25))  # 16 bytes, so the bad record starts at offset 16
+ok("bad count (10^6) at offset 24 raises",
+   (lambda m: m is not None and "offset 24" in m)(
+       err(lambda: decode_bytes(PREFIX + rec(2, 6, struct.pack('<i', 10**6) + bytes(8))))))
+ok("bad count (-3) at offset 24 raises",
+   (lambda m: m is not None and "offset 24" in m)(
+       err(lambda: decode_bytes(PREFIX + rec(2, 6, struct.pack('<i', -3))))))
+ok("oversized tag 9 table (nx, nz = 10^5) at offset 24 raises",
+   (lambda m: m is not None and "offset 24" in m)(
+       err(lambda: decode_bytes(PREFIX + rec(9, 7, struct.pack('<ii', 10**5, 10**5))))))
+ok("oversized tag 13 tyre (dims 10^4) at offset 24 raises",
+   (lambda m: m is not None and "offset 24" in m)(
+       err(lambda: decode_bytes(PREFIX + rec(13, 8, struct.pack('<7i', 10**4, 2, 2, 2, 2, 2, 2))))))
+
+print("[carfile] encode errors")
+ok("encode([]) raises ValueError", err(lambda: encode([])) is not None)
 ok("tag 3 and tag 5 raise on encode",
    err(lambda: encode([(3, 1, None)])) is not None and err(lambda: encode([(5, 1, None)])) is not None)
-ok("negative count raises ValueError naming an offset",
-   (lambda m: m is not None and "offset" in m)(err(lambda: decode_bytes(rec(2, 1, struct.pack('<i', -1))))))
-ok("count larger than the file raises ValueError naming an offset",
-   (lambda m: m is not None and "offset" in m)(
-       err(lambda: decode_bytes(rec(2, 1, struct.pack('<i', 1000) + bytes(8))))))
-ok("spring flag 2 raises ValueError naming an offset",
-   (lambda m: m is not None and "offset" in m)(
-       err(lambda: decode_bytes(rec(11, 1, struct.pack('<i', 0) + bytes([2]) + bytes(16))))))
-ok("data after the end pair raises ValueError naming an offset",
-   (lambda m: m is not None and "offset" in m)(err(lambda: decode_bytes(DATA + bytes(4)))))
-ok("encode: tag 7 with X and Y of different length raises",
-   (lambda m: m is not None and "needs" in m)(
-       err(lambda: encode([(7, 1, (np.zeros(2), np.zeros(3)))]))))
-ok("encode: tag 13 with 12 tables raises",
-   (lambda m: m is not None and "13 tables" in m)(
-       err(lambda: encode([(13, 1, ((2, 2, 3, 2, 2, 2, 2), np.zeros(18), [np.zeros(1)] * 12))]))))
-ok("encode: tag 4 with values not a multiple of 3 raises",
-   err(lambda: encode([(4, 1, np.arange(4.0))])) is not None)
+ok("tag 4 with values not a multiple of 3 raises", err(lambda: encode([(4, 1, np.arange(4.0))])) is not None)
+REFUSED = {
+    "end record with cid != 4000": [(END_TAG, 1, None)],
+    "end record with a value": [(END_TAG, END_TAG, 1.0)],
+    "end record not last": [(END_TAG, END_TAG, None), (1, 1, 2.0)],
+    "spring flag 2": [(11, 1, (2, 0.1, 0.2, arb(3, 0.1), arb(3, 0.2)))],
+    "tag 10 with 3 items": [(10, 1, (1, arb(3, 0.1), arb(3, 0.2)))],
+    "tag 12 with 2 items": [(12, 1, (1, arb(6, 0.1)))],
+    "tag 7 with 3 items": [(7, 1, (arb(2, 0.1), arb(2, 0.2), arb(2, 0.3)))],
+    "tag 9 with 2 items": [(9, 1, (arb(2, 0.1), arb(2, 0.2)))],
+    "tag 11 with 4 items": [(11, 1, (0, 0.1, 0.2, arb(3, 0.3)))],
+    "tag 1 value None": [(1, 1, None)],
+    "tag 1 value a string": [(1, 1, "abc")],
+    "tag 2 values of strings": [(2, 1, ["a", "b"])],
+    "tag 11 spring s1 None": [(11, 1, (0, None, 0.2, arb(3, 0.1), arb(3, 0.2)))],
+    "tyre with 6 dims": [(13, 1, ((2, 3, 4, 5, 6, 7), arb(18, 0.1), tyre_tables(0.5)))],
+    "tyre with 12 tables": [(13, 1, (TYRE_DIMS, arb(18, 0.1), tyre_tables(0.5)[:12]))],
+}
+for label, recs in REFUSED.items():
+    m = err(lambda: encode(recs))
+    ok(f"encode refuses: {label}", m is not None and m.startswith("The record 0 (tag ")
+       and "is not valid." in m)
 
 print("[carfile] write")
 with tempfile.TemporaryDirectory() as tmp:
@@ -197,11 +277,13 @@ def vendor(cs):
 
     print("[carfile] vendor GP3 2013 Eastern Creek variants")
     gp3 = models / "GP3 2013" / "Eastern Creek, AU"
+    DEF = "def_GP3 2013.car"
     R17 = "rideheight17mm_GP3 2013.car"
     R20 = "rideheight20mm_GP3 2013.car"
     T0 = "rideheight17mm_toe0_GP3 2013.car"
     T66 = "rideheight17mm_toe0.66_GP3 2013.car"
-    FD = "rideheight17mm_toe0.33_frontdamper20000_GP3 2013.car"
+    FD33 = "rideheight17mm_toe0.33_frontdamper20000_GP3 2013.car"
+    FD66 = "rideheight17mm_toe0.66_frontdamper20000_GP3 2013.car"
 
     def load(name):
         return decode(str(gp3 / name))
@@ -210,18 +292,24 @@ def vendor(cs):
         return [x for _, c, x in load(name) if c == cid][0]
 
     def differing(a, b):
+        """Cids whose values differ beyond 1e-6 relative (or in bytes, ints, shapes) between two files."""
         A, B = load(a), load(b)
         ok(f"{a} and {b} share one record layout", [(t, c) for t, c, _ in A] == [(t, c) for t, c, _ in B])
         return {c for (_, c, x), (_, _, y) in zip(A, B) if not close(x, y)}
 
-    ok("ride height 17 vs 20 mm differ in cids {117, 118} only",
+    ok("ride height: 17 vs 20 mm differ beyond 1e-6 relative in cids {117, 118} only",
        differing(R17, R20) == {117, 118})
-    # the file stores millimetres, the number in the name; float32 resave noise is about 1e-5
-    ok("ride height cids 117, 118 read 17 (17mm) and 20 (20mm), in mm",
+    # The stored value is within 1e-3 of the number in the name. The file stores mm.
+    ok("ride height cids 117, 118 read 17 (17mm) and 20 (20mm)",
        all(abs(val(f, c) - n) < 1e-3 for c in (117, 118) for f, n in ((R17, 17.0), (R20, 20.0))))
+    ok("base 17mm vs def_GP3 2013: differ beyond 1e-6 relative in cids {117, 118} only",
+       differing(R17, DEF) == {117, 118})
 
-    ok("toe 0 and toe 0.66 vs base differ in cids {80, 81} only",
+    ok("toe 0 and toe 0.66 vs base: differ beyond 1e-6 relative in cids {80, 81} only",
        differing(T0, R17) == {80, 81} and differing(T66, R17) == {80, 81})
+    a390, b390 = val(T0, 390), val(R17, 390)
+    ok("cid 390 differs from base but by under 1e-6 relative (not counted)",
+       a390 != b390 and abs(a390 - b390) / max(abs(a390), abs(b390)) < 1e-6)
 
     def toe(name, cid):
         return float(val(name, cid)[1][0])  # tyre scalar 0 is the toe
@@ -230,11 +318,12 @@ def vendor(cs):
        all(abs(toe(n, c) - x) < 1e-6 for c in (80, 81)
            for n, x in ((R17, 0.33), (T0, 0.0), (T66, 0.66))))
 
-    fd_diff = differing(FD, R17)
-    tag8 = {c for t, c, _ in load(FD) if t == 8}
-    ok("front damper vs base: cids 31 and 32 differ", {31, 32} <= fd_diff)
-    ok("front damper vs base: other differing cids are springs 1-4 or tag-8 labels",
-       fd_diff - {31, 32} <= {1, 2, 3, 4} | tag8)
+    ok("front damper 0.33 vs base: differ beyond 1e-6 relative in the exact cids",
+       differing(FD33, R17) == {1, 2, 3, 4, 31, 32, 811, 812, 813, 814, 815, 816, 819, 820, 821, 823,
+                                825, 826, 827, 828, 829, 830, 831})
+    ok("front damper 0.66 vs def_GP3 2013: differ beyond 1e-6 relative in the exact cids",
+       differing(FD66, DEF) == {1, 2, 3, 4, 811, 812, 813, 814, 815, 816, 819, 820, 821, 823, 827, 828,
+                                829, 830, 831})
 
 
 if not os.environ.get("CHASSISSIM_DIR") or not os.path.isdir(os.environ["CHASSISSIM_DIR"]):

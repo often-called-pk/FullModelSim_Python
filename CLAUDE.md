@@ -69,7 +69,7 @@ default because the SX graph is large (peak commit ~8 GB at BCN N=465).
 Outputs go to `Results/validation/` (gitignored); the MATLAB repo is never edited.
 
 **Tests.** There is **no pytest/unittest** and no runner script in the repo: the `tests/test_*.py`
-files (57 today) are plain scripts whose assertions run at module top level (no
+files (58 today) are plain scripts whose assertions run at module top level (no
 `if __name__ == '__main__'` block), so the finest selectable unit is a **whole file** (the first
 failing assert aborts that file). Each starts with `import _bootstrap` (`tests/_bootstrap.py`: the
 repo root goes first on `sys.path` and becomes the working directory), so a test runs from any
@@ -128,6 +128,7 @@ foreach ($f in Get-ChildItem tests\test_*.py) { "== $($f.Name)"; python $f.FullN
 - `test_correlate.py`: E6-E8. `gamma`, and `identifiable` (it refuses LFZO and Fz0_shift). `grip_fit` on QSS logs: LMUY within 0.01, LMUX within 0.03 noise free. `check_ax` and NaN dropouts. `drag_fit`: exact with ax, torque-scale error. `lift_fit`: matlab refused, corrected equilibria, a NaN dropout. A fit model at Cd_scale or Cl_scale 1.2 gives the same absolute value. `run_stage` + ledger: frozen stages, stale marks, another physics or config refused. Import without casadi. `nlp_forecast`: old values from the model (INFLPRES, alpha_FL), and V9
 - `test_chassissim_circuit.py`: ChassisSim phase 1 T1. Readers on synthetic files (CRLF, tabs, spaces in names, NaN and short files). `load_circuit`: k sign flip, grip, bump and alt paths and flags, case-insensitive lookup, orphans without an ini block, listed files kept out of the orphans. `install_dir`, the `cs_<name>` stems, init file names, the plot folder, the grip product with LMUX / LMUY, a fake-solver MLTP build. Vendor section (SKIP without `CHASSISSIM_DIR`): every ini circuit loads, Eastern Creek 971 points to 3824.181 m, a QSS lap
 - `test_read_ld.py`: ChassisSim phase 1 T2. Synthetic `.ld` files: values raw/100, units, t, lap ids, map forms and errors. Also an int factor without wrap, a channel at another rate and a list that ends on the data pointer. Vendor section (SKIP without `CHASSISSIM_DIR`): all 14 shipped `.ld` read, GP3 lap 1 vs its `.ldx`, corr(ay, v^2 k) > 0.99
+- `test_carfile.py`: ChassisSim phase 1 T3. Synthetic records of every tag round-trip with exact float bits. Every cut of a synthetic file raises ValueError or decodes to a record prefix. Bad counts, unknown tags and the encode refusals raise ValueError. `write` never overwrites. Vendor section (SKIP without `CHASSISSIM_DIR`): all 31 shipped files round-trip byte for byte. The GP3 2013 variants differ only in the records that their names state
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6). F2: `FORWARD` sends a key only when set and not default, and `mode='qss'` drops the NLP-only keys and runs `MLTP_screen`. `RunConfig` folds `pt_overrides` into `vp_overrides`, and `setup_tag()` == the MLTP tag. `result_paths`, `freeze_support` first in `__main__`, the Advanced-tab combos and the More options box. 4 Motors ticks Homotopy
 
 Only three files run the real 23-state NLP through IPOPT: `test_setup_sweep.py` (section 5, ~1 min),
@@ -467,7 +468,11 @@ merged last so it beats every default, the screening preset and the warm-start r
   ladder: tier registry, `resolve_ladder`, QSS seeds `seed_m7` / `seed_m23`, `quasi_static_states`,
   the friction homotopy hook; numpy only, see Multi-fidelity ladder), `refine.py` (adaptive
   mesh refinement: defect indicator, knot bisection, the refinement loop; see Collocation mesh), `track_qa.py` (load-time track QA, `k_from_xy`
-  rebuild recipe, track builder `write_track` / `xy_from_gps` / `smooth_xy`, see Configuration).
+  rebuild recipe, track builder `write_track` / `xy_from_gps` / `smooth_xy`, see Configuration). `carfile.py` (ChassisSim phase 1,
+  pinned by `tests/test_carfile.py`) decodes and encodes ChassisSim v3.41 `.car` files. `decode(path)` gives the
+  records `(tag, cid, value)` in file order. `encode(records)` gives the same bytes back. `write(records, path)` never
+  overwrites a file. The module docstring holds the layout. We measured it on the 31 shipped files, and all of
+  them round-trip byte for byte. Phase 2 adds the field names that it reads.
 - **Post-solve analysis:** `sensitivity.py` (numpy only, no solve): `limit_prices`, `lateral_prices`,
   `costates` from the stored multipliers of one full result; first order, and J includes the regularisation
   (0.27% of the Sturn lap, 0.12% of BCN). `setup_gradients` is the exception: it imports casadi and
