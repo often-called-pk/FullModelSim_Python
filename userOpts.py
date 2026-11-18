@@ -485,6 +485,9 @@ def userOpts(ctx,
         if AeroConfig != "Static":
             raise ValueError("A ChassisSim car has fixed aero. AeroConfig must be 'Static'.")
         ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):])
+        if ctx.cs.engine.torque_split not in (None, 0.0):
+            raise ValueError("The car sends drive torque to the front axle (torque split above 0). "
+                             "The car model drives the rear axle only.")
         vp_overrides = {**chassissim.car_vp(ctx.cs), **(vp_overrides or {})}
 
     # ---- start state: checked before any work, like the physics flag
@@ -720,6 +723,9 @@ def userOpts(ctx,
     ctx.input_keys = keys
     ctx.duk_ub = _col(c.ub, keys)
     ctx.duk_lb = _col(c.lb, keys)
+    if ctx.cs is not None:          # T_brake is a force [N] here: the 4EM torque rate scales with the brake scale
+        ctx.duk_ub[1] *= ctx.cs.brake.force / vp.Tbrake_max
+        ctx.duk_lb[1] *= ctx.cs.brake.force / vp.Tbrake_max
     ctx.ru = _col(c.ru, keys)
     ctx.rdu = _col(c.rdu, keys)
     ctx.rdu2 = _col(c.rdu2, keys)

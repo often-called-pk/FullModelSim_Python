@@ -74,7 +74,8 @@ EXPLICIT = {  # tag 1 cids with a literal value
     117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,            # ride heights, mm
     100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
-    111: 0.3, 112: 1.0, 113: 0.0,                           # torque split, diff front and rear type
+    111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0: userOpts needs it), diff types
+    55: 0.050, 59: 0.052, 63: 0.061, 67: 0.063,            # roll-centre heights fl, fr, rl, rr, m
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: TRACK_TEMP,
 }
@@ -201,9 +202,12 @@ ok("mass 84-86, 96 and geometry 90-93 read as stored",
 ok("inertias 87-89 read as stored", abs(car.mass.Ix - 60.0) < 1e-9 and abs(car.mass.Iy - 280.0) < 1e-9
    and abs(car.mass.Iz - 600.0) < 1e-9)
 ok("track temperature 390 read as stored", abs(car.env.track_temp - TRACK_TEMP) < 1e-12)
-ok("engine efficiency 100, torque split 111, diff types 112 and 113 as stored",
-   abs(car.engine.efficiency - 0.9) < 1e-12 and abs(car.engine.torque_split - 0.3) < 1e-12
+ok("engine efficiency 100, torque split 111 (0), diff types 112 and 113 as stored",
+   abs(car.engine.efficiency - 0.9) < 1e-12 and car.engine.torque_split == 0.0
    and car.diff.front_type == 1.0 and car.diff.rear_type == 0.0)
+ok("roll-centre heights 55, 59, 63, 67 (fl, fr, rl, rr) read in m as stored",
+   abs(car.geom.rc_height_fl - 0.050) < 1e-12 and abs(car.geom.rc_height_fr - 0.052) < 1e-12
+   and abs(car.geom.rc_height_rl - 0.061) < 1e-12 and abs(car.geom.rc_height_rr - 0.063) < 1e-12)
 
 # groups: one decoded value per group
 print("  -- groups")
@@ -357,6 +361,9 @@ def vendor(cs):
     ok("spring rates: fl and fr 1200 lbf/in, rl and rr 800 lbf/in, in N/m (1e-3 relative)",
        all(rel(getattr(c.susp, f"spring_{k}")["rate"], lbf * LBF_IN) < 1e-3
            for k, lbf in (("fl", 1200.0), ("fr", 1200.0), ("rl", 800.0), ("rr", 800.0))))
+    fr_rc, rr_rc = c.geom.rc_height_fl, c.geom.rc_height_rl
+    ok(f"roll-centre heights: front {fr_rc:.4f} m < rear {rr_rc:.4f} m, both in (0, 0.2)",
+       0.0 < fr_rc < rr_rc < 0.2)
     ok(f"6 gears ({len(c.engine.gears)} read)", len(c.engine.gears) == 6)
     ok("aero maps are 7 x 5 (cla, cda, balance)",
        all(getattr(c.aero, m)["data"].shape == (7, 5) for m in ("cla_map", "cda_map", "balance_map")))

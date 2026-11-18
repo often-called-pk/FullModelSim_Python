@@ -151,6 +151,9 @@ CAR_FIELDS = {
     87: ("mass.Ix", 1.0), 88: ("mass.Iy", 1.0), 89: ("mass.Iz", 1.0), 96: ("mass.front_share", 1.0),
     90: ("geom.wheelbase", 1.0), 91: ("geom.track_front", 1.0), 92: ("geom.track_rear", 1.0),
     93: ("geom.cg_height", 1.0),
+    # The middle value of each stored geometry triple (cids 54-56, 58-60, 62-64, 66-68) is the roll-centre height.
+    55: ("geom.rc_height_fl", 1.0), 59: ("geom.rc_height_fr", 1.0),
+    63: ("geom.rc_height_rl", 1.0), 67: ("geom.rc_height_rr", 1.0),
     **{117 + i: (f"geom.ride_height_{c}", MM) for i, c in enumerate(_C4)},
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))},

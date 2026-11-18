@@ -9,7 +9,8 @@ no if_else, fabs, fmax or fmin. ctx.physics is 'corrected' (userOpts checks it).
 
 Sign rules are those of vehModel. xs > 0 is compression. A lift value is a downforce (> 0).
 Toe > 0 is toe-out, as in vehModel. The camber of the record is the negative camber.
-The axle values (tyre rate, track, radius) come from the car record. vp holds the means.
+The axle values (tyre rate, track, radius) come from the car record. vp holds the means of the two axles,
+except Rw and f, which are the rear values.
 """
 import numpy as np
 import casadi as ca
@@ -20,7 +21,8 @@ from vehModel import _chassis_corrected
 
 C4 = ("fl", "fr", "rl", "rr")
 W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
-FZ_FLOOR = 20.0     # N, scale of the tyre load floor (softplus)
+FZ_FLOOR = 20.0     # N, scale of the tyre load floor (smooth maximum of the load and 0)
+LAT_CAP = 0.9       # the lateral force of a wheel stays under this share of its pure lateral capacity
 B_GEAR = 80.0       # sharpness of the smooth maximum over the gears
 S_MAX = 4.0         # largest normalised slip of the slip curve table
 
@@ -56,8 +58,10 @@ def _curve(x, y, ext=0.0, n=200):
     lo, hi = x[0], x[-1]
     e = ext * (hi - lo)
     xs = np.linspace(lo - e, hi + e, n)
-    if lo - e < 0 < hi + e:                        # an odd curve passes through the origin only with 0 on the grid
-        xs = np.union1d(xs, [0.0])
+    # The table abscissae and the origin are nodes, so a knee of the table stays. Grid points next to a node go.
+    nodes = np.r_[x[(x > lo) & (x < hi)], [0.0] if lo - e < 0 < hi + e else []]
+    if nodes.size:
+        xs = np.union1d(xs[np.min(np.abs(xs[:, None] - nodes[None, :]), axis=1) > 0.05 * (xs[1] - xs[0])], nodes)
     d = p.derivative()
     ys = np.where(xs < lo, y[0] + d(lo) * (xs - lo), np.where(xs > hi, y[-1] + d(hi) * (xs - hi), p(np.clip(xs, lo, hi))))
     lo, hi = lo - e, hi + e
@@ -73,22 +77,31 @@ def _surf(tab, e=5e-4):
     return lambda a, b: f(ca.vertcat(_clamp(a, x[0], x[-1], e), _clamp(b, z[0], z[-1], e)))
 
 
-def _slip_curve(T):
-    """Return h(s) = fn(s)/s for the normalised slip table of a tyre. fn is odd, so h is even and positive.
-    The table gets two more points on its last slope, then fn holds. h(0) = fn'(0)."""
+def _slip_curve(T, cap=None):
+    """Return h(v) = fn(v)/v for the normalised slip table of a tyre. fn is odd, so h is even and positive.
+    cap clips the table values (the lateral cap). The table gets two more points on its last slope, then fn holds.
+    Past S_MAX the curve holds fn, so h = fn / v and the force stays at fn x F'. h(0) = fn'(0)."""
     x, y = np.asarray(T["slip_x"], float), np.asarray(T["slip_y"], float)
     keep = np.r_[True, np.diff(x) > 0]
     x, y = x[keep], y[keep]
+    if x.size < 2 or x[0] != 0 or y[0] != 0:
+        raise ValueError("The slip table of the tyre must start at (0, 0) and have 2 or more points with increasing x.")
+    if cap is not None:
+        y = np.minimum(y, cap)
     sl, dx = (y[-1] - y[-2]) / (x[-1] - x[-2]), x[-1] - x[-2]
     x = np.r_[x, x[-1] + dx, x[-1] + 2 * dx]
     y = np.r_[y, np.maximum(y[-1] + sl * dx, 0.05), np.maximum(y[-1] + 2 * sl * dx, 0.05)]
     p = PchipInterpolator(np.r_[-x[:0:-1], x], np.r_[-y[:0:-1], y])
-    s = np.linspace(0.0, S_MAX, 201)
-    fn = p(np.minimum(s, x[-1]))
-    h = np.empty_like(s)
-    h[0], h[1:] = float(p.derivative()(0.0)), fn[1:] / s[1:]
-    f = ca.interpolant("slip", "bspline", [s], h)
-    return lambda v: f(_clamp(v, 0.0, S_MAX, 4e-3))
+    sg = np.linspace(0.0, S_MAX, 201)
+    fn = p(np.minimum(sg, x[-1]))
+    h = np.empty_like(sg)
+    h[0], h[1:] = float(p.derivative()(0.0)), fn[1:] / sg[1:]
+    f = ca.interpolant("slip", "bspline", [sg], h)
+
+    def hv(v):                  # v >= 1e-3 in the model
+        c = _smax(_smin(v, S_MAX, 4e-3), 0.0, 4e-3)
+        return f(c) * c / v
+    return hv
 
 
 # ---------------------------------------------------------------- car numbers (numpy)
@@ -100,19 +113,6 @@ def drive_scale(cs, R):
     return float(e.efficiency * te.max() * np.max(e.gears) / R)
 
 
-def static_rc(hp, y_cp):
-    """Static roll-centre height [m] from the six hardpoints of one corner (rows LIF, LIA, LO, UIF, UIA, UO) and
-    the contact patch half track y_cp [m]. Front view: each wishbone is the line from the middle of its two inner
-    points to its outer point. The instant centre is where the lines meet. The roll centre is where the line from
-    the contact patch to the instant centre crosses the centre plane."""
-    hp = np.asarray(hp, float)
-    li, ui = (hp[0] + hp[1]) / 2, (hp[3] + hp[4]) / 2
-    d1, d2 = hp[2, 1:] - li[1:], hp[5, 1:] - ui[1:]
-    t = np.linalg.solve(np.array([d1, -d2]).T, ui[1:] - li[1:])
-    yi, zi = li[1:] + t[0] * d1
-    return float(zi * y_cp / (y_cp - yi))
-
-
 def _mr(c):
     """Return (sm, mr) for the motion-ratio polynomial c (c1..c5): spring travel sm(x) and ratio mr(x) = sm'(x)."""
     c = [float(v) for v in np.atleast_1d(c)]
@@ -121,10 +121,12 @@ def _mr(c):
 
 
 def _gear_envelope(cs, R, v):
-    """Return (F_env, om_engine, F_ref) for the wheel speed v [m/s] (SX or float).
+    """Return (F_env, om_engine) for the wheel speed v [m/s] (SX or float).
     F_env is the smooth maximum over the gears of the drive force: efficiency x torque(engine speed) x ratio / R.
     Below idle the clutch holds the engine at idle. Above the limit a tanh window (2% of the limit) fades the torque.
-    The log-sum-exp overestimates the true maximum by at most F_ref ln(gears) / B_GEAR, and only near zero force."""
+    The log-sum-exp overestimates the true maximum by F_ref ln(2) / B_GEAR (0.9% of F_ref) at a gear crossing,
+    and less elsewhere. om_engine is the engine speed of the gears, weighted by their share of F_env. It holds at idle
+    under the clutch."""
     e = cs.engine
     te = _curve(e.torque_curve["x"], e.torque_curve["y"])
     F_ref = drive_scale(cs, R)
@@ -136,8 +138,34 @@ def _gear_envelope(cs, R, v):
         f.append(e.efficiency * te(_smax(w, e.rpm_idle, 5.0)) * G / R * win)
         w_e.append(w)
     F_env = F_ref / B_GEAR * ca.log(sum(ca.exp(B_GEAR * fi / F_ref) for fi in f))
-    om = sum(ca.exp(B_GEAR * (fi - F_env) / F_ref) * wi for fi, wi in zip(f, w_e))
-    return F_env, om, F_ref
+    om = sum(ca.exp(B_GEAR * (fi - F_env) / F_ref) * _smax(wi, e.rpm_idle, 5.0) for fi, wi in zip(f, w_e))
+    return F_env, om
+
+
+def gear_envelope_numeric(cs, R, v):
+    """F_env [N] at the wheel speeds v [m/s] (numpy array): the function of the NLP, evaluated. One source."""
+    x = ca.SX.sym("v")
+    fn = ca.Function("F_env", [x], [_gear_envelope(cs, R, x)[0]]).map(int(np.size(v)))
+    return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
+
+
+def _rubber(cs, c, mr0):
+    """Return F(xs): the bump rubber force on the wheel [N] at the strut travel xs [m, SX]. The rubber starts at the
+    ground gap. A table (flag 1: damper travel past the gap in m, force in N) gives the law. Else the rate does."""
+    rub, gap = getattr(cs.susp, f"rubber_{c}"), float(getattr(cs.susp, f"gap_{c}"))
+    if rub["flag"] == 1:
+        tab = _curve(np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]], ext=1.0)
+        return lambda xs: mr0 * tab(mr0 * W_RUBBER * _sp((xs - gap) / W_RUBBER))
+    return lambda xs: rub["rate"] * mr0 ** 2 * W_RUBBER * _sp((xs - gap) / W_RUBBER)
+
+
+def roll_centres(cs):
+    """Return (front, rear) roll-centre heights [m]: the middle value of the stored geometry triple of the car."""
+    g = cs.geom
+    need = {"front": (g.rc_height_fl, g.rc_height_fr), "rear": (g.rc_height_rl, g.rc_height_rr)}
+    if any(v is None for pair in need.values() for v in pair):
+        raise ValueError("The car file lacks the stored roll-centre heights (cids 55, 59, 63 and 67).")
+    return 0.5 * sum(need["front"]), 0.5 * sum(need["rear"])
 
 
 # ---------------------------------------------------------------- the model
@@ -222,8 +250,7 @@ def vehModel_cs(ctx):
         mr0 = float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
         F0 = getattr(vp, f"m_c_{c}") * vp.g             # static sprung corner load
         spring = (F0 / mr0 + sp["rate"] * sm(xs[c])) * mr(xs[c])
-        rub = getattr(cs.susp, f"rubber_{c}")
-        rubber = rub["rate"] * mr0 ** 2 * W_RUBBER * _sp((xs[c] - getattr(cs.susp, f"gap_{c}")) / W_RUBBER)
+        rubber = _rubber(cs, c, mr0)(xs[c])
         dm = getattr(cs.susp, f"damper_{c}")
         v, bump, reb = np.asarray(dm["velocity"], float), np.asarray(dm["bump"], float), np.asarray(dm["rebound"], float)
         if v.size < 2 or not (np.any(bump) or np.any(reb)):
@@ -257,19 +284,19 @@ def vehModel_cs(ctx):
     f_lift, f_drag = L, D
 
     # ===================== tyre slip (the geometry of vehModel) =============
-    toe_f, toe_r = ty["fl"]["toe"], ty["rl"]["toe"]     # > 0 = toe-out, as in vehModel
+    # toe > 0 = toe-out, as in vehModel (a left wheel adds it to its slip angle, a right wheel subtracts it)
     if Steering == "NA":
-        sa_fl = delta - ca.atan((vp.l_f*r + vy) / (vx - r*t_f/2)) + toe_f
-        sa_fr = delta - ca.atan((vp.l_f*r + vy) / (vx + r*t_f/2)) - toe_f
+        sa_fl = delta - ca.atan((vp.l_f*r + vy) / (vx - r*t_f/2)) + ty["fl"]["toe"]
+        sa_fr = delta - ca.atan((vp.l_f*r + vy) / (vx + r*t_f/2)) - ty["fr"]["toe"]
     elif Steering == "Ackermann":
         delta_fl = ca.atan(vp.l_f / (vp.l_f / ca.tan(delta) - t_f/2))
         delta_fr = ca.atan(vp.l_f / (vp.l_f / ca.tan(delta) + t_f/2))
-        sa_fl = delta_fl - ca.atan((vp.l_f*r + vy) / (vx - r*t_f/2)) + toe_f
-        sa_fr = delta_fr - ca.atan((vp.l_f*r + vy) / (vx + r*t_f/2)) - toe_f
+        sa_fl = delta_fl - ca.atan((vp.l_f*r + vy) / (vx - r*t_f/2)) + ty["fl"]["toe"]
+        sa_fr = delta_fr - ca.atan((vp.l_f*r + vy) / (vx + r*t_f/2)) - ty["fr"]["toe"]
     else:
         raise ValueError("Steering must be 'NA' or 'Ackermann'")
-    sa_rl = ca.atan((vp.l_r*r - vy) / (vx - r*t_r/2)) + toe_r
-    sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*t_r/2)) - toe_r
+    sa_rl = ca.atan((vp.l_r*r - vy) / (vx - r*t_r/2)) + ty["rl"]["toe"]
+    sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*t_r/2)) - ty["rr"]["toe"]
     v_fl = ca.sqrt((vy + vp.l_f*r)**2 + (vx - r*t_f/2)**2)
     v_fr = ca.sqrt((vy + vp.l_f*r)**2 + (vx + r*t_f/2)**2)
     v_rl = ca.sqrt((vy - vp.l_r*r)**2 + (vx - r*t_r/2)**2)
@@ -283,12 +310,13 @@ def vehModel_cs(ctx):
     fx, fy, mu_x, mu_y = {}, {}, {}, {}
     for c in C4:
         T = ty[c]
-        fze = FZ_FLOOR * _sp(fz[c] / FZ_FLOOR)                                  # load floor
+        fze = _smax(fz[c], 0.0, 2 * FZ_FLOOR)                                   # load floor
         Fp = _curve(T["load"], T["fy_peak"])(fze) * (grip * T["grip"])
         cam = float(np.interp(T["camber"], T["camber_x"], T["camber_y"]))      # factor at the static camber
         sa_n, ss_n = sa[c] / T["peak_slip_angle"], sx[c] / T["peak_slip_ratio"]
-        h = _slip_curve(T)(ca.sqrt(sa_n ** 2 + ss_n ** 2 + 1e-6))
-        fy[c], fx[c] = Fp * cam * h * sa_n, Fp * h * ss_n
+        sn = ca.sqrt(sa_n ** 2 + ss_n ** 2 + 1e-6)
+        fy[c] = Fp * cam * _slip_curve(T, LAT_CAP)(sn) * sa_n         # the lateral force stays under 0.9 of its capacity
+        fx[c] = Fp * _slip_curve(T)(sn) * ss_n
         mu_x[c] = mu_y[c] = Fp / fze
     f_roll_c = {c: ty[c]["rolling_drag"] * fz[c] for c in C4}
     f_roll = sum(f_roll_c.values())
@@ -297,8 +325,8 @@ def vehModel_cs(ctx):
            "rl": fx["rl"], "rr": fx["rr"]}
     fyg = {"fl": fy["fl"]*ca.cos(delta) + fx["fl"]*ca.sin(delta), "fr": fy["fr"]*ca.cos(delta) + fx["fr"]*ca.sin(delta),
            "rl": fy["rl"], "rr": fy["rr"]}
-    # roll centres: static, from the hardpoints (T6 makes them curves). Jacking and Mx as vehModel.
-    hRC = {"f": static_rc(cs.hardpoints.front_l, t_f / 2), "r": static_rc(cs.hardpoints.rear_l, t_r / 2)}
+    # roll centres: the stored heights of the car file (T6 makes them curves). Jacking and Mx as vehModel.
+    hRC = dict(zip("fr", roll_centres(cs)))
     fj = {"fl": -fyg["fl"] * (2*hRC["f"]/t_f), "fr": +fyg["fr"] * (2*hRC["f"]/t_f),
           "rl": -fyg["rl"] * (2*hRC["r"]/t_r), "rr": +fyg["rr"] * (2*hRC["r"]/t_r)}
     Mx = {c: fyg[c] * (vp.hcg - hRC[c[0]]) for c in C4}
@@ -310,7 +338,7 @@ def vehModel_cs(ctx):
            "rl": T_drive * Rw["r"] / 2 + T_brake * (1 - bias) / 2 * Rw["r"],       # open rear differential
            "rr": T_drive * Rw["r"] / 2 + T_brake * (1 - bias) / 2 * Rw["r"]}
     v_r = 0.5 * (Om_rl + Om_rr) * Rw["r"]
-    F_env, om_eng, _ = _gear_envelope(cs, Rw["r"], v_r)
+    F_env, om_eng = _gear_envelope(cs, Rw["r"], v_r)
 
     # ===================== chassis ==========================================
     cc = lambda d: tuple(d[c] for c in C4)
@@ -348,7 +376,7 @@ def vehModel_cs(ctx):
     m.f_roll, m.f_drag, m.f_lift = f_roll, f_drag, f_lift
     m.Lon_acc, m.Lat_acc, m.ax, m.ay = Lon_acc, Lat_acc, ax, ay
     m.F_env, m.om_engine, m.v_r, m.rh_f, m.rh_r = F_env, om_eng, v_r, rh_f, rh_r
-    m.veh_extra = [("om_gear", om_eng), ("throttle", T_drive_n), ("F_env", F_env)]
+    m.veh_extra = [("om_gear", om_eng), ("throttle", T_drive / F_env), ("F_env", F_env)]
     ctx.m23 = m
     return ctx
 

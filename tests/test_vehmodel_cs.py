@@ -27,6 +27,7 @@ import numpy as np
 import functions.transcription as T
 from functions import carfile
 from MLTP import MLTP
+import vehModel_cs as V
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
@@ -99,10 +100,10 @@ INSTALL = build_install(os.path.join(TMP.name, "ChassisSim"))
 # ---- synthetic car: literal cids and tags (as in tests/test_cs_car.py) -------------------------------
 # Tags: 1 scalar, 2 array, 6 byte, 7 curve, 9 map, 10 hardpoints, 11 spring-like, 12 damper, 13 tyre.
 TYRE = {  # dims (d1..d7), radius m, toe deg (0: a toe force jacks the body through a 2 m roll centre), camber, castor, drag, kz N/m
-    "fl": dict(dims=(3, 2, 2, 2, 2, 2, 2), radius=0.300, toe=0.0, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
+    "fl": dict(dims=(3, 2, 3, 2, 2, 2, 2), radius=0.300, toe=0.0, camber=-1.0, castor=2.0, drag=0.011, kz=1.60e5),
     "fr": dict(dims=(2, 2, 3, 2, 2, 3, 2), radius=0.305, toe=0.0, camber=-1.5, castor=2.5, drag=0.012, kz=1.62e5),
-    "rl": dict(dims=(4, 2, 2, 3, 2, 2, 2), radius=0.310, toe=0.0, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
-    "rr": dict(dims=(2, 2, 2, 2, 3, 2, 3), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
+    "rl": dict(dims=(4, 2, 3, 3, 2, 2, 2), radius=0.310, toe=0.0, camber=-0.5, castor=1.5, drag=0.0135, kz=1.40e5),
+    "rr": dict(dims=(2, 2, 3, 2, 3, 2, 3), radius=0.315, toe=0.0, camber=-0.75, castor=1.0, drag=0.014, kz=1.42e5),
 }
 TYRE_TEMPS = (300.0, 350.0)
 TYRE_BG = 325.0
@@ -121,7 +122,8 @@ EXPLICIT = {
     117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,            # ride heights, mm
     100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
-    111: 0.3, 112: 1.0, 113: 0.0,                           # torque split, diff types
+    111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0 = rear drive), diff types
+    55: 0.060, 59: 0.065, 63: 0.095, 67: 0.100,            # roll-centre heights per corner, m
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
@@ -130,8 +132,9 @@ EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
-MAPS = {127: ((4, 4), "cla"), 131: ((4, 4), "cda"), 135: ((5, 4), "balance"),   # casadi bspline: >= 4 per axis
-        114: ((4, 4), "diff_f"), 116: ((4, 4), "diff_r")}
+AERO_X = 0.005 * np.arange(7)            # rear ride height nodes, m
+AERO_Z = 0.002 + 0.005 * np.arange(7)    # front ride height nodes, m
+MAPS = {114: ((4, 4), "diff_f"), 116: ((4, 4), "diff_r")}   # casadi bspline: >= 4 per axis
 MIRROR = ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
           (80, 81), (82, 83), (117, 118), (119, 120))                  # left cid -> right cid
 
@@ -158,7 +161,8 @@ def tyre_record(i, corner):
     A, B = arb(d1, 20 + i), arb(d1, 30 + i)
     load = 1000.0 * np.arange(1, d1 + 1)
     tabs[3] = np.concatenate([load, TYRE_TEMPS, np.stack([A, B], axis=1).ravel()])
-    tabs[0][:d3] = np.linspace(0.1, 1.5, d3)                 # slip abscissae, increasing
+    tabs[0][:d3] = np.linspace(0.0, 2.0, d3)                 # slip abscissae: from 0, increasing
+    tabs[0][d3:] = np.array([0.0, 0.97, 0.97])[:d3]          # slip values: from 0, flat after the knee at 1
     tabs[5][:d6] = np.linspace(-3.0, 3.0, d6)                # camber abscissae (deg), increasing
     px = np.linspace(150.0, 250.0, d5)
     py = t["kz"] * (1.0 + 0.01 * np.arange(d5))
@@ -169,8 +173,8 @@ def tyre_record(i, corner):
     return 13, 80 + i, (list(dims), sc, tabs)
 
 
-def mirror_car(R):
-    """Copy each left record onto its right partner and set every toe to zero: a left-right symmetric car."""
+def mirror_car(R, toe=0.0):
+    """Copy each left record onto its right partner and set every toe [deg] to toe: a left-right symmetric car."""
     idx = {c: i for i, (_, c, _) in enumerate(R)}
     for left, right in MIRROR:
         t, _, v = R[idx[left]]
@@ -179,12 +183,12 @@ def mirror_car(R):
         if t == 13:
             dims, sc, tabs = v
             sc = np.array(sc, float)
-            sc[0] = 0.0
+            sc[0] = toe
             R[i] = (t, c, (dims, sc, tabs))
     return R
 
 
-def build_records(arb_front=None, mirror=False):
+def build_records(arb_front=None, mirror=False, toe=0.0):
     R = []
 
     def add(tag, cid, v):
@@ -201,11 +205,13 @@ def build_records(arb_front=None, mirror=False):
     for cid, rate in arb_rates.items():
         add(11, cid, (1, 0.0, rate, np.array([0.0, 0.1]), np.array([0.0, 300.0])))
     for cid in range(23, 31):
-        add(2, cid, arb(5, cid))                                          # motion ratio coefficients
+        add(2, cid, np.array([1.0, 0.1, -0.05, 0.02, 0.0]) * (1 + 0.05 * np.sin(cid)))   # motion ratio, positive
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)
     add(7, 101, (ENGINE_RPM, ENGINE_NM))
     add(2, 110, GEARS)
+    for cid in (127, 131, 135):
+        add(9, cid, (AERO_X, AERO_Z, np.zeros(49) if mirror else arb(49, cid)))   # the mirror car has no aero: no lift at the static point
     for cid, ((nx, nz), _) in MAPS.items():
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
     for cid in range(31, 36):
@@ -215,14 +221,14 @@ def build_records(arb_front=None, mirror=False):
     for i, c in enumerate(CORNERS):
         add(*tyre_record(i, c))
     if mirror:
-        R = mirror_car(R)
+        R = mirror_car(R, toe)
     R.append((carfile.END_TAG, carfile.END_CID, None))
     return R
 
 
-def write_car(name, arb_front=None, mirror=False):
+def write_car(name, arb_front=None, mirror=False, toe=0.0):
     path = os.path.join(TMP.name, name)
-    carfile.write(build_records(arb_front, mirror), path)
+    carfile.write(build_records(arb_front, mirror, toe), path)
     return path
 
 
@@ -346,6 +352,71 @@ else:
                          capture_output=True, text=True, timeout=3600)
     ok("4EM default NLP snapshot: SNAPSHOT DIFF: none", "SNAPSHOT DIFF: none" in run.stdout)
 
+
+print("[vehmodel_cs] review pins")
+# 1. aero axis order: rear ride height on X, front on Z. Static ride heights 17.75 (front) and 20.75 mm (rear),
+#    zs = -0.75 mm gives 17.0 and 20.0 mm, both on the map nodes (rear 0.005 k, front 0.002 + 0.005 k).
+x = static_x(ctx, 30.0)
+x[9] = -0.00075
+lift = float(ca.Function("L", [m.x, m.u, m.pv], [m.f_lift]).call([x / m.x_s, np.zeros(m.nu), 0.0])[0])
+cla = ctx.cs.aero.cla_map["data"]
+exp_lift = 0.5 * ctx.cs.aero.rho * 30.0 ** 2 * cla[4, 3]
+ok(f"lift at the nodes: rear 20 mm on X, front 17 mm on Z (lift {lift:.3f}, map entry {exp_lift:.3f} N)",
+   abs(lift - exp_lift) < 1e-2 * abs(exp_lift))
+
+# 2. tyre law, rear left: sa at the peak (sa_n = 1), zero slip ratio: |Fy| = 0.9 F' cam (lateral cap)
+rl = ctx.cs.tyre.rl
+x = static_x(ctx, 30.0)
+x[1] = -30.0 * np.tan(rl["peak_slip_angle"])                 # sa_rl = atan(-vy / vx) = peak
+fy, mu, fz, sa, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fy_rl, m.mu_rl_x, m.fz_rl, m.sa_rl, m.sx_rl])
+                      .call([x / m.x_s, np.zeros(m.nu), 0.0])]
+cam = float(np.interp(rl["camber"], rl["camber_x"], rl["camber_y"]))
+exp_fy = 0.9 * mu * fz * cam
+ok(f"pure lateral at the peak slip angle: |Fy| = 0.9 F' cam ({abs(fy):.4f} vs {exp_fy:.4f} N)",
+   abs(abs(fy) - exp_fy) < 1e-3 * exp_fy and abs(sa / rl["peak_slip_angle"] - 1) < 1e-6 and abs(sx) < 1e-9)
+
+# 2b. locked wheel (Om = 0, slip ratio -1): |Fx| <= F' and not zero (no growth past the table end)
+x = static_x(ctx, 30.0)
+x[1] = 0.0
+x[7] = 0.0
+fx, mu, fz, sx = [float(v) for v in ca.Function("T", [m.x, m.u, m.pv], [m.fx_rl, m.mu_rl_x, m.fz_rl, m.sx_rl])
+                  .call([x / m.x_s, np.zeros(m.nu), 0.0])]
+ok(f"locked wheel (SR {sx:.3f}): 0.9 F' <= |Fx| <= F' ({abs(fx):.4f} vs F' {mu * fz:.4f} N)",
+   abs(sx + 1) < 1e-9 and 0.9 * mu * fz <= abs(fx) <= mu * fz * (1 + 1e-6))
+
+# 3. brake split under pure brake (T_brake_n = -1, no drive): front / rear wheel torque ratio, left = right
+x = static_x(ctx, 30.0)
+Tfl, Tfr, Trl, Trr = [float(v) for v in ca.Function("B", [m.x, m.u, m.pv], [m.T_fl, m.T_fr, m.T_rl, m.T_rr])
+                      .call([x / m.x_s, np.array([0.0, -1.0, 0.0]), 0.0])]
+bias = ctx.cs.brake.front_bias
+ratio = bias * ctx.cs.tyre.fl["radius"] / ((1 - bias) * ctx.cs.tyre.rl["radius"])
+ok(f"brake torque ratio front/rear = bias Rf / ((1 - bias) Rr) = {ratio:.6f} (model {Tfl / Trl:.6f})",
+   abs(Tfl / Trl - ratio) < 1e-9 * abs(ratio))
+Rf, Rr = ctx.cs.tyre.fl["radius"], ctx.cs.tyre.rl["radius"]
+tot = -ctx.cs.brake.force * (bias * Rf + (1 - bias) * Rr)      # sum of wheel torques = T_brake (bias Rf + (1 - bias) Rr)
+ok("front left and front right torques equal, the four sum to the brake torque",
+   abs(Tfl - Tfr) < 1e-9 * abs(Tfl) and abs(Tfl + Tfr + Trl + Trr - tot) < 1e-6 * abs(tot))
+
+# 4. symmetric non-zero toe (same toe on both sides, mirror car) on a straight: dvy = dr = 0
+cs_toe = build(write_car("sym_toe.car", mirror=True, toe=0.3))
+rt = rates(cs_toe, static_x(cs_toe, 30.0))
+ok(f"symmetric toe 0.3 deg on a straight: dvy, dr zero (|dvy| {abs(rt[1]):.1e}, |dr| {abs(rt[2]):.1e} per s)",
+   abs(rt[1]) < 1e-9 and abs(rt[2]) < 1e-9)
+
+# 5. rubber table (flag 1): force at the travel past the gap (wheel frame: table at mr0 (travel - gap), times mr0)
+mr0 = float(ctx.cs.susp.mr_fl[0])
+gap = float(ctx.cs.susp.gap_fl)
+rub = ctx.cs.susp.rubber_fl
+xs = ca.SX.sym("xs")
+fr_fun = ca.Function("R", [xs], [V._rubber(ctx.cs, "fl", mr0)(xs)])
+f_r = float(fr_fun(gap + 0.01))
+exp_r = mr0 * float(np.interp(mr0 * 0.01, np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]]))
+ok(f"rubber table (flag {rub['flag']}) at 10 mm past the gap: {f_r:.2f} N vs table {exp_r:.2f} N",
+   rub["flag"] == 1 and abs(f_r - exp_r) < 0.02 * abs(exp_r))
+
+# 6. residual gate: mirror car, toe 0, vertical rows at the static point below 1e-2 per s
+rv = np.abs(rates(cs_sym, static_x(cs_sym))[ROWS_VERT])
+ok(f"mirror car, toe 0: vertical rows at the static point < 1e-2 per s (max {rv.max():.2e})", rv.max() < 1e-2)
 
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):

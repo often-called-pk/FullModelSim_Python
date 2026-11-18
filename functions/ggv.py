@@ -489,7 +489,8 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     """
     from scipy.interpolate import PchipInterpolator, RectBivariateSpline
-    from vehModel_cs import C4, FZ_FLOOR, B_GEAR, drive_scale, static_rc
+    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, roll_centres, gear_envelope_numeric, _rubber
+    import casadi as ca
     vp, cs = ctx.vp, ctx.cs
     grip = getattr(ctx, "grip", 1.0)
     ty = {c: getattr(cs.tyre, c) for c in C4}
@@ -507,11 +508,13 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
         keep = np.r_[True, np.diff(x) > 0]
         p = PchipInterpolator(x[keep], y[keep])
         cam = float(np.interp(T["camber"], T["camber_x"], T["camber_y"]))
-        k = grip * T["grip"] * float(np.max(T["slip_y"]))     # peak of the normalised slip curve
+        pk = float(np.max(T["slip_y"]))                       # peak of the normalised slip curve
+        k_x, k_y = grip * T["grip"] * pk, grip * T["grip"] * min(pk, LAT_CAP)   # the lateral force has the 0.9 cap
 
         def F(Fz, lat):
-            fze = FZ_FLOOR * np.logaddexp(0.0, np.asarray(Fz, float) / FZ_FLOOR)
-            return p(np.clip(fze, x[0], x[-1])) * k * (cam if lat else 1.0)
+            Fz = np.asarray(Fz, float)
+            fze = 0.5 * (Fz + np.sqrt(Fz * Fz + (2 * FZ_FLOOR) ** 2))    # the load floor of the NLP
+            return p(np.clip(fze, x[0], x[-1])) * (k_y * cam if lat else k_x)
         return F
     PK = {c: peak_fn(ty[c]) for c in C4}
 
@@ -530,14 +533,26 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
     q = 0.5 * rho * v * v
     kw = {c: getattr(cs.susp, f"spring_{c}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0]) ** 2
           for c in C4}                                           # wheel rate, springs through MR^2
-    cmp_f = 1.0 / (kw["fl"] + kw["fr"]) + 1.0 / (ty["fl"]["kz"] + ty["fr"]["kz"])   # m/N, ride height per axle load
-    cmp_r = 1.0 / (kw["rl"] + kw["rr"]) + 1.0 / (ty["rl"]["kz"] + ty["rr"]["kz"])
+    kt_f, kt_r = ty["fl"]["kz"] + ty["fr"]["kz"], ty["rl"]["kz"] + ty["rr"]["kz"]
     rh_f0, rh_r0 = 0.5 * (geo.ride_height_fl + geo.ride_height_fr), 0.5 * (geo.ride_height_rl + geo.ride_height_rr)
+    xv = ca.SX.sym("x")
+    rub = {c: ca.Function("rub", [xv], [_rubber(cs, c, float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0]))(xv)]).map(v.size)
+           for c in C4}
+
+    def travel(Fa, a):       # strut travel of axle a under the extra axle load Fa: springs and bump rubbers (monotone)
+        l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
+        lo, hi = np.zeros_like(Fa), np.full_like(Fa, 0.2)
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            f = (kw[l] + kw[r]) * mid + np.asarray(rub[l](mid.reshape(1, -1))).ravel() + np.asarray(rub[r](mid.reshape(1, -1))).ravel()
+            lo, hi = np.where(f < Fa, mid, lo), np.where(f < Fa, hi, mid)
+        return 0.5 * (lo + hi)
     rh_f, rh_r = np.full_like(v, rh_f0), np.full_like(v, rh_r0)
     for _ in range(100):
         Ld = q * cla(rh_r, rh_f)
         ab = cab(rh_r, rh_f) + off
-        nf, nr = rh_f0 - ab * Ld * cmp_f, rh_r0 - (1 - ab) * Ld * cmp_r
+        Ffa, Fra = ab * Ld, (1 - ab) * Ld
+        nf, nr = rh_f0 - travel(Ffa, "f") - Ffa / kt_f, rh_r0 - travel(Fra, "r") - Fra / kt_r
         done = max(np.max(np.abs(nf - rh_f)), np.max(np.abs(nr - rh_r))) < 1e-9
         rh_f, rh_r = 0.5 * (rh_f + nf), 0.5 * (rh_r + nr)         # damped
         if done:
@@ -556,7 +571,7 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
         return k_s * k_t / (k_s + k_t)
     Kf, Kr = roll_k("f", t_f), roll_k("r", t_r)
     phi_f = Kf / (Kf + Kr)
-    hrc_f, hrc_r = static_rc(cs.hardpoints.front_l, t_f / 2), static_rc(cs.hardpoints.rear_l, t_r / 2)
+    hrc_f, hrc_r = roll_centres(cs)
     sh_f, sh_r = vp.l_r / L, vp.l_f / L
 
     def lat_capacity(ay):
@@ -585,16 +600,9 @@ def build_envelope_cs(ctx, v_grid=None, n_v=40):
     Fx_trac = _bisect_fixed_point(trac_capacity, np.zeros_like(v), hi_x)
     Fx_brk = _bisect_fixed_point(brk_capacity, np.zeros_like(v), hi_x)
 
-    # ---- drive force: the gear envelope of vehModel_cs, in numpy -------------
-    te = PchipInterpolator(eng.torque_curve["x"], eng.torque_curve["y"])
-    lo, hi = float(np.min(eng.torque_curve["x"])), float(np.max(eng.torque_curve["x"]))
-    F_ref, dw = drive_scale(cs, Rr), 0.01 * eng.rpm_limit
-    fi = []
-    for G in np.asarray(eng.gears, float):
-        w = v * G / Rr
-        win = 0.5 * (1.0 + np.tanh((eng.rpm_limit - w) / dw))
-        fi.append(eng.efficiency * te(np.clip(np.maximum(w, eng.rpm_idle), lo, hi)) * G / Rr * win)
-    F_drive = F_ref / B_GEAR * np.log(sum(np.exp(B_GEAR * f / F_ref) for f in fi))
+    # ---- drive force: the gear envelope of vehModel_cs (the NLP function, evaluated) ------------
+    F_ref = drive_scale(cs, Rr)
+    F_drive = gear_envelope_numeric(cs, Rr, v)
 
     # ---- resistance: drag + rolling drag, fitted as c0 + c2 v^2 on the grid ------------------------
     f_roll = sum(ty[c]["rolling_drag"] for c in C4) / 4.0
