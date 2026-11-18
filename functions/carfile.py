@@ -1,7 +1,7 @@
 """Decode and encode ChassisSim v3.41 car files.
 
-Source: ChassisSim v3.41 car files, an MFC CArchive record stream. The layout below was measured on
-the 31 car files that ChassisSim v3.41 ships: each one decodes and encodes back to the same bytes.
+A ChassisSim v3.41 car file is an MFC CArchive record stream. We measured the layout below on the
+31 car files that ChassisSim v3.41 ships: each one decodes and encodes back to the same bytes.
 
 A file has no header. It holds records `[int32 tag][int32 cid][payload]`. All numbers are little-endian
 and byte-packed: there is no alignment padding, so a float64 value can start at any offset. Most files
@@ -36,6 +36,10 @@ import numpy as np
 
 END_TAG = END_CID = 4000
 _F = np.dtype('<f8')
+
+
+class _Bad(ValueError):
+    """A record that encode refuses, with a message for the user."""
 
 
 def _tyre_sizes(d):
@@ -150,10 +154,10 @@ def _f(a, n=None):
     """Return the float64 bytes of a. n is the value count that the record needs."""
     a = np.asarray(a)
     if a.dtype.kind not in 'biuf':
-        raise ValueError(f"The values must be numbers. Their type is {a.dtype}.")
+        raise _Bad(f"The values must be numbers. Their type is {a.dtype}.")
     a = np.ascontiguousarray(a, _F).ravel()
     if n is not None and len(a) != n:
-        raise ValueError(f"The record needs {n} values. It has {len(a)}.")
+        raise _Bad(f"The record needs {n} values. It has {len(a)}.")
     return a.tobytes()
 
 
@@ -165,7 +169,7 @@ def _table3(a):
     """Return the count bytes and the value bytes of a table with 3 columns."""
     b = _f(a)
     if len(b) % 24:
-        raise ValueError(f"The number of values must be a multiple of 3. It is {len(b) // 8}.")
+        raise _Bad(f"The number of values must be a multiple of 3. It is {len(b) // 8}.")
     return _i(len(b) // 24), b
 
 
@@ -173,7 +177,7 @@ def _payload(tag, cid, v, last):
     """Return the payload bytes of one record. last is True for the last record of the car."""
     if tag == END_TAG:
         if cid != END_CID or v is not None or not last:
-            raise ValueError("The end record must be (4000, 4000, None), and it must be the last record.")
+            raise _Bad("The end record must be (4000, 4000, None), and it must be the last record.")
         return b''
     if tag == 1:
         return _f(v, 1)
@@ -189,7 +193,8 @@ def _payload(tag, cid, v, last):
         bx = _f(x)
         return _i(len(bx) // 8) + bx + _f(y, len(bx) // 8)
     if tag == 8:
-        return _i(len(v)) + bytes(v)
+        b = bytes(v)
+        return _i(len(b)) + b
     if tag == 9:
         x, z, d = v
         bx, bz = _f(x), _f(z)
@@ -201,7 +206,7 @@ def _payload(tag, cid, v, last):
     if tag == 11:
         fl, s1, s2, x, y = v
         if fl not in (0, 1):
-            raise ValueError(f"The spring flag {fl} is not 0 or 1.")
+            raise _Bad(f"The spring flag {fl} is not 0 or 1.")
         bx = _f(x)
         return _i(len(bx) // 8) + bytes([fl]) + _f([s1, s2]) + bx + _f(y, len(bx) // 8)
     if tag == 12:
@@ -210,10 +215,10 @@ def _payload(tag, cid, v, last):
         return n + bytes([fl]) + _f(s, 6) + b
     if tag == 13:
         d, s, tabs = v
-        if len(d) != 7 or len(tabs) != 13:
-            raise ValueError(f"A tyre needs 7 dims and 13 tables. It has {len(d)} and {len(tabs)}.")
+        if len(d) != 7 or len(tabs) != 13 or min(d) < 0:
+            raise _Bad(f"A tyre needs 7 dims that are not negative and 13 tables. It has {len(d)} dims {tuple(d)} and {len(tabs)} tables.")
         return _i(*d) + _f(s, 18) + b''.join(_f(t, k) for t, k in zip(tabs, _tyre_sizes(d)))
-    raise ValueError(f"The record tag {tag} is unknown.")
+    raise _Bad(f"Tag {tag} has no known layout.")
 
 
 def encode(records):
@@ -224,8 +229,11 @@ def encode(records):
     for k, (tag, cid, v) in enumerate(records):
         try:
             out.append(_i(tag, cid) + _payload(tag, cid, v, k == len(records) - 1))
-        except (ValueError, TypeError) as e:
+        except _Bad as e:
             raise ValueError(f"The record {k} (tag {tag}, cid {cid}) is not valid. {e}") from None
+        except (ValueError, TypeError, OverflowError, struct.error):
+            raise ValueError(f"The record {k} (tag {tag}, cid {cid}) is not valid. The value has the wrong form "
+                             "for this tag, or a number is out of range.") from None
     return b''.join(out)
 
 

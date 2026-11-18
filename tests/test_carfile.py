@@ -234,6 +234,35 @@ for label, recs in REFUSED.items():
     ok(f"encode refuses: {label}", m is not None and m.startswith("The record 0 (tag ")
        and "is not valid." in m)
 
+WRONG_FORM = "wrong form for this tag, or a number is out of range"
+WRONG_TYRE = tyre_tables(0.5)
+WRONG_TYRE[0] = arb(7, 0.1)  # table 0 needs 8 values
+REFUSED_2 = [
+    ("tag 7 X and Y of different length", [(7, 1, (arb(2, 0.1), arb(3, 0.2)))], "needs 2"),
+    ("tag 9 data length != nx * nz", [(9, 1, (arb(2, 0.1), arb(3, 0.2), arb(5, 0.3)))], "needs 6"),
+    ("tag 11 X and Y of different length", [(11, 1, (0, 0.1, 0.2, arb(3, 0.1), arb(2, 0.2)))], "needs 3"),
+    ("tag 10 values not a multiple of 3", [(10, 1, (1, arb(4, 0.1)))], "multiple of 3"),
+    ("tag 12 values not a multiple of 3", [(12, 1, (1, arb(6, 0.1), arb(4, 0.2)))], "multiple of 3"),
+    ("tag 6 value 256", [(6, 1, 256)], WRONG_FORM),
+    ("tyre table of the wrong length", [(13, 1, (TYRE_DIMS, arb(18, 0.1), WRONG_TYRE))], "needs 8"),
+    ("tyre dims with a negative entry", [(13, 1, ((2, 3, -4, 5, 6, 7, 8), arb(18, 0.1), tyre_tables(0.5)))],
+     "not negative"),
+    ("cid 2**40", [(1, 2 ** 40, 1.0)], WRONG_FORM),
+    ("tyre dims as floats", [(13, 1, ((2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0), arb(18, 0.1), tyre_tables(0.5)))],
+     WRONG_FORM),
+    ("tag 10 value with 3 parts", [(10, 1, (1, arb(3, 0.1), arb(3, 0.2)))], WRONG_FORM),
+]
+for label, recs, must in REFUSED_2:
+    m = err(lambda: encode(recs))
+    ok(f"encode refuses: {label} (message has '{must}')",
+       m is not None and m.startswith("The record 0 (tag ") and "is not valid." in m and must in m)
+
+NP_BYTES = np.array([1, 2, 300, -4], dtype=np.int64)
+DATA8 = encode([(8, 77, NP_BYTES), (END_TAG, END_TAG, None)])
+ok("tag 8 with a numpy int array encodes, and its count is len(bytes(value))",
+   struct.unpack_from('<i', DATA8, 8)[0] == len(bytes(NP_BYTES)) == 32
+   and decode_bytes(DATA8)[0][2] == bytes(NP_BYTES))
+
 print("[carfile] write")
 with tempfile.TemporaryDirectory() as tmp:
     new = os.path.join(tmp, "new.car")
