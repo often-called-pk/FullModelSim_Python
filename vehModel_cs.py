@@ -195,12 +195,35 @@ def gear_envelope_numeric(cs, R, v):
     return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
 
 
-def _rubber(cs, c):
+def rubber_gap(cs, c, vp=None):
+    """Return the effective bump rubber gap of corner c at the damper [m], or None when the corner has no rubber.
+    Flag 1: the stored gap. Flag 0: the stored gap minus the static spring compression at the damper,
+    F0 / (mr0 k) - preload, with F0 from vp (needed for flag 0 only).
+    The result is negative when the rubber is loaded at static. A stored gap of 0 means no rubber."""
+    gap = float(getattr(cs.susp, f"gap_{c}"))
+    if gap == 0.0:
+        return None
+    if getattr(cs.susp, f"gap_flag_{c}") == 0:
+        if vp is None:
+            raise ValueError(f"The rubber gap of corner {c} needs the vehicle parameters (gap flag 0).")
+        mr0 = float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
+        sp = getattr(cs.susp, f"spring_{c}")
+        if not sp["rate"]:
+            raise ValueError(f"The spring of corner {c} has no rate. The static deflection for the rubber gap needs one.")
+        gap -= getattr(vp, f"m_c_{c}") * vp.g / (mr0 * sp["rate"]) - sp["preload"]
+    return gap
+
+
+def _rubber(cs, c, vp=None):
     """Return F(xs): the bump rubber force on the wheel [N] at the strut travel xs [m, SX].
     The rubber and its gap sit at the damper. The compression is sm(xs) - gap, with sm the spring travel of the
-    motion-ratio law, and the wheel force is mr(xs) x the rubber force. The onset is smooth (softplus, width W_RUBBER).
-    A table (flag 1: compression in m, force in N) gives the law. Else the rate does."""
-    rub, gap = getattr(cs.susp, f"rubber_{c}"), float(getattr(cs.susp, f"gap_{c}"))
+    motion-ratio law (gap from rubber_gap), and the wheel force is mr(xs) x the rubber force. The onset is smooth
+    (softplus, width W_RUBBER). A table (flag 1: compression in m, force in N) gives the law. Else the rate does.
+    A corner without rubber gives 0."""
+    gap = rubber_gap(cs, c, vp)
+    if gap is None:
+        return lambda xs: 0.0
+    rub = getattr(cs.susp, f"rubber_{c}")
     sm, mr = _mr(getattr(cs.susp, f"mr_{c}"))
     law = (_curve(np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]], ext=1.0) if rub["flag"] == 1
            else (lambda comp: rub["rate"] * comp))
@@ -301,7 +324,7 @@ def vehModel_cs(ctx):
         mr0 = float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
         F0 = getattr(vp, f"m_c_{c}") * vp.g             # static sprung corner load
         spring = (F0 / mr0 + sp["rate"] * sm(xs[c])) * mr(xs[c])
-        rubber = _rubber(cs, c)(xs[c])
+        rubber = _rubber(cs, c, vp)(xs[c])
         dm = getattr(cs.susp, f"damper_{c}")
         v, bump, reb = np.asarray(dm["velocity"], float), np.asarray(dm["bump"], float), np.asarray(dm["rebound"], float)
         if v.size < 2 or not (np.any(bump) or np.any(reb)):

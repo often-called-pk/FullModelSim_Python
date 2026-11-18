@@ -598,7 +598,7 @@ def build_envelope_cs(ctx, v_grid=None):
         for c in (l, r):
             sm, mr = _mr(getattr(cs.susp, f"mr_{c}"))
             F0, mr0 = getattr(vp, f"m_c_{c}") * vp.g, float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
-            extra = extra + (F0 / mr0 + getattr(cs.susp, f"spring_{c}")["rate"] * sm(xv)) * mr(xv) - F0 + _rubber(cs, c)(xv)
+            extra = extra + (F0 / mr0 + getattr(cs.susp, f"spring_{c}")["rate"] * sm(xv)) * mr(xv) - F0 + _rubber(cs, c, vp)(xv)
         fr = ca.Function("axle", [xv], [extra]).map(xg.size)
         F_ax[a] = np.asarray(fr(xg.reshape(1, -1))).ravel()                       # increasing in the travel
 

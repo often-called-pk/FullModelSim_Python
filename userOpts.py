@@ -514,9 +514,10 @@ def userOpts(ctx,
         ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):])
         ctx.car = f"{ctx.cs.path}#{ctx.cs.sha8}"
         flags = [getattr(ctx.cs.susp, f"gap_flag_{c}") for c in ("fl", "fr", "rl", "rr")]
-        if flags != [1] * 4:
-            raise ValueError("The car file must hold the bump rubber gap flags (cids 204 to 207) at 1. "
-                             "The car model reads the gap as measured with the car static on the ground.")
+        if any(f not in (0, 1) for f in flags):
+            raise ValueError("The car file holds a bump rubber gap flag (cids 204 to 207) other than 0 or 1.")
+        if any(getattr(ctx.cs.susp, f"spring_third_{a}")["rate"] for a in "fr"):
+            raise ValueError("The model has no third spring yet.")
         if ctx.cs.engine.torque_split not in (None, 0.0):
             raise ValueError("The car sends drive torque to the front axle (torque split above 0). "
                              "The car model drives the rear axle only.")

@@ -123,7 +123,7 @@ VEL = np.array([0.0, 100.0, 200.0, 400.0, 800.0])        # mm/s, from 0 up (the 
 BUMP = np.array([0.0, 900.0, 1800.0, 2700.0, 3600.0])    # N, zero at zero velocity
 REB = np.array([0.0, 600.0, 1200.0, 1800.0, 2400.0])     # N, positive as the file stores it
 SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5, 0.0205),
-          5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}
+          5: (0.0, 0.0), 6: (0.0, 0.0)}
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}
 ARB = {19: 2.0e4, 21: 1.5e4}
 HARD = (49, 50, 51, 52)                  # front left, front right, rear left, rear right

@@ -117,7 +117,7 @@ VEL = np.array([0.0, 100.0, 200.0, 400.0, 800.0])        # mm/s, from 0 up (the 
 BUMP = np.array([0.0, 900.0, 1800.0, 2700.0, 3600.0])    # N, zero at zero velocity
 REB = np.array([0.0, 600.0, 1200.0, 1800.0, 2400.0])     # N, positive as the file stores it
 SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5, 0.0205),
-          5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}
+          5: (0.0, 0.0), 6: (0.0, 0.0)}
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}
 ARB = {19: 2.0e4, 21: 1.5e4}
 HARD = (49, 50, 51, 52)                                   # front_l, front_r, rear_l, rear_r
@@ -497,9 +497,9 @@ ok(f"T_brake rate bounds equal the 4EM ramp x brake force (ub {float(np.ravel(ct
    f"lb {float(np.ravel(ctx.duk_lb)[1]):.4g} vs {lb_ref:.4g})",
    abs(float(np.ravel(ctx.duk_ub)[1]) - ub_ref) < 1e-9 * abs(ub_ref) and abs(float(np.ravel(ctx.duk_lb)[1]) - lb_ref) < 1e-9 * abs(lb_ref))
 
-# 5. refusals: cid 111 = 0.3 and a gap flag 0 raise ValueError
+# 5. refusals: cid 111 = 0.3 and a gap flag 2 raise ValueError
 ok("torque split 0.3 (cid 111) raises ValueError", raises(ValueError, build, write_car("split.car", over={111: 0.3})))
-ok("rubber gap flag 0 (cid 204) raises ValueError", raises(ValueError, build, write_car("flag.car", over={204: 0})))
+ok("rubber gap flag 2 (cid 204) raises ValueError", raises(ValueError, build, write_car("flag.car", over={204: 2})))
 
 # 6. throttle channel = T_drive / F_env (share of the drive available at this speed)
 x = static_x(ctx, 30.0)
