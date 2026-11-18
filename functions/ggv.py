@@ -127,6 +127,7 @@ class Envelope:
     F_drag: np.ndarray = None     # [N]     aero drag on v_grid (diagnostics)
     Fz_front: np.ndarray = None   # [N]     front-axle load, static + aero (no transfer)
     Fz_rear: np.ndarray = None    # [N]     rear-axle load, static + aero (no transfer)
+    F_drive_tab: np.ndarray = None  # [N]     drive force on v_grid (a car's gear envelope); None: torque / power / rpm
     info: dict = field(default_factory=dict)
 
     def F_res(self, v):
@@ -137,6 +138,8 @@ class Envelope:
     def F_mot(self, v):
         """Powertrain drive-force limit at the wheels [N]."""
         v = np.asarray(v, dtype=float)
+        if self.F_drive_tab is not None:
+            return np.interp(v, self.v_grid, self.F_drive_tab)
         with np.errstate(divide="ignore"):
             f = np.minimum(self.F_mot_trq, self.P_mot / np.maximum(v, 1e-12))
         return np.where(v < self.v_rpm, f, 0.0)
@@ -338,6 +341,8 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
     v_grid defaults to n_v uniform points on [2, pt.Vmax] m/s. See the module
     docstring for every modelling choice. Cost ~5 ms (numpy, vectorised in v).
     """
+    if getattr(ctx, "cs", None) is not None:      # a ChassisSim car has its own tyre, aero and drive data
+        return build_envelope_cs(ctx, v_grid, n_v)
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
     # MF 6.1 pressure (Besselink et al. 2010): the screen reads the peak friction only, so the two mu factors fold into
     # the copy of the grip scales. vehModel cannot do this, because LMUX and LMUY also scale SVx and SVy there.
@@ -471,6 +476,146 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
 
 
 # ============================================================================
+# Stage (a) for a ChassisSim car
+# ============================================================================
+def build_envelope_cs(ctx, v_grid=None, n_v=40):
+    """Return the Envelope of a ChassisSim car (ctx.cs), on the speed grid v_grid.
+
+    It mirrors vehModel_cs quasi-statically. The tyre peak force is F'(Fz) x tyre grip x ctx.grip, with the
+    load floor, the static camber factor and the peak of the slip curve. The aero maps are read at the
+    ride heights that the aero load gives (a fixed point). The lateral load transfer follows the roll
+    stiffness split of the springs and bars, with the tyre in series, and the static roll centres.
+    The drive force is the gear envelope (the same smooth maximum as the NLP). Brakes: the brake force and
+    the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
+    """
+    from scipy.interpolate import PchipInterpolator, RectBivariateSpline
+    from vehModel_cs import C4, FZ_FLOOR, B_GEAR, drive_scale, static_rc
+    vp, cs = ctx.vp, ctx.cs
+    grip = getattr(ctx, "grip", 1.0)
+    ty = {c: getattr(cs.tyre, c) for c in C4}
+    eng, geo, aero = cs.engine, cs.geom, cs.aero
+    Rr = ty["rl"]["radius"]
+    t_f, t_r = geo.track_front, geo.track_rear
+    L = vp.l_f + vp.l_r
+    v_cap = float(eng.rpm_limit * Rr / np.min(eng.gears))
+    v = np.linspace(2.0, v_cap, int(n_v)) if v_grid is None else np.sort(np.asarray(v_grid, float).reshape(-1))
+
+    # ---- tyre peak force per corner (lateral and longitudinal) ---------------
+    def peak_fn(T):
+        o = np.argsort(T["load"], kind="stable")
+        x, y = np.asarray(T["load"], float)[o], np.asarray(T["fy_peak"], float)[o]
+        keep = np.r_[True, np.diff(x) > 0]
+        p = PchipInterpolator(x[keep], y[keep])
+        cam = float(np.interp(T["camber"], T["camber_x"], T["camber_y"]))
+        k = grip * T["grip"] * float(np.max(T["slip_y"]))     # peak of the normalised slip curve
+
+        def F(Fz, lat):
+            fze = FZ_FLOOR * np.logaddexp(0.0, np.asarray(Fz, float) / FZ_FLOOR)
+            return p(np.clip(fze, x[0], x[-1])) * k * (cam if lat else 1.0)
+        return F
+    PK = {c: peak_fn(ty[c]) for c in C4}
+
+    def axle(a, Fz, dF, lat):       # sum of the two corner peaks of axle a, loads Fz/2 + dF and Fz/2 - dF
+        l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
+        return PK[l](0.5 * Fz + dF, lat) + PK[r](0.5 * Fz - dF, lat)
+
+    # ---- aero at the quasi-static ride heights (fixed point) -----------------
+    def surf(tab):
+        x, z = np.asarray(tab["x"], float), np.asarray(tab["z"], float)
+        sp = RectBivariateSpline(x, z, np.asarray(tab["data"], float))
+        return lambda a, b: sp.ev(np.clip(a, x[0], x[-1]), np.clip(b, z[0], z[-1]))
+    cla, cda, cab = surf(aero.cla_map), surf(aero.cda_map), surf(aero.balance_map)
+    off = aero.offset or 0.0
+    rho = aero.rho if aero.rho else 1.225
+    q = 0.5 * rho * v * v
+    kw = {c: getattr(cs.susp, f"spring_{c}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0]) ** 2
+          for c in C4}                                           # wheel rate, springs through MR^2
+    cmp_f = 1.0 / (kw["fl"] + kw["fr"]) + 1.0 / (ty["fl"]["kz"] + ty["fr"]["kz"])   # m/N, ride height per axle load
+    cmp_r = 1.0 / (kw["rl"] + kw["rr"]) + 1.0 / (ty["rl"]["kz"] + ty["rr"]["kz"])
+    rh_f0, rh_r0 = 0.5 * (geo.ride_height_fl + geo.ride_height_fr), 0.5 * (geo.ride_height_rl + geo.ride_height_rr)
+    rh_f, rh_r = np.full_like(v, rh_f0), np.full_like(v, rh_r0)
+    for _ in range(100):
+        Ld = q * cla(rh_r, rh_f)
+        ab = cab(rh_r, rh_f) + off
+        nf, nr = rh_f0 - ab * Ld * cmp_f, rh_r0 - (1 - ab) * Ld * cmp_r
+        done = max(np.max(np.abs(nf - rh_f)), np.max(np.abs(nr - rh_r))) < 1e-9
+        rh_f, rh_r = 0.5 * (rh_f + nf), 0.5 * (rh_r + nr)         # damped
+        if done:
+            break
+    F_lift, F_drag, AB = q * cla(rh_r, rh_f), q * cda(rh_r, rh_f), cab(rh_r, rh_f) + off
+    Fz_f = vp.Wfl0 + vp.Wfr0 + AB * F_lift
+    Fz_r = vp.Wrl0 + vp.Wrr0 + (1.0 - AB) * F_lift
+    M, h_x = float(vp.m), vp.hcg
+
+    # ---- lateral: yaw-balanced axles + load transfer from the roll stiffness split -------------
+    def roll_k(a, t):        # axle roll stiffness [N m/rad]: wheel rates t^2/4, bar rate/2 x MR^2 x t^2, tyre in series
+        l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
+        bar = 0.5 * getattr(cs.susp, f"arb_{a}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{a}"))[0]) ** 2
+        k_s = (kw[l] + kw[r]) * t * t / 4.0 + bar * t * t
+        k_t = (ty[l]["kz"] + ty[r]["kz"]) * t * t / 4.0
+        return k_s * k_t / (k_s + k_t)
+    Kf, Kr = roll_k("f", t_f), roll_k("r", t_r)
+    phi_f = Kf / (Kf + Kr)
+    hrc_f, hrc_r = static_rc(cs.hardpoints.front_l, t_f / 2), static_rc(cs.hardpoints.rear_l, t_r / 2)
+    sh_f, sh_r = vp.l_r / L, vp.l_f / L
+
+    def lat_capacity(ay):
+        Fy_f, Fy_r = M * ay * sh_f, M * ay * sh_r
+        Mx = Fy_f * (h_x - hrc_f) + Fy_r * (h_x - hrc_r)
+        dF_f = np.clip((phi_f * Mx + Fy_f * hrc_f) / t_f, 0.0, 0.5 * Fz_f)
+        dF_r = np.clip(((1 - phi_f) * Mx + Fy_r * hrc_r) / t_r, 0.0, 0.5 * Fz_r)
+        return np.minimum(axle("f", Fz_f, dF_f, True) / (M * sh_f), axle("r", Fz_r, dF_r, True) / (M * sh_r))
+    ay0 = lat_capacity(np.zeros_like(v))
+    ay_max = _bisect_fixed_point(lat_capacity, np.zeros_like(v), 2.0 * ay0 + 1.0)
+
+    # ---- longitudinal: rear drive, brakes at the front bias, first-order pitch transfer ------------
+    bias = float(cs.brake.front_bias)
+
+    def trac_capacity(F):
+        return axle("r", np.clip(Fz_r + F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False)
+
+    def brk_capacity(F):
+        dF = F * h_x / L
+        f, r = np.clip(Fz_f + dF, 0.0, Fz_f + Fz_r), np.clip(Fz_r - dF, 0.0, Fz_f + Fz_r)
+        with np.errstate(divide="ignore"):
+            cf = axle("f", f, 0.0, False) / bias if bias > 0 else np.inf
+            cr = axle("r", r, 0.0, False) / (1.0 - bias) if bias < 1 else np.inf
+        return np.minimum(cf, cr)
+    hi_x = 2.0 * (axle("f", Fz_f, 0.0, False) + axle("r", Fz_r, 0.0, False)) / min(bias, 1.0 - bias, 0.5) + 1.0
+    Fx_trac = _bisect_fixed_point(trac_capacity, np.zeros_like(v), hi_x)
+    Fx_brk = _bisect_fixed_point(brk_capacity, np.zeros_like(v), hi_x)
+
+    # ---- drive force: the gear envelope of vehModel_cs, in numpy -------------
+    te = PchipInterpolator(eng.torque_curve["x"], eng.torque_curve["y"])
+    lo, hi = float(np.min(eng.torque_curve["x"])), float(np.max(eng.torque_curve["x"]))
+    F_ref, dw = drive_scale(cs, Rr), 0.01 * eng.rpm_limit
+    fi = []
+    for G in np.asarray(eng.gears, float):
+        w = v * G / Rr
+        win = 0.5 * (1.0 + np.tanh((eng.rpm_limit - w) / dw))
+        fi.append(eng.efficiency * te(np.clip(np.maximum(w, eng.rpm_idle), lo, hi)) * G / Rr * win)
+    F_drive = F_ref / B_GEAR * np.log(sum(np.exp(B_GEAR * f / F_ref) for f in fi))
+
+    # ---- resistance: drag + rolling drag, fitted as c0 + c2 v^2 on the grid ------------------------
+    f_roll = sum(ty[c]["rolling_drag"] for c in C4) / 4.0
+    res = F_drag + f_roll * (Fz_f + Fz_r)
+    c0, c2 = np.linalg.lstsq(np.c_[np.ones_like(v), v * v], res, rcond=None)[0]
+    M_eff = M + 4.0 * vp.Jw / Rr ** 2
+
+    env = Envelope(v_grid=v, ay_max=ay_max, Fx_trac=Fx_trac, Fx_brk=Fx_brk,
+                   ax_acc=np.zeros_like(v), ax_brk=np.zeros_like(v), M=M, M_eff=float(M_eff),
+                   c_res0=float(c0), c_res2=float(c2), F_mot_trq=float(F_ref), P_mot=np.inf, v_rpm=np.inf,
+                   F_brk_trq=float(cs.brake.force), P_regen=None, v_cap=v_cap, load_model="car",
+                   F_lift=F_lift, F_drag=F_drag, Fz_front=Fz_f, Fz_rear=Fz_r, F_drive_tab=F_drive)
+    r_fit = env.F_res(v)
+    env.ax_acc = np.minimum((Fx_trac - r_fit) / M, (env.F_mot(v) - r_fit) / M_eff)
+    env.ax_brk = np.minimum((Fx_brk + r_fit) / M, (env.F_brk(v) + r_fit) / M_eff)
+    env.info = dict(car=True, drive="rear", brake="front bias", rh_f=rh_f, rh_r=rh_r, F_res_exact=res,
+                    res_fit_err=float(np.max(np.abs(r_fit - res))), phi_f=float(phi_f), hRC=(hrc_f, hrc_r), h_x=h_x)
+    return env
+
+
+# ============================================================================
 # Stage (b): the speed march
 # ============================================================================
 def apex_speeds(env, kabs, iters=60, tol=1e-9):
@@ -521,6 +666,10 @@ def _make_accel(env, lut, brake):
     Ft, P, vrpm, Fb, Pr = env.F_mot_trq, env.P_mot, env.v_rpm, env.F_brk_trq, env.P_regen
     T, dT = (FB, dFB) if brake else (FX, dFX)
     sqrt = math.sqrt
+    FD = dFD = None
+    if not brake and env.F_drive_tab is not None:      # a car: the drive force is a table on the lut grid
+        FD = np.interp(vlo + np.arange(jmax + 1) / inv_dv, env.v_grid, env.F_drive_tab)
+        FD, dFD = FD.tolist(), np.append(np.diff(FD), 0.0).tolist()
 
     def accel(v, kab):
         x = (v - vlo) * inv_dv
@@ -544,7 +693,7 @@ def _make_accel(env, lut, brake):
             a2 = (fb + res) * invMe                             # brake torque
         else:
             a = ((T[j] + f * dT[j]) * e - res) * invM           # tyre (ellipse)
-            fm = (P / v if v * Ft > P else Ft) if v < vrpm else 0.0
+            fm = ((P / v if v * Ft > P else Ft) if v < vrpm else 0.0) if FD is None else FD[j] + f * dFD[j]
             a2 = (fm - res) * invMe                             # motor torque / power / rpm
         return a2 if a2 < a else a
 
