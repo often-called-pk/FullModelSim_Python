@@ -400,12 +400,14 @@ def _build_c():
     return c
 
 
-def _input_keys(EM4, ATD, ActAero):
+def _input_keys(EM4, ATD, ActAero, car=False):
     """Ordered list of input channels for a given configuration.
 
     Reproduces exactly the explicit if/elseif ladder in userOpts.m that builds
     duk_ub/duk_lb/ru/rdu/rdu2. Order: motor(s) -> brake -> [ATD x4] -> aero -> delta.
     """
+    if car:             # a ChassisSim car: drive force, brake force, steer
+        return ["T_drive", "T_brake", "delta"]
     keys = (["T_motor_fl", "T_motor_fr", "T_motor_rl", "T_motor_rr"]
             if EM4 == 1 else ["T_motor"])
     keys = keys + ["T_brake"]
@@ -462,12 +464,28 @@ def userOpts(ctx,
              between_knots="matlab",       # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
              collocation="legendre",       # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
              state_scaling="matlab",       # 'matlab' | 'typical': scales of the 14 chassis states (STATE_SCALINGS)
-             atd_tbr=None):                # None | TBR >= 1: torque-bias ratio of both axle differentials (ATD On only)
+             atd_tbr=None,                 # None | TBR >= 1: torque-bias ratio of both axle differentials (ATD On only)
+             car=None):                    # None (the 4EM car) | 'chassissim:<path of a .car file>'
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
         raise ValueError(f"physics must be one of {list(PHYSICS)}, got {physics!r}")
     ctx.physics = physics
+
+    # ---- ChassisSim car: read before vehParams. Its shared fields go under the user vp_overrides.
+    ctx.cs = None
+    if car is not None:
+        from functions import chassissim
+        if not (isinstance(car, str) and car.startswith(chassissim.PREFIX)):
+            raise ValueError(f"car must be None or '{chassissim.PREFIX}<path of a .car file>', got {car!r}")
+        if physics != "corrected":
+            raise ValueError("A ChassisSim car needs physics='corrected'.")
+        if Electric_4Motors == "On":
+            raise ValueError("A ChassisSim car has one engine. Electric_4Motors must be 'Off'.")
+        if AeroConfig != "Static":
+            raise ValueError("A ChassisSim car has fixed aero. AeroConfig must be 'Static'.")
+        ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):])
+        vp_overrides = {**chassissim.car_vp(ctx.cs), **(vp_overrides or {})}
 
     # ---- start state: checked before any work, like the physics flag
     if start_state not in START_STATES:
@@ -508,12 +526,18 @@ def userOpts(ctx,
     Powertrain(ctx)
     vehParams(ctx, data_dir=data_dir, vp_overrides=vp_overrides, tyre_set=tyre_set)
     vp, pt = ctx.vp, ctx.pt
+    if ctx.cs is not None:          # each axle has its own tyre radius (vehParams holds the rear one)
+        vp.Rw_f, vp.Rw_r = ctx.cs.tyre.fl["radius"], ctx.cs.tyre.rl["radius"]
 
     # ---- aerodynamic / torque-distribution configuration ------------------
     actaero_map = {"Static": 0, "Active_RW": 1, "Active": 2, "AALB": 3}
     if AeroConfig not in actaero_map:
         raise ValueError(f"Unknown AeroConfig '{AeroConfig}'.")
     vp.ActAero = actaero_map[AeroConfig]
+
+    if ctx.cs is not None and ATD == "On":
+        warnings.warn("A ChassisSim car has no ATD. ATD is set to Off.")
+        ATD = "Off"
 
     # conflict guard (ATD and 4 motors cannot both be on) -- matches MATLAB warning
     if ATD == "On" and Electric_4Motors == "On":
@@ -687,7 +711,12 @@ def userOpts(ctx,
     ctx.rdy = np.array([[0.0], [0.0]])      # first-derivative aux-variable reg
     ctx.rdy2 = np.array([[1.0], [0.0]])     # second-derivative aux-variable reg
 
-    keys = _input_keys(pt.EM4, pt.ATD, vp.ActAero)
+    if ctx.cs is not None:          # full-scale rate of T_drive: the 4EM motor rate over its torque scale
+        from vehModel_cs import drive_scale
+        rate = c.ub.T_motor / pt.Tmax * drive_scale(ctx.cs, vp.Rw_r)
+        c.ub.T_drive, c.lb.T_drive = rate, -rate
+        c.ru.T_drive = c.rdu.T_drive = c.rdu2.T_drive = 0.0
+    keys = _input_keys(pt.EM4, pt.ATD, vp.ActAero, car=ctx.cs is not None)
     ctx.input_keys = keys
     ctx.duk_ub = _col(c.ub, keys)
     ctx.duk_lb = _col(c.lb, keys)

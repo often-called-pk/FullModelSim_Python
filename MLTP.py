@@ -457,7 +457,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     setup_tag = knob_tag(knobs)
     cfg = f"{AeroConfig}_ATD{ctx.ATD}_EM4{ctx.Electric_4Motors}"
     ropts = refine_options(refine, ctx.OPT_ds)  # None = no refinement (ValueError if invalid)
-    lname, chain = resolve_ladder(ladder)       # cold-start ladder (ValueError if unknown)
+    lname, chain = resolve_ladder("qss23" if ctx.cs is not None else ladder)   # cold-start ladder (a car: QSS seed only)
     sched = None if homotopy is None or homotopy is False else homotopy_schedule(homotopy)
     if lname != "legacy":               # QSS rungs: MA57 reallocation failed twice from them
         ctx.opts["ipopt"].setdefault("ma57_pre_alloc", MA57_PRE_ALLOC)
@@ -555,7 +555,11 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
                           "use a lower vi or start_state='matlab'.")
 
     # ---- OCP: path constraints (powertrain; + friction circles if PureSlip) ----
-    hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
+    if ctx.cs is None:
+        hnames, h, h_lb, h_ub = build_path_constraints(ca, m, pt)
+    else:
+        from vehModel_cs import cs_path_constraints
+        hnames, h, h_lb, h_ub = cs_path_constraints(ca, m, ctx)
     h_eq = ca.Function("h_eq", [m.x, m.u, m.pv], [h], ["x", "u", "pv"], ["h"], fn_opts(ctx))
     # B3: the power rows at the collocation points (between_knots='linear+power'). n_col = rows per point.
     h_col_rows = colloc_path_rows(ctx, hnames) if ctx.power_at_col else []
@@ -589,7 +593,12 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             if prof is None:
                 prof = qss_profile(ctx)
                 ladder_rec["qss_lap_s"] = float(prof["lap_time"])
-            g = seed_m23(ctx, m, disc_, prof, ctx.input_keys)
+            if ctx.cs is None:
+                g = seed_m23(ctx, m, disc_, prof, ctx.input_keys)
+            else:                       # the state rows come from seed_m23. The car inputs come from the same profile.
+                from vehModel_cs import cs_seed_inputs
+                g = seed_m23(ctx, m, disc_, prof, ["delta"] * m.nu)
+                g["u0"] = cs_seed_inputs(ctx, m, prof, disc_["s_knot"])
             dt = time.time() - t_q
             if not np.isfinite(ladder_rec["qss_wall_s"]):
                 ladder_rec["qss_wall_s"] = dt
@@ -782,17 +791,20 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         ("mu_rl_x", m.mu_rl_x), ("mu_rl_y", m.mu_rl_y),
         ("mu_rr_x", m.mu_rr_x), ("mu_rr_y", m.mu_rr_y),
     ]
-    if pt.EM4 == 0:
-        veh_syms += [("Om_motor", m.Om_motor), ("P_motor", m.P_motor)]
+    if ctx.cs is not None:              # a car has no motor channels: its model lists the engine ones
+        veh_syms += m.veh_extra
     else:
-        veh_syms += [("P_motor_fl", m.P_motor_fl), ("P_motor_fr", m.P_motor_fr),
-                     ("P_motor_rl", m.P_motor_rl), ("P_motor_rr", m.P_motor_rr),
-                     ("Om_motor_fl", m.Om_motor_fl), ("Om_motor_fr", m.Om_motor_fr),
-                     ("Om_motor_rl", m.Om_motor_rl), ("Om_motor_rr", m.Om_motor_rr)]
-    thr = m.T_motor_n if pt.EM4 == 0 else (m.T_motor_fl_n + m.T_motor_fr_n + m.T_motor_rl_n + m.T_motor_rr_n) / 4
-    veh_syms += [("om_gear", (m.Om_fl + m.Om_fr + m.Om_rl + m.Om_rr) / 4 * vp.gear),   # motor speed [rad/s]
-                 ("throttle", thr),                                                    # normalised motor torque
-                 ("xs_fl", m.xs_fl), ("xs_fr", m.xs_fr),                               # damper [m], > 0 in bump
+        if pt.EM4 == 0:
+            veh_syms += [("Om_motor", m.Om_motor), ("P_motor", m.P_motor)]
+        else:
+            veh_syms += [("P_motor_fl", m.P_motor_fl), ("P_motor_fr", m.P_motor_fr),
+                         ("P_motor_rl", m.P_motor_rl), ("P_motor_rr", m.P_motor_rr),
+                         ("Om_motor_fl", m.Om_motor_fl), ("Om_motor_fr", m.Om_motor_fr),
+                         ("Om_motor_rl", m.Om_motor_rl), ("Om_motor_rr", m.Om_motor_rr)]
+        thr = m.T_motor_n if pt.EM4 == 0 else (m.T_motor_fl_n + m.T_motor_fr_n + m.T_motor_rl_n + m.T_motor_rr_n) / 4
+        veh_syms += [("om_gear", (m.Om_fl + m.Om_fr + m.Om_rl + m.Om_rr) / 4 * vp.gear),   # motor speed [rad/s]
+                     ("throttle", thr)]                                                    # normalised motor torque
+    veh_syms += [("xs_fl", m.xs_fl), ("xs_fr", m.xs_fr),                               # damper [m], > 0 in bump
                  ("xs_rl", m.xs_rl), ("xs_rr", m.xs_rr),
                  ("sf", m.sf)]                                                         # dt/ds [s/m]
     labels = [k for k, _ in veh_syms]
@@ -811,19 +823,20 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     vehicle = {k: v[::ctx.OPT_d + 1] for k, v in vehicle_full.items()}       # the knots
     t_full = time_at_points(disc, vehicle_full["sf"], t_opt)
 
-    # energy [Wh] (P_motor in W; MLTP.m:592 stores P_motor in kW, so MATLAB's E_motor is kWh)
-    if pt.EM4 == 0:
-        P = vehicle["P_motor"]
-    else:
-        P = (vehicle["P_motor_fl"] + vehicle["P_motor_fr"]
-             + vehicle["P_motor_rl"] + vehicle["P_motor_rr"])
-    # A5 regen, motor by motor. The loop divides by eff: drive costs P/eff, regen returns eff*|P|.
-    if getattr(pt, "Preg", 0.0):
-        P = sum(np.where(p < 0, p * pt.eff ** 2, p) for k, p in vehicle.items() if k.startswith("P_motor"))
-    E = np.zeros(N + 1)
-    for i in range(N):
-        E[i + 1] = E[i] + 0.5 * (P[i] + P[i + 1]) * (t_opt[i + 1] - t_opt[i]) * 2.7778e-4 / pt.eff
-    vehicle["E_motor"] = E
+    # energy [Wh] (P_motor in W; MLTP.m:592 stores P_motor in kW, so MATLAB's E_motor is kWh). A car has none.
+    if ctx.cs is None:
+        if pt.EM4 == 0:
+            P = vehicle["P_motor"]
+        else:
+            P = (vehicle["P_motor_fl"] + vehicle["P_motor_fr"]
+                 + vehicle["P_motor_rl"] + vehicle["P_motor_rr"])
+        # A5 regen, motor by motor. The loop divides by eff: drive costs P/eff, regen returns eff*|P|.
+        if getattr(pt, "Preg", 0.0):
+            P = sum(np.where(p < 0, p * pt.eff ** 2, p) for k, p in vehicle.items() if k.startswith("P_motor"))
+        E = np.zeros(N + 1)
+        for i in range(N):
+            E[i + 1] = E[i] + 0.5 * (P[i] + P[i + 1]) * (t_opt[i + 1] - t_opt[i]) * 2.7778e-4 / pt.eff
+        vehicle["E_motor"] = E
 
     # constraint values along the lap
     hval = np.array(h_eq(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None], disc["pv_knot"]).full())

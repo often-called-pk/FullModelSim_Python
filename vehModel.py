@@ -78,7 +78,7 @@ def _stop_force(xs):
 
 
 def _chassis_corrected(vp, kappa, st, zrates, wu, zt, fxg, fyg, fx, T, fzs, fj, Mx, My,
-                       f_lift_c, f_side_c, f_drag, f_roll, f_lift, f_side, RW_Cd):
+                       f_lift_c, f_side_c, f_drag, f_roll, f_lift, f_side, RW_Cd, t_axle=None):
     """Give the corrected-physics chassis derivatives in the space domain (A1 to A4).
 
     Inputs. vp: vehicle parameters. kappa: track curvature.
@@ -87,7 +87,7 @@ def _chassis_corrected(vp, kappa, st, zrates, wu, zt, fxg, fyg, fx, T, fzs, fj, 
     corner in the order fl, fr, rl, rr (unsprung speed, tyre deflection, vehicle-frame
     Fx and Fy, tyre-frame Fx, wheel torque, strut force, jacking force, tyre Mx and My,
     corner lift, corner side force). f_drag, f_roll, f_lift, f_side: body forces.
-    RW_Cd: rear-wing drag coefficient.
+    RW_Cd: rear-wing drag coefficient. t_axle: optional (front track, rear track), default vp.t for both.
 
     Returns (sf, d). sf is dt/ds. d holds the 23 derivatives in state order:
     vx, vy, r, n, eps, 4 wheel speeds, zs, zsdot, theta, thetadot, phi, phidot,
@@ -113,8 +113,11 @@ def _chassis_corrected(vp, kappa, st, zrates, wu, zt, fxg, fyg, fx, T, fzs, fj, 
     # the sprung-mass rates (thetadot*zsdot) do not enter.
     dvx = (fxg_fl + fxg_fr + fxg_rl + fxg_rr - f_drag - f_roll + vp.m*vy*r) * sf / vp.m
     dvy = (fyg_fl + fyg_fr + fyg_rl + fyg_rr + f_side - vp.m*vx*r) * sf / vp.m
+    # Fx yaw arm and roll arm: vp.t, or the track of each axle (t_axle) for a car with two tracks.
+    yaw_fx = ((-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2) if t_axle is None
+              else (-fxg_fl + fxg_fr)*(t_axle[0]/2) + (-fxg_rl + fxg_rr)*(t_axle[1]/2))
     dr = ((fyg_fl + fyg_fr)*vp.l_f - (fyg_rl + fyg_rr)*vp.l_r
-          + (-fxg_fl + fxg_fr - fxg_rl + fxg_rr)*(vp.t/2)
+          + yaw_fx
           - (f_side_rl + f_side_rr)*vp.l_r + (f_side_fl + f_side_fr)*vp.l_f) * sf / vp.I_z
     dn = (vx*ca.sin(eps) + vy*ca.cos(eps)) * sf
     deps = sf*r - kappa
@@ -134,8 +137,13 @@ def _chassis_corrected(vp, kappa, st, zrates, wu, zt, fxg, fyg, fx, T, fzs, fj, 
                  + (f_lift_fl + f_lift_fr)*vp.l_f - (f_lift_rl + f_lift_rr)*vp.l_r
                  - 0.5*vp.rho*vp.A*vx**2*_mf_scale(RW_Cd, vp.Cd_scale)*(vp.hw - vp.hcg)) * sf / vp.I_y
     dphi = phidot * sf
-    dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t
-               - (f_lift_fl + f_lift_rl - f_lift_fr - f_lift_rr)*0.5*vp.t) * sf / vp.I_x
+    if t_axle is None:
+        roll_arm = (fzs_fl + fzs_rl - fzs_fr - fzs_rr)*0.5*vp.t
+        lift_arm = (f_lift_fl + f_lift_rl - f_lift_fr - f_lift_rr)*0.5*vp.t
+    else:
+        roll_arm = (fzs_fl - fzs_fr)*0.5*t_axle[0] + (fzs_rl - fzs_rr)*0.5*t_axle[1]
+        lift_arm = (f_lift_fl - f_lift_fr)*0.5*t_axle[0] + (f_lift_rl - f_lift_rr)*0.5*t_axle[1]
+    dphidot = (Mx_fl + Mx_fr + Mx_rl + Mx_rr + roll_arm - lift_arm) * sf / vp.I_x
     # A1: each corner carries its own unsprung mass (muf/2, mur/2)
     mu_fl, mu_fr, mu_rl, mu_rr = vp.m_u_fl, vp.m_u_fr, vp.m_u_rl, vp.m_u_rr
     dwu_fl = (zt_fl*vp.kt - mu_fl*vp.g - fj_fl - fzs_fl) * sf / mu_fl
@@ -148,6 +156,9 @@ def _chassis_corrected(vp, kappa, st, zrates, wu, zt, fxg, fyg, fx, T, fzs, fj, 
 
 
 def vehModel(ctx, Steering=None, CamberGain=None, TyreModel="CombinedSlip"):
+    if getattr(ctx, "cs", None) is not None:        # a ChassisSim car has its own model
+        from vehModel_cs import vehModel_cs
+        return vehModel_cs(ctx)
     vp, pt, mf = ctx.vp, ctx.pt, ctx.mf
     g = getattr(ctx, "grip", 1.0)               # circuit base grip: scales both mu factors
     if g != 1.0:

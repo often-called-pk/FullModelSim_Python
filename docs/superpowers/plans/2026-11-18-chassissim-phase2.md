@@ -67,7 +67,7 @@ T1 car record, T2 chassis helper, T3 `vehModel_cs` core, T4 car source wiring, T
 ### Task 5: QSS envelope for a car
 
 **Files:** modify `functions/ggv.py` (one dispatch at the top of `build_envelope`, one optional drive-force table in `Envelope` and `_make_accel`). Tests: `tests/test_cs_qss.py` (Haiku).
-- [ ] `build_envelope_cs(ctx)`: tyre peak force vs load from the car (background temperature), aero at quasi-static ride heights (fixed point), load transfer from the car geometry and rates, drive force table = the gear envelope, brake force and bias. `march` and `qss_profile` unchanged. The default `_make_accel` closure stays verbatim (pinned QSS laps).
+- [ ] `build_envelope_cs(ctx)`: tyre peak force vs load from the car (background temperature), aero at quasi-static ride heights (fixed point), load transfer from the car geometry and rates (springs through MR^2, bars as in `vehModel_cs`: axle roll stiffness k t^2 / 2, the Task 3 ruling from the GP3 log roll), drive force table = the gear envelope, brake force and bias. `march` and `qss_profile` unchanged. The default `_make_accel` closure stays verbatim (pinned QSS laps).
 - [ ] Tests: synthetic car envelope pieces, QSS lap finite on a synthetic circuit, the 4EM pinned QSS laps unchanged. Vendor: GP3 QSS lap at Eastern Creek finite and within 15% of the `.ldx` lap.
 
 ### Validation V1 (Opus): first real GP3 solve
