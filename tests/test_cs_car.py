@@ -84,6 +84,7 @@ EXPLICIT = {  # tag 1 cids with a literal value
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
     111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0: userOpts needs it), diff types
     55: 0.050, 59: 0.052, 63: 0.061, 67: 0.063,            # roll-centre heights fl, fr, rl, rr, m
+    54: 0.045, 58: 0.047, 62: 0.058, 66: 0.060,            # first values of the same triples, m
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: TRACK_TEMP,
 }
@@ -230,6 +231,9 @@ ok("engine efficiency 100, torque split 111 (0), diff types 112 and 113 as store
 ok("roll-centre heights 55, 59, 63, 67 (fl, fr, rl, rr) read in m as stored",
    abs(car.geom.rc_height_fl - 0.050) < 1e-12 and abs(car.geom.rc_height_fr - 0.052) < 1e-12
    and abs(car.geom.rc_height_rl - 0.061) < 1e-12 and abs(car.geom.rc_height_rr - 0.063) < 1e-12)
+ok("first values 54, 58, 62, 66 (fl, fr, rl, rr) read in m as stored (meaning not decoded)",
+   abs(car.geom.rc_first_fl - 0.045) < 1e-12 and abs(car.geom.rc_first_fr - 0.047) < 1e-12
+   and abs(car.geom.rc_first_rl - 0.058) < 1e-12 and abs(car.geom.rc_first_rr - 0.060) < 1e-12)
 
 # groups: one decoded value per group
 print("  -- groups")

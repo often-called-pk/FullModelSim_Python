@@ -156,6 +156,10 @@ CAR_FIELDS = {
     # The middle value of each stored geometry triple (cids 54-56, 58-60, 62-64, 66-68) is the roll-centre height.
     55: ("geom.rc_height_fl", 1.0), 59: ("geom.rc_height_fr", 1.0),
     63: ("geom.rc_height_rl", 1.0), 67: ("geom.rc_height_rr", 1.0),
+    # The first value of each triple (cids 54, 58, 62, 66). Its meaning is not decoded. It equals the roll-centre
+    # height above the ground when the hardpoints are in the ground frame.
+    54: ("geom.rc_first_fl", 1.0), 58: ("geom.rc_first_fr", 1.0),
+    62: ("geom.rc_first_rl", 1.0), 66: ("geom.rc_first_rr", 1.0),
     **{117 + i: (f"geom.ride_height_{c}", MM) for i, c in enumerate(_C4)},
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))},
@@ -437,7 +441,7 @@ def _line_hit(a, b, c, d):
     return a + t[0] * (b - a)
 
 
-def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name=""):
+def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_first=None, radius=None):
     """Solve the front view of one double wishbone and fit the curves. hp has shape (6, 3): the rows of the car
     file (lower inner front, lower inner aft, lower outer, upper inner front, upper inner aft, upper outer).
     The inner points of each wishbone are projected to one pivot (the mean of the two). The upright is rigid and
@@ -445,7 +449,9 @@ def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name=""):
     The ground height of ChassisSim is a reference z that no file field holds. It is found here: the z of the
     ground at which the static roll centre equals rc_static. The result holds the datum, the curves as poly1d in
     w [m]: rc_h [m] above the contact patches and camber [rad]. The camber is the change of the negative camber
-    against the body: positive when the top leans in. The result also holds the range lo, hi [m]."""
+    against the body: positive when the top leans in. The result also holds the range lo, hi [m].
+    If rc_first (mean of the first stored values) equals the roll-centre height at zg = 0 within 1 mm, the
+    hardpoints are in the ground frame and zg = 0. With radius, zg must lie in [LO_z - radius, LO_z]."""
     li, lo, ui, uo = hp[:2, 1:].mean(0), hp[2, 1:], hp[3:5, 1:].mean(0), hp[5, 1:]
     L1, L2, Lu = np.hypot(*(lo - li)), np.hypot(*(uo - ui)), np.hypot(*(uo - lo))
     th0 = np.arctan2(*(lo - li)[::-1])
@@ -483,7 +489,10 @@ def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name=""):
     if abs(k) < 1e-9:
         raise ValueError(f"The stored roll-centre height of the {name} axle cannot set the ground datum, "
                          "because the roll centre of this geometry does not depend on the ground height.")
-    zg = (rc_static - h0) / k
+    zg = 0.0 if rc_first is not None and abs(h0 - rc_first) <= 1e-3 else (rc_static - h0) / k
+    if radius is not None and not lo[1] - radius <= zg <= lo[1]:
+        raise ValueError(f"The ground datum of the {name} axle is not plausible. The contact patch must lie "
+                         "below the lower outer ball joint by at most the tyre radius.")
     w = np.linspace(-travel, travel, n)
     dls = []
     try:
@@ -516,7 +525,13 @@ def suspension_curves(car):
         need = (g.rc_height_fl, g.rc_height_fr, g.rc_height_rl, g.rc_height_rr, h.front_l, h.rear_l)
         if any(v is None for v in need):
             raise ValueError("The car file lacks the roll-centre heights (cids 55, 59, 63, 67) or the hardpoints (cids 49-52).")
+        def first(a, b):
+            v = (getattr(g, f"rc_first_{a}", None), getattr(g, f"rc_first_{b}", None))
+            return None if None in v else 0.5 * (v[0] + v[1])
+        ty = car.tyre
         car._curves = SimpleNamespace(
-            f=axle_kinematics(np.asarray(h.front_l, float), g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front"),
-            r=axle_kinematics(np.asarray(h.rear_l, float), g.track_rear, 0.5 * (g.rc_height_rl + g.rc_height_rr), name="rear"))
+            f=axle_kinematics(np.asarray(h.front_l, float), g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front",
+                              rc_first=first("fl", "fr"), radius=ty.fl["radius"] if ty.fl else None),
+            r=axle_kinematics(np.asarray(h.rear_l, float), g.track_rear, 0.5 * (g.rc_height_rl + g.rc_height_rr), name="rear",
+                              rc_first=first("rl", "rr"), radius=ty.rl["radius"] if ty.rl else None))
     return car._curves

@@ -460,9 +460,11 @@ lacks a field the model reads raises one message that lists the fields. GP3 2013
 (MUMPS, cold, qss23): the fixed line (`n_bounds=(-0.05, 0.05)`) takes 451 iterations to 75.543 s. ChassisSim gives 76.742 s
 (-1.56 %). Overlay: corr ay 0.995, RMS speed 2.79 m/s, RMS ay 1.64 m/s^2. Free line 72.009 s, QSS 74.094 s. ChassisSim uses only
 0.80 of the tyre capacity at its apexes. Its apex speed comes from a feasibility search on a transient with a driver model and
-bumps. The optimal control has no such margin. The GT3 builds at Adelaide, but its fixed-line lap does not match ChassisSim
-yet: 106.485 s against 77.602 s. The cause is not known. The F2 refuses for its rear third bump rubber. Before that refusal
-its lap was 64.057 s against 72.084 s. Not built: bump steer,
+bumps. The optimal control has no such margin. The GT3 hardpoints are in the ground frame. The datum is 0 when the geometric
+roll centre at datum 0 equals the first stored value (cids 54, 58, 62, 66) within 1 mm. Else the back-out above applies.
+A datum that puts the contact patch more than the tyre radius below the lower ball joint raises ValueError. GT3 at Adelaide
+(fixed line, cold): 116 iterations to 75.841 s against 77.602 s in ChassisSim (-2.27 %), corr ay 0.989. The F2 refuses for its
+rear third bump rubber. ChassisSim runs it far under its tyre capacity on the Adelaide bumps, so it waits for phase 3. Not built: bump steer,
 steer camber from castor, third springs, rubber hysteresis and the stability index (phase 6).
 Track QA (2026-10-18, `functions/track_qa.py`): every real track goes through `check_track` at load
 (turning, closure, sign agreement with x,y, spacing, monotonic s). An error raises ValueError (no bypass

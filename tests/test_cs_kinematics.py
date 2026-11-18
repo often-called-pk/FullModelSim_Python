@@ -5,13 +5,15 @@ the dynamic camber and the Fx camber factor of vehModel_cs, and the QSS envelope
 checks use physical hardpoints (left side: x rearward, y left +, z up) written as the car file holds them.
 The model checks build a synthetic car with MLTP (a fake IPOPT, no solve) and MLTP_screen (no solve).
 The vendor section (last) runs only when CHASSISSIM_DIR names the ChassisSim install folder. It reads the
-GP3 2013 car and its log and prints SKIP otherwise. Nothing is written into the vendor folders.
+GP3 2013 car and its log, then the GT3 car (found by glob), and prints SKIP otherwise. Nothing is written into
+the vendor folders.
 
     /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_kinematics.py
     CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_kinematics.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
+import glob
 import io
 import os
 import sys
@@ -150,6 +152,67 @@ patch = np.array([TRACK / 2, SYN.zg])
 swing = np.hypot(*(patch - IC))
 ok(f"synthetic set: camber gain {abs(gain_fit):.5f} rad/m equals 1 / swing-arm length {1 / swing:.5f} (within 3 %)",
    abs(abs(gain_fit) - 1.0 / swing) <= 0.03 / swing)
+
+print("[cs_kinematics] roll-centre ground datum: rules (a), (b) and the guard")
+
+
+def rc_height(hp, track, zg):
+    """Chassis-frame roll-centre height for the ground at zg, from the hardpoints alone (not functions/chassissim).
+    The instant centre is the crossing of the two wishbone lines in the front view. The roll centre is where the line
+    from the contact patch (y = track / 2, z = zg) to the instant centre meets y = 0. It is linear in zg."""
+    li, lo = hp[:2, 1:].mean(0), hp[2, 1:]
+    ui, uo = hp[3:5, 1:].mean(0), hp[5, 1:]
+    s, _ = np.linalg.solve(np.array([lo - li, -(uo - ui)]).T, ui - li)
+    ic = li + s * (lo - li)
+    py, pz = track / 2, zg
+    return pz + (0.0 - py) * (ic[1] - pz) / (ic[0] - py)
+
+
+def stored_for(hp, track, zg):
+    """The stored middle value that makes the back-out datum equal zg (rc_height is linear in zg)."""
+    a = rc_height(hp, track, 0.0)
+    return a + (rc_height(hp, track, 1.0) - a) * zg
+
+
+def raised_text(fn):
+    """The message of the ValueError that fn raises, or '' when it does not raise."""
+    try:
+        fn()
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+RC0 = rc_height(HP_LEFT, TRACK, 0.0)           # geometric RC above the ground at zg = 0 (hardpoints in the ground frame)
+ok(f"rule (a): geometric RC above the ground at zg = 0 is {RC0 * 1e3:.2f} mm", 0.02 < RC0 < 0.03)
+ATD0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_first=RC0, radius=0.30, name="front")
+ok(f"rule (a): first value = geometric RC gives zg = 0 (|zg| {abs(ATD0.zg):.1e} m)", abs(ATD0.zg) < 1e-12)
+ok(f"rule (a): rc_h(0) = the geometric RC (|err| {abs(ATD0.rc_h(0.0) - RC0):.1e} m)",
+   abs(ATD0.rc_h(0.0) - RC0) < 1e-9)
+NEAR0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_first=RC0 + 0.5e-3, radius=0.30, name="front")
+ok("rule (a): a first value 0.5 mm off still gives zg = 0 (within 1 mm)", abs(NEAR0.zg) < 1e-12)
+FAR0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_first=RC0 + 5e-3, radius=0.30, name="front")
+BACK = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, name="front")
+ok(f"rule (b): a first value 5 mm off gives the back-out datum zg {FAR0.zg * 1e3:.3f} mm",
+   abs(FAR0.zg - BACK.zg) < 1e-12 and abs(FAR0.zg) > 1e-3)
+A0 = rc_height(HP_LEFT, TRACK, 0.0)
+ZG_LIN = (RC_STATIC - A0) / (rc_height(HP_LEFT, TRACK, 1.0) - A0)     # solve the linear RC(zg) = stored value for zg
+ok(f"rule (b): the back-out datum equals the linear solve {ZG_LIN * 1e3:.3f} mm (|err| {abs(FAR0.zg - ZG_LIN):.1e} m)",
+   abs(FAR0.zg - ZG_LIN) < 1e-9)
+ok(f"rule (b): chassis-frame RC at w = 0 equals the stored middle value (|err| "
+   f"{abs(FAR0.rc_h(0.0) + FAR0.zg - RC_STATIC):.1e} m)", abs(FAR0.rc_h(0.0) + FAR0.zg - RC_STATIC) < 1e-9)
+
+LO_Z = HP_LEFT[2, 2]                           # height of the lower outer ball joint, m
+above = raised_text(lambda: axle_kinematics(HP_LEFT, TRACK, stored_for(HP_LEFT, TRACK, LO_Z + 0.05),
+                                            radius=0.30, name="front"))
+ok("guard: a datum 50 mm above the lower outer joint raises, naming the front axle", "front axle" in above)
+below = raised_text(lambda: axle_kinematics(HP_LEFT, TRACK, stored_for(HP_LEFT, TRACK, LO_Z - 0.31 - 0.05),
+                                            radius=0.31, name="rear"))
+ok("guard: a datum 50 mm below the joint less the tyre radius raises, naming the rear axle", "rear axle" in below)
+inside = axle_kinematics(HP_LEFT, TRACK, stored_for(HP_LEFT, TRACK, LO_Z - 0.10), radius=0.30, name="front")
+ok(f"guard: a datum 100 mm below the joint passes (zg {inside.zg * 1e3:.1f} mm)",
+   abs(inside.zg - (LO_Z - 0.10)) < 1e-9)
+
 
 print("[cs_kinematics] unsolvable and flat-datum geometries")
 UNSOLV = HP_LEFT.copy()
@@ -468,6 +531,11 @@ ok("GP3 static RC: chassis frame equals the stored cids 55 / 59 (front) and 63 /
    and abs(ch_r - gc.rc_height_rl) < 1e-9 and abs(ch_r - gc.rc_height_rr) < 1e-9)
 ok(f"GP3 above-ground static RC: front {vc.f.rc_h(0.0) * 1e3:.2f} mm (18.05), rear {vc.r.rc_h(0.0) * 1e3:.2f} mm (41.41), 0.1 mm",
    abs(vc.f.rc_h(0.0) * 1e3 - 18.05) < 0.1 and abs(vc.r.rc_h(0.0) * 1e3 - 41.41) < 0.1)
+ok(f"GP3 datum: front zg {vc.f.zg * 1e3:.2f} mm (54.6), rear {vc.r.zg * 1e3:.2f} mm (62.9), 0.1 mm",
+   abs(vc.f.zg * 1e3 - 54.6) < 0.1 and abs(vc.r.zg * 1e3 - 62.9) < 0.1)
+GP3_FIRST_F = 0.5 * (gc.rc_first_fl + gc.rc_first_fr)
+ok(f"GP3 first values ({GP3_FIRST_F * 1e3:.1f} mm) differ from the geometric RC at zg 0 by more than 1 mm (rule (b))",
+   abs(rc_height(np.asarray(car.hardpoints.front_l, float), gc.track_front, 0.0) - GP3_FIRST_F) > 1e-3)
 
 LOG_MAP = {
     "s": (("Lap Distance",), "m", 1.0),
@@ -507,5 +575,37 @@ for axle, k in (("front", vc.f), ("rear", vc.r)):
     step_cam = float(np.max(np.abs(np.diff(cam_v))))
     ok(f"GP3 {axle}: curves smooth (largest step per 0.5 mm: RC {step_rc * 1e3:.3f} mm, camber "
        f"{np.degrees(step_cam):.4f} deg)", step_rc < 1e-3 and np.degrees(step_cam) < 0.02)
+
+print("[cs_kinematics] vendor GT3 (datum from the first stored values, rule (a))")
+gt3_cars = glob.glob(os.path.join(glob.escape(MODELS), "GT3", "*", "*.car"))
+ok("one GT3 car file by glob GT3/*/*.car", len(gt3_cars) == 1)
+gt3_logs = glob.glob(os.path.join(glob.escape(os.path.dirname(gt3_cars[0])), "*.ld"))
+ok("the GT3 car folder holds one .ld log", len(gt3_logs) == 1)
+gt3 = load_car(gt3_cars[0])
+gv = suspension_curves(gt3)
+gg = gt3.geom
+ok("GT3 ground datum zg = 0 on both axles", abs(gv.f.zg) < 1e-12 and abs(gv.r.zg) < 1e-12)
+ok(f"GT3 first values equal the geometric RC within 1 mm (front {(gg.rc_first_fl - gv.f.rc_h(0.0)) * 1e3:+.3f} / "
+   f"{(gg.rc_first_fr - gv.f.rc_h(0.0)) * 1e3:+.3f}, rear {(gg.rc_first_rl - gv.r.rc_h(0.0)) * 1e3:+.3f} / "
+   f"{(gg.rc_first_rr - gv.r.rc_h(0.0)) * 1e3:+.3f} mm)",
+   all(abs(v - r) <= 1e-3 for v, r in ((gg.rc_first_fl, gv.f.rc_h(0.0)), (gg.rc_first_fr, gv.f.rc_h(0.0)),
+                                        (gg.rc_first_rl, gv.r.rc_h(0.0)), (gg.rc_first_rr, gv.r.rc_h(0.0)))))
+ok(f"GT3 static RC above ground: front {gv.f.rc_h(0.0) * 1e3:.2f} mm (-54.4), rear {gv.r.rc_h(0.0) * 1e3:.2f} mm (+114.8), 0.5 mm",
+   abs(gv.f.rc_h(0.0) * 1e3 + 54.4) < 0.5 and abs(gv.r.rc_h(0.0) * 1e3 - 114.8) < 0.5)
+gt3_log = read_ld(gt3_logs[0], channel_map={**LOG_MAP, "roll": (("Roll angle",), "deg", 1.0)})
+low_roll = (gt3_log["lap"] == 1) & (np.abs(gt3_log["roll"]) < 0.15)
+# Known gap: the GT3 rear RC slope against travel is -1.88 mm/mm in the model and -2.31 mm/mm in the log.
+# The median over the travel range therefore sits about 3 mm off. The zero-travel check below isolates the datum.
+for axle, k, zl, zr, rc in (("front", gv.f, gt3_log["zfl"], gt3_log["zfr"], gt3_log["rc_f"]),
+                            ("rear", gv.r, gt3_log["zrl"], gt3_log["zrr"], gt3_log["rc_r"])):
+    wv = 0.5 * (zl + zr)
+    sel = low_roll & (np.abs(wv) <= 0.05)
+    med = float(np.median(k.rc_h(wv[sel]) - rc[sel]))
+    ok(f"GT3 {axle}: median above-ground RC vs the log at low roll {med * 1e3:+.2f} mm over {int(sel.sum())} "
+       "lap-1 samples, within 7 mm", int(sel.sum()) > 0 and abs(med) < 7e-3)
+    z0 = low_roll & (np.abs(wv) < 2e-3)
+    med0 = float(np.median(k.rc_h(wv[z0]) - rc[z0]))
+    ok(f"GT3 {axle}: median above-ground RC at zero travel (|w| < 2 mm) vs the log {med0 * 1e3:+.2f} mm over "
+       f"{int(z0.sum())} samples, within 1.5 mm", int(z0.sum()) > 0 and abs(med0) < 1.5e-3)
 
 print(f"[cs_kinematics] vendor: {PASS} checks passed in total")
