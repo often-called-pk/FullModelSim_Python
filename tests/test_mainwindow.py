@@ -285,4 +285,75 @@ ok("back to the startup state: no overrides, no A5 keys, no F2 field set",
    rc_back.vp_overrides() == {} and rc_back.pt_overrides is None and rc_back.homotopy is None
    and rc_back.physics == "matlab")
 
+# --- G2: the Coin-HSL folder round-trips through the settings file and reaches the RunConfig;
+# a read-only output folder blocks the run with an [error] line and is not remembered. No solve.
+import json
+from PySide6.QtCore import QSettings
+from app.paths import settings
+print("G2 Coin-HSL field and output folder")
+
+INI = os.environ["FULLMODELSIM_SETTINGS"]
+ok("the settings go to the FULLMODELSIM_SETTINGS ini (not the org / app store)",
+   os.path.normcase(os.path.abspath(settings().fileName())) == os.path.normcase(os.path.abspath(INI)))
+
+hsl_val = tempfile.mkdtemp(prefix="mainwindow_hsl_")
+with tempfile.TemporaryDirectory(prefix="mainwindow_hsl_out_") as out_hsl:
+    hw = MainWindow()
+    hw.hsl_dir.setText(hsl_val)
+    hw.output_dir.setText(out_hsl)
+    started = []
+    real_start = hw._runner.start
+    hw._runner.start = started.append               # records the cfg path, starts no process
+    try:
+        hw._on_run()
+    finally:
+        hw._runner.start = real_start
+    ok("the run writes one cfg and starts one solve", len(started) == 1)
+    cfg_hsl = json.load(open(started[0]))
+    ok("the Coin-HSL folder reaches RunConfig and cfg.json as hsl_dir",
+       hw.collect_runconfig().hsl_dir == hsl_val and cfg_hsl.get("hsl_dir") == hsl_val)
+    hw._on_finished(1)                              # the finish path removes the cfg
+    ok("the Coin-HSL folder is saved to the settings file",
+       QSettings(INI, QSettings.IniFormat).value("hsl_dir") == hsl_val)
+    hw.close()
+
+    hw2 = MainWindow()                              # a new window reads it back
+    ok("a new window shows the saved Coin-HSL folder", hw2.hsl_dir.text() == hsl_val)
+    ok("... and its RunConfig carries it", hw2.collect_runconfig().hsl_dir == hsl_val)
+    hw2.hsl_dir.setText("")
+    ok("an empty field gives RunConfig.hsl_dir None (no folder, no cfg key)",
+       hw2.collect_runconfig().hsl_dir is None)
+    hw2.close()
+
+ro_root = tempfile.mkdtemp(prefix="mainwindow_ro_")
+ro_out = os.path.join(ro_root, "out")
+ro_res = os.path.join(ro_out, "Results")
+os.makedirs(ro_res)
+os.chmod(ro_res, 0o555)
+try:
+    if os.access(ro_res, os.W_OK):                  # root, or a platform without read-only folders
+        print("  [SKIP] read-only output folder: the folder is writable here")
+    else:
+        saved_before = str(settings().value("output_dir", "") or "")
+        ro = MainWindow()
+        ro.output_dir.setText(ro_out)
+        started = []
+        real_start = ro._runner.start
+        ro._runner.start = started.append
+        try:
+            ro._on_run()
+        finally:
+            ro._runner.start = real_start
+        log = ro.log.toPlainText()
+        ok("read-only output folder: the run is blocked with an [error] line", "[error]" in log and started == [])
+        ok("... the run button stays enabled and no cfg is left", ro.run_btn.isEnabled() and ro._cfg_path is None)
+        ok("... the read-only folder is not remembered",
+           str(settings().value("output_dir", "") or "") == saved_before != os.path.abspath(ro_out))
+        ro.close()
+finally:
+    os.chmod(ro_res, 0o755)
+    shutil.rmtree(ro_root, ignore_errors=True)
+    shutil.rmtree(hsl_val, ignore_errors=True)
+win.close()
+
 print("\nALL MainWindow TESTS PASSED")

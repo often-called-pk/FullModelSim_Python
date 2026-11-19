@@ -14,8 +14,10 @@ independent of where it was launched from:
 app/presets/, build/, the *.py sources, .gitignore). Scratch files never go there or into
 this folder: a test that writes files uses tempfile, or CLAUDE_JOB_DIR_TMP when that is set.
 """
+import atexit
 import os
 import sys
+import tempfile
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS_DIR)
@@ -29,3 +31,11 @@ if ROOT in sys.path:
     sys.path.remove(ROOT)
 sys.path.insert(0, ROOT)                     # first, so no file in this folder can shadow a repo module
 os.chdir(ROOT)
+
+# the GUI tests keep their settings in a temp file of this process, never in the user's
+# real settings (app.paths.settings reads this variable)
+if "FULLMODELSIM_SETTINGS" not in os.environ:
+    _fd, _ini = tempfile.mkstemp(prefix="fms_settings_", suffix=".ini")
+    os.close(_fd)
+    os.environ["FULLMODELSIM_SETTINGS"] = _ini
+    atexit.register(lambda: os.path.exists(_ini) and os.remove(_ini))

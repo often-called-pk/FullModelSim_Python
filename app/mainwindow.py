@@ -20,7 +20,7 @@ from app.solve_runner import SolveRunner
 from app import results, paths
 from app.vp_params import PARAM_GROUPS, meta_for, all_vp_defaults
 from app.widgets import CollapsibleSection, ScientificField
-from app.paths import user_presets_dir
+from app.paths import user_presets_dir, settings
 
 CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
             "VirtualTrack", "BCN", "BCN_S1", "BCN_S2", "BCN_S3", "Jarama", "Spa",
@@ -88,6 +88,11 @@ EM4_INERT_TIP = (
     "still reads it).")
 
 
+HSL_TIP = ("Select the folder that holds the Coin-HSL library (libhsl.dll or libhsl.so). "
+           "The ma* solvers use it. The COINHSL_DIR environment variable has priority. "
+           "If the folder has no library, the solve uses MUMPS.")
+
+
 def _spin(value, lo, hi, step=1.0, decimals=4):
     s = QDoubleSpinBox()
     s.setRange(lo, hi)
@@ -112,6 +117,7 @@ class MainWindow(QMainWindow):
         self._runner.finished.connect(self._on_finished)
         self._defaults = RunConfig()
         self._active_rc = None
+        self._cfg_path = None
 
         # Build order matters: the Setup table seeds its defaults from the Tyre set
         # combo (Advanced tab) and its brkB/Tdist rows follow the ATD and 4 Motors
@@ -356,8 +362,8 @@ class MainWindow(QMainWindow):
     def _build_output_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
         form = QFormLayout()
-        self.output_dir = QLineEdit(self._defaults.output_dir)
-        browse = QPushButton("Browse…"); browse.clicked.connect(self._pick_output)
+        self.output_dir = QLineEdit(self._saved("output_dir") or self._defaults.output_dir)
+        browse = QPushButton("Browse..."); browse.clicked.connect(self._pick_output)
         odir = QWidget(); ol = QHBoxLayout(odir); ol.setContentsMargins(0, 0, 0, 0)
         ol.addWidget(self.output_dir); ol.addWidget(browse)
         self.save_cb = QCheckBox("Save .mat"); self.save_cb.setChecked(True)
@@ -381,14 +387,21 @@ class MainWindow(QMainWindow):
         self.tyre_set = QComboBox(); self.tyre_set.addItems(TYRE_SETS)
         self.tyre_set.setToolTip(TYRE_SET_TIP)
         self.warm_start = QLineEdit(); self.warm_start.setPlaceholderText("(auto warm start)")
-        ws_btn = QPushButton("…"); ws_btn.clicked.connect(self._pick_warm)
+        ws_btn = QPushButton("Browse..."); ws_btn.clicked.connect(self._pick_warm)
         ws = QWidget(); wl = QHBoxLayout(ws); wl.setContentsMargins(0, 0, 0, 0)
         wl.addWidget(self.warm_start); wl.addWidget(ws_btn)
         self.expert = QLineEdit(); self.expert.setPlaceholderText("(no expert config)")
-        ex_btn = QPushButton("…"); ex_btn.clicked.connect(self._pick_expert)
+        ex_btn = QPushButton("Browse..."); ex_btn.clicked.connect(self._pick_expert)
         ex = QWidget(); el = QHBoxLayout(ex); el.setContentsMargins(0, 0, 0, 0)
         el.addWidget(self.expert); el.addWidget(ex_btn)
+        self.hsl_dir = QLineEdit(self._saved("hsl_dir"))
+        self.hsl_dir.setPlaceholderText("(not set: COINHSL_DIR, else MUMPS)")
+        self.hsl_dir.setToolTip(HSL_TIP)
+        hs_btn = QPushButton("Browse..."); hs_btn.clicked.connect(self._pick_hsl)
+        hs = QWidget(); hl = QHBoxLayout(hs); hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(self.hsl_dir); hl.addWidget(hs_btn)
         form.addRow("Linear solver", self.solver)
+        form.addRow(_tipped_label("Coin-HSL folder", HSL_TIP), hs)
         form.addRow(_tipped_label("Tyre set", TYRE_SET_TIP), self.tyre_set)
         form.addRow("Warm start .mat", ws)
         form.addRow("Expert config .json", ex)
@@ -503,6 +516,7 @@ class MainWindow(QMainWindow):
             vi=self.vi.value(),
             ni=None if self.ni_free.isChecked() else self.ni.value(),
             linear_solver=self.solver.currentText(),
+            hsl_dir=self.hsl_dir.text().strip() or None,
             warm_start=self.warm_start.text() or None,
             save=self.save_cb.isChecked(),
             plot=self.plot_cb.isChecked(),
@@ -524,10 +538,19 @@ class MainWindow(QMainWindow):
     def _on_run(self):
         try:
             rc = self.collect_runconfig()           # a bad "More options" box raises here: log it, start nothing
-            os.makedirs(rc.output_dir, exist_ok=True)
-            cfg_path = os.path.join(tempfile.gettempdir(), "fms_solve_cfg.json")
+            rc.output_dir = os.path.abspath(rc.output_dir)
+            res_dir = os.path.join(rc.output_dir, "Results")
+            os.makedirs(res_dir, exist_ok=True)
+            with tempfile.TemporaryFile(dir=res_dir):       # a read-only folder raises here, before the solve
+                pass
+            self._save("output_dir", rc.output_dir)
+            self._save("hsl_dir", rc.hsl_dir or "")
+            fd, cfg_path = tempfile.mkstemp(prefix="fms_solve_cfg_", suffix=".json")
+            os.close(fd)
+            self._cfg_path = cfg_path
             rc.write_cfg(cfg_path)
         except Exception as exc:
+            self._remove_cfg()
             self._append_log(f"[error] {exc}\n")
             return
         self._active_rc = rc
@@ -538,7 +561,21 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(True)
         self._runner.start(cfg_path)
 
+    def _remove_cfg(self):
+        if self._cfg_path:
+            try:
+                os.remove(self._cfg_path)
+            except OSError:
+                pass
+            self._cfg_path = None
+
+    def closeEvent(self, event):
+        self._runner.cancel()
+        self._remove_cfg()
+        super().closeEvent(event)
+
     def _on_finished(self, code):
+        self._remove_cfg()
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         if code == 0:
@@ -569,6 +606,17 @@ class MainWindow(QMainWindow):
         # QTextCursor.End is a class-level enum; use it directly.
         self.log.moveCursor(QTextCursor.End)
         self.log.insertPlainText(text)
+
+    def _saved(self, key):
+        return str(settings().value(key, "") or "")
+
+    def _save(self, key, value):
+        settings().setValue(key, value)
+
+    def _pick_hsl(self):
+        d = QFileDialog.getExistingDirectory(self, "Coin-HSL folder", self.hsl_dir.text())
+        if d:
+            self.hsl_dir.setText(d)
 
     def _pick_output(self):
         d = QFileDialog.getExistingDirectory(self, "Output folder", self.output_dir.text())

@@ -35,6 +35,7 @@ class RunConfig:
     vi: float = 60.0
     ni: Optional[float] = None
     linear_solver: str = "ma57"
+    hsl_dir: Optional[str] = None           # Coin-HSL folder. COINHSL_DIR has priority (functions.hsl)
     warm_start: Optional[str] = None
     save: bool = True
     plot: bool = True

@@ -1,12 +1,15 @@
 """HSL integration tests (plain script, no pytest).
 
 Sections 1-3 are casadi-free (resolution / path / opts-rewriting via an injected
-fake probe). Section 4 is a guarded smoke that only runs if a real CoinHSL DLL
-resolves on this machine. Run from the repo root:
+fake probe). Section 1c-1d check the Linux scoped preload with tiny shared
+objects built by gcc (SKIP when gcc is missing, and on Windows). Section 4 is a
+guarded smoke that only runs if a real CoinHSL DLL resolves on this machine.
+Section 5 solves toy NLPs through IPOPT (no HSL needed). Run from the repo root:
 
     venv\\Scripts\\python.exe tests\\test_hsl.py
 """
-import os, sys, tempfile
+import ctypes
+import os, shutil, subprocess, sys, tempfile, warnings
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 
 import functions.hsl as H
@@ -15,25 +18,44 @@ def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
     assert cond, name
 
-# ---- 1. resolve_hsl_dir precedence: env > explicit > default > None ----------
+# ---- 1. resolve_hsl_dir precedence: COINHSL_DIR > explicit > frozen root > None ----
+# The seed folder is gone: no module default, so an unset env and no explicit folder resolve to None.
 print("resolve_hsl_dir")
 _saved_env = os.environ.pop("COINHSL_DIR", None)
-_saved_default = H._DEFAULT_HSL_DIR
 try:
     real_a = tempfile.mkdtemp(prefix="hsl_a_")   # stands in for an explicit dir
     real_b = tempfile.mkdtemp(prefix="hsl_b_")   # stands in for COINHSL_DIR
-    H._DEFAULT_HSL_DIR = r"Z:\definitely_not_a_real_hsl_dir"
-
+    missing = os.path.join(real_a, "no_such_dir")
+    ok("no module seed (H._DEFAULT_HSL_DIR is gone)", not hasattr(H, "_DEFAULT_HSL_DIR"))
     ok("env unset, explicit existing -> explicit",
        H.resolve_hsl_dir(real_a) == os.path.abspath(real_a))
     os.environ["COINHSL_DIR"] = real_b
     ok("env set -> env wins over explicit",
        H.resolve_hsl_dir(real_a) == os.path.abspath(real_b))
     del os.environ["COINHSL_DIR"]
-    ok("nothing resolves -> None",
-       H.resolve_hsl_dir(r"Z:\also_not_real") is None)
+    ok("env unset, no explicit folder -> None",
+       H.resolve_hsl_dir() is None and H.resolve_hsl_dir(None) is None)
+    ok("env unset, explicit folder missing -> None", H.resolve_hsl_dir(missing) is None)
 finally:
-    H._DEFAULT_HSL_DIR = _saved_default
+    if _saved_env is not None:
+        os.environ["COINHSL_DIR"] = _saved_env
+
+# ---- 1a. a missing explicit folder: the warning names it -----------------------------
+print("missing explicit folder")
+_saved_env = os.environ.pop("COINHSL_DIR", None)
+try:
+    _gone = os.path.join(tempfile.mkdtemp(prefix="hsl_gone_"), "coinhsl")
+    H.resolve_hsl_dir(_gone)                      # records the folder that was asked for
+    with warnings.catch_warnings(record=True) as _seen:
+        warnings.simplefilter("always")
+        _out = H.apply_linear_solver({}, linear_solver="ma57", hsl_dir=None,
+                                     probe=lambda *_: True)
+    _msgs = [str(w.message) for w in _seen]
+    ok("missing explicit folder -> MUMPS fallback",
+       _out["ipopt"]["linear_solver"] == "mumps" and "hsllib" not in _out["ipopt"])
+    ok("the warning names the missing folder",
+       any(_gone in m and "does not exist" in m for m in _msgs))
+finally:
     if _saved_env is not None:
         os.environ["COINHSL_DIR"] = _saved_env
 
@@ -42,11 +64,9 @@ finally:
 # root (sys._MEIPASS); resolve_hsl_dir must find them there. Only when frozen.
 print("resolve_hsl_dir (frozen bundle)")
 _saved_env = os.environ.pop("COINHSL_DIR", None)
-_saved_default = H._DEFAULT_HSL_DIR
 _saved_frozen = getattr(sys, "frozen", None)
 _saved_meipass = getattr(sys, "_MEIPASS", None)
 try:
-    H._DEFAULT_HSL_DIR = r"Z:\definitely_not_a_real_hsl_dir"
     meipass = tempfile.mkdtemp(prefix="hsl_meipass_")   # stands in for the bundle root
     explicit = tempfile.mkdtemp(prefix="hsl_explicit_")
     sys._MEIPASS = meipass
@@ -72,7 +92,6 @@ try:
        H.resolve_hsl_dir() == os.path.abspath(explicit))
     del os.environ["COINHSL_DIR"]
 finally:
-    H._DEFAULT_HSL_DIR = _saved_default
     if _saved_env is not None:
         os.environ["COINHSL_DIR"] = _saved_env
     if _saved_meipass is None:
@@ -85,6 +104,88 @@ finally:
             del sys.frozen
     else:
         sys.frozen = _saved_frozen
+
+# ---- 1c. Linux scoped preload: the folder's own libraries, RTLD_LOCAL -------------
+# Chain: libhsl -> liba -> libb -> libc3. Without the preload libhsl does not load (checked in a child
+# process, so this process stays clean). With it libhsl loads, and no symbol of the folder reaches the
+# global scope. A folder without libhsl loads nothing. An unreadable folder raises nothing.
+print("linux preload (scoped)")
+_path0 = os.environ.get("PATH")
+if sys.platform.startswith("win"):
+    print("  [SKIP] Linux preload checks: Windows (add_dll_directory path)")
+else:
+    _CC = shutil.which("gcc") or shutil.which("cc")
+    _SYMS = ("c3_fn", "b_fn", "a_fn", "hsl_fn")
+
+    def _maps_of(folder):
+        """Basenames of the mapped files that live in `folder` (from /proc/self/maps)."""
+        real = os.path.realpath(folder) + os.sep
+        found = set()
+        with open("/proc/self/maps") as fh:
+            for ln in fh:
+                parts = ln.split()
+                if len(parts) >= 6 and parts[5].startswith(real):
+                    found.add(os.path.basename(parts[5]))
+        return found
+
+    def _build_chain(folder, with_hsl=True):
+        """Build libc3 -> libb -> liba (-> libhsl) as shared objects; sonames = file names."""
+        src = {"libc3.so": ("c3_fn", "", "int c3_fn(void){return 3;}"),
+               "libb.so": ("b_fn", "libc3.so", "int c3_fn(void);int b_fn(void){return c3_fn()+1;}"),
+               "liba.so": ("a_fn", "libb.so", "int b_fn(void);int a_fn(void){return b_fn()+1;}"),
+               "libhsl.so": ("hsl_fn", "liba.so", "int a_fn(void);int hsl_fn(void){return a_fn()+1;}")}
+        names = [n for n in ("libc3.so", "libb.so", "liba.so", "libhsl.so") if with_hsl or n != "libhsl.so"]
+        for name in names:
+            _sym, dep, code = src[name]
+            cfile = os.path.join(folder, name[:-3] + ".c")
+            with open(cfile, "w") as fh:
+                fh.write(code + "\n")
+            cmd = [_CC, "-shared", "-fPIC", f"-Wl,-soname,{name}", "-o", os.path.join(folder, name), cfile]
+            if dep:
+                cmd += [f"-L{folder}", f"-l:{dep}"]
+            subprocess.run(cmd, check=True, capture_output=True)
+
+    if _CC is None:
+        print("  [SKIP] chain checks: no gcc on PATH")
+    else:
+        _chain = tempfile.mkdtemp(prefix="hsl_chain_")
+        _build_chain(_chain)
+        # control: in a child process the chain does not load without the preload
+        _probe = subprocess.run(
+            [sys.executable, "-c", "import ctypes,sys; ctypes.CDLL(sys.argv[1])",
+             os.path.join(_chain, "libhsl.so")], capture_output=True)
+        ok("control: libhsl alone (child process) fails to load", _probe.returncode != 0)
+
+        H.register_hsl_dll_dir(_chain)
+        _mapped = _maps_of(_chain)
+        ok("preload maps liba, libb and libc3 of the folder",
+           {"liba.so", "libb.so", "libc3.so"} <= _mapped)
+        _hsl = ctypes.CDLL(os.path.join(_chain, "libhsl.so"))   # loads after the preload
+        _hsl.hsl_fn.restype = ctypes.c_int
+        ok("libhsl loads after the preload and its chain resolves (hsl_fn() == 6)", _hsl.hsl_fn() == 6)
+        ok("RTLD_LOCAL: no folder symbol in the global scope",
+           not any(hasattr(ctypes.CDLL(None), s) for s in _SYMS))
+        ok("Linux: PATH is not touched", os.environ.get("PATH") == _path0)
+
+        # a folder without libhsl loads nothing
+        _nolib = tempfile.mkdtemp(prefix="hsl_nolib_")
+        _build_chain(_nolib, with_hsl=False)
+        H.register_hsl_dll_dir(_nolib)
+        ok("a folder without libhsl loads nothing", _maps_of(_nolib) == set())
+
+# an unreadable folder raises nothing: the library is an invalid object, so IPOPT's own load fails,
+# and the solve falls back to MUMPS (section 5 runs the solve). Runs on Linux only.
+_unread = None
+if not sys.platform.startswith("win"):
+    _unread = tempfile.mkdtemp(prefix="hsl_unread_")
+    with open(os.path.join(_unread, "libhsl.so"), "wb") as fh:
+        fh.write(b"not an ELF object, so no load can succeed")
+    os.chmod(_unread, 0o311)                   # search and write, no read: listing the folder fails
+    try:
+        H.register_hsl_dll_dir(_unread)
+        ok("unreadable folder: register raises nothing", True)
+    except Exception as exc:                   # the check reports the exception, it does not hide it
+        ok(f"unreadable folder: register raises nothing (got {exc!r})", False)
 
 # ---- 2. hsllib_path ----------------------------------------------------------
 print("hsllib_path")
@@ -141,13 +242,40 @@ from functions.transcription import _make_solver
 _x = ca.MX.sym("x")
 _nlp = {"x": _x, "f": (_x - 1) ** 2, "g": _x}
 
-# (a) bogus _hsl_dir + ma57 -> must NOT crash (key popped) and must solve (mumps)
-S = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "ma57", "print_level": 0,
-                                       "max_iter": 50},
-                            "_hsl_dir": r"Z:\no_such_dir"})
-S(x0=0, lbg=-10, ubg=10)
-ok("ma57 + bogus dir -> falls back and solves",
-   S.stats().get("return_status") == "Solve_Succeeded")
+# (a) a missing folder + ma57 -> must NOT crash (key popped), must solve (mumps), must name the folder
+_saved_env = os.environ.pop("COINHSL_DIR", None)
+try:
+    _gone5 = os.path.join(tempfile.mkdtemp(prefix="hsl_gone5_"), "coinhsl")
+    with warnings.catch_warnings(record=True) as _seen5:
+        warnings.simplefilter("always")
+        S = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "ma57", "print_level": 0,
+                                               "max_iter": 50},
+                                    "_hsl_dir": _gone5})
+    S(x0=0, lbg=-10, ubg=10)
+    ok("ma57 + missing dir -> falls back and solves",
+       S.stats().get("return_status") == "Solve_Succeeded")
+    ok("the warning names the missing folder",
+       any(_gone5 in str(w.message) for w in _seen5))
+finally:
+    if _saved_env is not None:
+        os.environ["COINHSL_DIR"] = _saved_env
+
+# (a2) an unreadable folder + ma57 -> the real probe fails, MUMPS solves, no exception
+if _unread is not None:
+    _saved_env = os.environ.pop("COINHSL_DIR", None)
+    try:
+        S4 = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "ma57", "print_level": 0,
+                                                "max_iter": 50},
+                                     "_hsl_dir": _unread})
+        S4(x0=0, lbg=-10, ubg=10)
+        ok("unreadable folder + ma57 -> MUMPS fallback solves",
+           S4.stats().get("return_status") == "Solve_Succeeded")
+    except Exception as exc:
+        ok(f"unreadable folder + ma57 -> MUMPS fallback solves (got {exc!r})", False)
+    finally:
+        os.chmod(_unread, 0o755)
+        if _saved_env is not None:
+            os.environ["COINHSL_DIR"] = _saved_env
 
 # (b) explicit mumps -> solves, _hsl_dir absent is fine
 S2 = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "mumps", "print_level": 0,
@@ -180,8 +308,8 @@ ok("_hsl_dir present (default None)",
 c2 = Ctx(); userOpts(c2, circuit="Sturn", linear_solver="mumps")
 ok("explicit mumps honored", c2.opts["ipopt"]["linear_solver"] == "mumps")
 
-c3 = Ctx(); userOpts(c3, circuit="Sturn", linear_solver="ma97", hsl_dir=r"X:\hsl\bin")
+c3 = Ctx(); userOpts(c3, circuit="Sturn", linear_solver="ma97", hsl_dir=_d)
 ok("ma97 + hsl_dir threaded",
-   c3.opts["ipopt"]["linear_solver"] == "ma97" and c3.opts["_hsl_dir"] == r"X:\hsl\bin")
+   c3.opts["ipopt"]["linear_solver"] == "ma97" and c3.opts["_hsl_dir"] == _d)
 
 print("ALL HSL TESTS PASSED")

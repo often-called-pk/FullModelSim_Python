@@ -4,6 +4,7 @@ CasADi's bundled IPOPT already contains the HSL runtime loader; it loads an
 external HSL shared library at *solve* time when `linear_solver` is an `ma*`
 solver and the `hsllib` option points at the library. This module locates that
 library, makes it (and its co-located dependency DLLs) findable on Windows,
+loads its dependencies by hand on Linux when the library does not load alone,
 probes once that IPOPT can actually use it, and rewrites the IPOPT options dict
 to either use HSL or fall back to MUMPS.
 
@@ -12,18 +13,14 @@ casadi lazily so the rest of the module stays importable without it.
 """
 import copy
 import os
+import re
 import sys
 import warnings
-
-# Seeded fallback only -- the COINHSL_DIR env var overrides it. This is the
-# user's CoinHSL_jll (MinGW / libgfortran5) bin folder; nothing requires it.
-_DEFAULT_HSL_DIR = r"D:\Software Installs\CoinHSL.v2024.5.15.x86_64-w64-mingw32-libgfortran5\bin"
 
 # Candidate library filenames, most-preferred first. `libhsl.dll` is the
 # IPOPT-compatible shim shipped by CoinHSL_jll.
 _LIB_NAMES = ("libhsl.dll", "libcoinhsl.dll",
-              "libhsl.so", "libcoinhsl.so",
-              "libhsl.dylib", "libcoinhsl.dylib")
+              "libhsl.so", "libcoinhsl.so")
 
 # HSL solvers we let reach the probe. `ma86` is deliberately excluded: it
 # segfaulted in a loader probe, and a native segfault is NOT a catchable Python
@@ -33,6 +30,7 @@ _SUPPORTED_HSL = ("ma27", "ma57", "ma97")
 
 _registered = set()      # dirs already added to the DLL search path
 _probe_cache = {}        # (solver_name, hsllib) -> bool
+_bad_explicit = None     # the last explicit folder that was not a directory
 
 
 def _frozen_bundle_dir():
@@ -50,13 +48,14 @@ def _frozen_bundle_dir():
 def resolve_hsl_dir(explicit=None):
     """Resolve the directory that should contain the HSL library.
 
-    Precedence: COINHSL_DIR env var > `explicit` arg > the frozen bundle root
-    (PyInstaller sys._MEIPASS, where the spec drops the Coin-HSL DLLs) > seeded
-    default. Returns the first candidate that is an existing directory, as an
-    absolute path, or None if none exist.
+    Precedence: COINHSL_DIR env var > `explicit` arg (GUI field or kwarg) >
+    the frozen bundle root (PyInstaller sys._MEIPASS, where the spec drops the
+    Coin-HSL DLLs). Returns the first candidate that is an existing directory,
+    as an absolute path, or None if none exist.
     """
-    for cand in (os.environ.get("COINHSL_DIR"), explicit,
-                 _frozen_bundle_dir(), _DEFAULT_HSL_DIR):
+    global _bad_explicit
+    _bad_explicit = explicit if explicit and not os.path.isdir(explicit) else None
+    for cand in (os.environ.get("COINHSL_DIR"), explicit, _frozen_bundle_dir()):
         if cand and os.path.isdir(cand):
             return os.path.abspath(cand)
     return None
@@ -74,20 +73,61 @@ def hsllib_path(hsl_dir):
 
 
 def register_hsl_dll_dir(hsl_dir):
-    """Make `hsl_dir` (and its co-located dependency DLLs) findable by the
-    Windows loader when IPOPT LoadLibrary's the HSL library. Idempotent; no-op
-    if the dir is missing. Uses both os.add_dll_directory and a PATH prepend so
-    transitive dependencies resolve regardless of the loader's search mode.
+    """Make the HSL library of `hsl_dir` loadable with its co-located
+    dependencies. Idempotent; no-op if the dir is missing.
+
+    Windows: os.add_dll_directory and a PATH prepend, so transitive
+    dependencies resolve regardless of the loader's search mode.
+    Linux: the loader does not read PATH, so `_preload_deps` loads the
+    dependencies by hand.
     """
     if not hsl_dir or hsl_dir in _registered or not os.path.isdir(hsl_dir):
         return
-    if sys.platform.startswith("win") and hasattr(os, "add_dll_directory"):
-        try:
-            os.add_dll_directory(hsl_dir)
-        except OSError:
-            pass
-    os.environ["PATH"] = hsl_dir + os.pathsep + os.environ.get("PATH", "")
+    if sys.platform.startswith("win"):
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(hsl_dir)
+            except OSError:
+                pass
+        os.environ["PATH"] = hsl_dir + os.pathsep + os.environ.get("PATH", "")
+    else:
+        _preload_deps(hsl_dir)
     _registered.add(hsl_dir)
+
+
+def _preload_deps(hsl_dir):
+    """Linux: load the other shared libraries of the folder (libgfortran,
+    metis, blas), so the loader finds them by name when IPOPT opens libhsl.
+
+    It loads nothing when the folder has no HSL library, or when the library
+    loads alone. The loads are local (RTLD_LOCAL): no symbol of these
+    libraries replaces a symbol of the process. The loop stops when a pass
+    loads no new file. A failure is harmless: IPOPT then reports the load
+    error and the solve uses MUMPS.
+    """
+    lib = hsllib_path(hsl_dir)
+    if not lib or _loads(lib):
+        return
+    try:
+        names = sorted(os.listdir(hsl_dir))
+    except OSError:
+        return
+    todo = [f for f in names
+            if re.search(r"\.so(\.\d+)*$", f) and f != os.path.basename(lib)]
+    while todo:
+        left = [f for f in todo if not _loads(os.path.join(hsl_dir, f))]
+        if len(left) == len(todo):
+            break
+        todo = left
+
+
+def _loads(path):
+    import ctypes
+    try:
+        ctypes.CDLL(path)               # default mode: RTLD_LOCAL
+        return True
+    except OSError:
+        return False
 
 
 def probe_linear_solver(solver_name, hsllib):
@@ -166,9 +206,11 @@ def apply_linear_solver(opts, *, linear_solver, hsl_dir, probe=probe_linear_solv
             ip.setdefault("ma57_automatic_scaling", "yes")
         return opts
 
+    why = (f"the Coin-HSL folder {_bad_explicit} does not exist"
+           if lib is None and _bad_explicit else f"hsl_dir={hsl_dir!r}, lib={lib!r}")
     warnings.warn(
         f"HSL linear_solver '{linear_solver}' unavailable "
-        f"(hsl_dir={hsl_dir!r}, lib={lib!r}); falling back to MUMPS.",
+        f"({why}); falling back to MUMPS.",
         RuntimeWarning, stacklevel=2)
     ip["linear_solver"] = "mumps"
     ip.pop("hsllib", None)

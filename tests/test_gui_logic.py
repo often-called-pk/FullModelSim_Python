@@ -257,6 +257,8 @@ for bad, why in (("{'a': 1}", "not valid JSON"), ("not json", "not valid JSON"),
     ok(f"More options {bad!r} raises ValueError ({why})", msg.startswith("More options") and why in msg)
 
 # Run: a bad box logs an [error] and starts nothing; a good run clears the last result on show
+import glob, stat
+cfg_before = set(glob.glob(os.path.join(tempfile.gettempdir(), "fms_solve_cfg_*.json")))
 real_start, started = win._runner.start, []
 win._runner.start = started.append                       # records the cfg path, starts no process
 prev_out = win.output_dir.text()
@@ -276,6 +278,12 @@ try:
         ok("Run clears the last summary and plot list (a failed run must not leave an old lap on show)",
            win.summary.text() == "No results yet." and win.plot_list.count() == 0 and len(started) == 1
            and not win.run_btn.isEnabled())
+        cfg_run = started[0]                              # the private solve cfg of that run
+        ok("the solve cfg is a file of the temp dir, mode 0600 (posix)",
+           os.path.dirname(cfg_run) == tempfile.gettempdir()
+           and (os.name != "posix" or stat.S_IMODE(os.stat(cfg_run).st_mode) == 0o600))
+        win._on_finished(1)                               # the finish path of a failed solve
+        ok("the solve cfg is gone after finish", not os.path.exists(cfg_run) and win._cfg_path is None)
 finally:
     win._runner.start = real_start
     win.output_dir.setText(prev_out)
@@ -320,5 +328,10 @@ ok("4 Motors off unticks Homotopy again (the one-motor default is unchanged)",
 ok("the library default stays off for four motors (RunConfig homotopy None)",
    RunConfig(Electric_4Motors="On").homotopy is None)
 win.atd.setChecked(True)
+
+for w_ in (win, fresh, fresh_win):                  # close every window this test opened
+    w_.close()
+ok("no solve cfg of this run is left in the temp dir",
+   set(glob.glob(os.path.join(tempfile.gettempdir(), "fms_solve_cfg_*.json"))) <= cfg_before)
 
 print("\nALL GUI logic TESTS PASSED")

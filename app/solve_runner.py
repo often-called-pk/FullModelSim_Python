@@ -29,8 +29,15 @@ class SolveRunner(QObject):
         self._proc.setProcessChannelMode(QProcess.MergedChannels)
         self._proc.readyReadStandardOutput.connect(self._on_output)
         self._proc.finished.connect(lambda code, _status: self.finished.emit(int(code)))
+        self._proc.errorOccurred.connect(self._on_error)
         argv = solve_command(cfg_path)
         self._proc.start(argv[0], argv[1:])
+
+    def _on_error(self, error):
+        # A process that does not start never emits finished. Report it here.
+        if error == QProcess.FailedToStart:
+            self.output.emit(f"[error] the solve process did not start: {self._proc.errorString()}\n")
+            self.finished.emit(-1)
 
     def _on_output(self):
         text = bytes(self._proc.readAllStandardOutput()).decode(errors="replace")

@@ -22,8 +22,29 @@ def resource_path(*parts):
     return os.path.join(resource_root(), *parts)
 
 
+ORG_NAME = "FullModelSim"
+APP_NAME = "FullModelSim"
+
+
 def default_output_dir():
-    return os.path.join(os.path.expanduser("~"), "Documents", "FullModelSim")
+    """Qt Documents folder + FullModelSim. Home folder when Qt gives none."""
+    docs = ""
+    try:
+        from PySide6.QtCore import QStandardPaths
+        docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+    except Exception:
+        pass
+    return os.path.join(docs or os.path.expanduser("~"), "FullModelSim")
+
+
+def settings():
+    """Per-user QSettings (last output folder, Coin-HSL folder). The env
+    FULLMODELSIM_SETTINGS names an ini file to use instead (the tests set it)."""
+    from PySide6.QtCore import QSettings
+    path = os.environ.get("FULLMODELSIM_SETTINGS")
+    if path:
+        return QSettings(path, QSettings.IniFormat)
+    return QSettings(ORG_NAME, APP_NAME)
 
 
 def user_presets_dir():

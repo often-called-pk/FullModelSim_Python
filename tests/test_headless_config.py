@@ -122,9 +122,9 @@ from headless_solve import FORWARD, run_mode
 
 FORWARD_DEFAULTS = {"ladder": "auto", "homotopy": None, "refine": None, "continue_from": None,
                     "ipopt_overrides": None, "physics": "matlab", "start_state": "matlab", "n_bounds": None,
-                    "Steering": "NA", "CamberGain": "Off", "between_knots": "matlab",
+                    "Steering": "NA", "CamberGain": "Off", "hsl_dir": None, "between_knots": "matlab",
                     "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None}
-ok("FORWARD holds the 14 F2 options at these defaults", FORWARD == FORWARD_DEFAULTS)
+ok("FORWARD holds the 15 F2 options (hsl_dir included) at these defaults", FORWARD == FORWARD_DEFAULTS)
 
 OLD_KEYS = {"circuit", "vi", "ni", "AeroConfig", "ATD", "Electric_4Motors", "TyreModel", "linear_solver",
             "save", "plot", "results_dir", "plots_dir", "circuits_dir", "data_dir", "vp_overrides",
@@ -153,6 +153,21 @@ ok("homotopy False (explicit off) and a schedule list are forwarded",
    and build_solve_kwargs(dict(cfg, homotopy=[1.3, 1.15, 1.0]), "/res")["homotopy"] == [1.3, 1.15, 1.0])
 ok("n_bounds as a [lo, hi] pair is forwarded",
    build_solve_kwargs(dict(cfg, n_bounds=[-1.5, 2.5]), "/res")["n_bounds"] == [-1.5, 2.5])
+
+# --- 2b. hsl_dir (Coin-HSL folder): forwarded when set, absent at the default, not a setup knob -----------
+print("2b. hsl_dir")
+from app.runconfig import RunConfig
+from functions.context import Ctx
+kh = build_solve_kwargs(dict(cfg, hsl_dir="/opt/coinhsl/bin"), "/res")
+ok("hsl_dir set reaches the kwargs as given", kh["hsl_dir"] == "/opt/coinhsl/bin")
+ok("hsl_dir absent or null adds no kwarg",
+   "hsl_dir" not in kw and same(build_solve_kwargs(dict(cfg, hsl_dir=None), "/res"), kw))
+c_hsl = Ctx()
+userOpts(c_hsl, circuit="Sturn", hsl_dir=kh["hsl_dir"])
+ok("the forwarded hsl_dir reaches userOpts (ctx.opts _hsl_dir)", c_hsl.opts["_hsl_dir"] == "/opt/coinhsl/bin")
+ok("hsl_dir does not change the setup tag (a route key, not a knob)",
+   RunConfig(max_iter=3000, hsl_dir="/opt/coinhsl/bin").setup_tag() == RunConfig(max_iter=3000).setup_tag()
+   and RunConfig(max_iter=3000).setup_tag() != "" and RunConfig(hsl_dir="/opt/coinhsl/bin").setup_tag() == "")
 
 # --- 3. QSS mode ---------------------------------------------------------------------------------------
 print("3. mode = qss")
