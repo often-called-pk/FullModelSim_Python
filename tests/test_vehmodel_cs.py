@@ -481,7 +481,7 @@ for i, c in enumerate(("fl", "fr", "rl", "rr")):
     # poly_sx keeps the travel inside the fitted range with the smooth clamp of width 2 mm: mirror it
     xs_in = float(V._clamp(xs_c[c], kc.lo, kc.hi, 2e-3))
     dyn_exp = tyre["camber"] + float(kc.camber(xs_in)) + (phi_c if c[1] == "l" else -phi_c)
-    out_exp = dyn_exp * (-1.0 if c[1] == "r" else 1.0)
+    out_exp = dyn_exp                  # the channel is the internal camber on every corner (per wheel, ChassisSim log)
     dc_err = max(dc_err, abs(float(mcam[i]) - out_exp))
 ok(f"dynamic camber with roll: sign and side convention (phi {phi_c} rad): max error {dc_err:.2e} rad (< 1e-4)",
    dc_err < 1e-4)

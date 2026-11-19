@@ -307,7 +307,7 @@ def corner_scale(ctx, c, out):
     T_ = getattr(ctx.cs.tyre, c)
     fp, cm, _ = hand_fns(T_, None)
     return (float(fp(out[3 + 4 * k])) * float(getattr(ctx, "grip", 1.0)) * T_["grip"],
-            float(cm(out[4 + 4 * k] * (-1.0 if c[1] == "r" else 1.0))))
+            float(cm(out[4 + 4 * k])))
 
 
 def hand_C(ctx, vx, vy, r, out, axle, clip=True):

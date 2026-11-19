@@ -165,7 +165,8 @@ CAR_FIELDS = {
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(_GAPS)},
     **{204 + i: (f"susp.gap_flag_{n}", 1.0) for i, n in enumerate(_GAPS)},   # 1 = the gap is measured on the ground
-    **{74 + i: (f"susp.bump_steer_{c}", 1.0) for i, c in enumerate(_C4)},    # tag 7: wheel travel [m], toe change
+    # tag 7: wheel travel [m], toe change [rad]. The cids run FR, FL, RR, RL.
+    **{74 + i: (f"susp.bump_steer_{c}", 1.0) for i, c in enumerate(("fr", "fl", "rr", "rl"))},
     **_corners("susp", 13, "rubber_"), 17: ("susp.rubber_third_f", 1.0), 18: ("susp.rubber_third_r", 1.0),
     19: ("susp.arb_f", 1.0), 21: ("susp.arb_r", 1.0),
     **_corners("susp", 23, "mr_"), 27: ("susp.mr_arb_f", 1.0), 28: ("susp.mr_arb_r", 1.0),
@@ -516,12 +517,8 @@ def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_first
 def suspension_curves(car):
     """Return SimpleNamespace(f, r) of axle_kinematics for a car record. Cached on the record.
     The stored roll-centre height (cids 55, 59, 63, 67) is the chassis-frame height at w = 0: rc_h(0) + zg.
-    rc_h itself is the height above the contact patches. A car with a bump steer table (cids 74-77) that is not
-    zero raises ValueError, because the model has no bump steer."""
-    for c in _C4:
-        t = getattr(car.susp, f"bump_steer_{c}", None)
-        if t is not None and np.any(t["y"]):
-            raise ValueError("The car file holds a bump steer table that is not zero. The model does not support bump steer yet.")
+    rc_h itself is the height above the contact patches. The result also holds k1: the camber change of a steered
+    front wheel per radian of steer."""
     if getattr(car, "_curves", None) is None:
         g, h = car.geom, car.hardpoints
         need = (g.rc_height_fl, g.rc_height_fr, g.rc_height_rl, g.rc_height_rr, h.front_l, h.rear_l)
@@ -530,10 +527,39 @@ def suspension_curves(car):
         def first(a, b):
             v = (getattr(g, f"rc_first_{a}", None), getattr(g, f"rc_first_{b}", None))
             return None if None in v else 0.5 * (v[0] + v[1])
-        ty = car.tyre
+        ty, hf = car.tyre, np.asarray(h.front_l, float)
         car._curves = SimpleNamespace(
-            f=axle_kinematics(np.asarray(h.front_l, float), g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front",
+            f=axle_kinematics(hf, g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front",
                               rc_first=first("fl", "fr"), radius=ty.fl["radius"] if ty.fl else None),
             r=axle_kinematics(np.asarray(h.rear_l, float), g.track_rear, 0.5 * (g.rc_height_rl + g.rc_height_rr), name="rear",
                               rc_first=first("rl", "rr"), radius=ty.rl["radius"] if ty.rl else None))
+        # K1 = x component of the kingpin unit vector: castor c (tyre scalar), inclination sigma (front view of the
+        # line from the lower to the upper outer ball joint). No castor or no front tyre gives 0.
+        # ponytail: K1 is the camber rate per rad of kingpin rotation. Per rad of road-wheel yaw, small-angle
+        # kinematics give tan(castor) (GP3 0.158, +5 % against the log). K1 fits the GP3 log within 0.7 %.
+        # The quadratic term of the kingpin inclination is not in the model (about 11 % of the linear term at 8 deg
+        # of steer). Add it when a log of a car with more steer shows the curve.
+        castor = ty.fl["castor"] if ty.fl else 0.0
+        if not np.isfinite(castor):
+            raise ValueError(f"The castor scalar of the front left tyre is not finite ({castor}). Correct the car file.")
+        d = hf[5, 1:] - hf[2, 1:]
+        tc, ts = np.tan(castor), d[0] / d[1]
+        car._curves.k1 = float(tc / np.sqrt(1 + tc ** 2 + ts ** 2))
     return car._curves
+
+
+def bump_steer(car, c):
+    """Return the bump steer table {x: travel [m], y: toe [rad]} of corner c, or None when it is zero.
+    If one side of the axle is zero and the other is not, the table of the other side serves both sides.
+    A table that is not zero needs finite values and an increasing travel with 2 distinct points. Else ValueError."""
+    for k in (c, c[0] + ("r" if c[1] == "l" else "l")):
+        t = getattr(car.susp, f"bump_steer_{k}", None)
+        if not table_live(t):
+            continue
+        x, y = np.asarray(t["x"], float), np.asarray(t["y"], float)
+        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y)) and np.all(np.diff(x) >= 0) and x[-1] > x[0]):
+            cid = {"fr": 74, "fl": 75, "rr": 76, "rl": 77}[k]
+            raise ValueError(f"The bump steer table of corner {k} (cid {cid}) is not valid. It needs finite values "
+                             f"and an increasing wheel travel with at least 2 distinct points.")
+        return t
+    return None

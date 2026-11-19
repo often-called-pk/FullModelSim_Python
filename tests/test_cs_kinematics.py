@@ -26,7 +26,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 import functions.transcription as T
 from functions import carfile
-from functions.chassissim import _tyre_decode, axle_kinematics, load_car, suspension_curves
+from functions.chassissim import _tyre_decode, axle_kinematics, bump_steer, load_car, suspension_curves
 from functions.ggv import build_envelope
 from functions.telemetry import read_ld
 from MLTP import MLTP
@@ -461,8 +461,6 @@ for c in CORNERS:
     xs = v[f"xs_{c}"]
     roll = x_roll[13] if c[1] == "l" else -x_roll[13]      # camber from the body roll (vehModel_cs.py)
     expect = static + kc.camber(smooth_clamp(xs, kc.lo, kc.hi, 2e-3)) + roll     # poly_sx keeps xs inside the range
-    if c[1] == "r":
-        expect = -expect                 # the channel of a right corner is mirrored (vehModel_cs.py)
     ok(f"dynamic camber channel {c} = static + camber poly(xs) + roll camber at the roll state "
        f"(|err| {abs(v[f'dynamic_camber_{c}'] - expect):.2e} rad)",
        abs(v[f"dynamic_camber_{c}"] - expect) < 1e-12)
@@ -475,7 +473,7 @@ w = evaluate(ctx, names, x_slip)
 worst = 0.0
 for c in CORNERS:
     fze = 0.5 * (w[f"fz_{c}"] + np.sqrt(w[f"fz_{c}"] ** 2 + 40.0 ** 2))     # the model's load floor (smooth max, e = 40 N)
-    cam = w[f"dynamic_camber_{c}"] * (-1.0 if c[1] == "r" else 1.0)     # undo the mirror of the channel
+    cam = w[f"dynamic_camber_{c}"]
     t4 = 1.0 + 0.03 * np.degrees(cam) + 1e-5 * fze
     tyre = getattr(cs.tyre, c)
     ratio = t4 * (w[f"sx_{c}"] / tyre["peak_slip_ratio"]) / (w[f"sa_{c}"] / tyre["peak_slip_angle"])
@@ -507,6 +505,198 @@ ok(f"build_envelope on the synthetic car runs and gives finite ay_max (peak {env
    bool(np.all(np.isfinite(env_a.ay_max))))
 d_ay = np.max(np.abs(env_a.ay_max - env_b.ay_max)) / np.max(np.abs(env_a.ay_max))
 ok(f"ay_max changes when the camber gain changes (max rel change {d_ay:.2e})", d_ay > 1e-6)
+
+def evaluate_u(ctx, names, x, delta_n):
+    """Like evaluate, with the steer input delta_n (the other inputs zero)."""
+    m = ctx.m23
+    f = ca.Function("f", [m.x, m.u, m.pv], [ca.vertcat(*[ca.SX(getattr(m, n)) for n in names])])
+    out = np.array(f(np.asarray(x, float) / m.x_s, np.array([0.0, 0.0, delta_n]), 0.0), float).ravel()
+    return dict(zip(names, out))
+
+
+def dx_at(ctx, x, delta_n):
+    """The state derivative m.dx at the physical state x and steer input delta_n (straight line)."""
+    m = ctx.m23
+    f = ca.Function("f", [m.x, m.u, m.pv], [m.dx])
+    return np.array(f(np.asarray(x, float) / m.x_s, np.array([0.0, 0.0, delta_n]), 0.0), float).ravel()
+
+
+def write_variant(name, records):
+    path = os.path.join(TMP.name, name)
+    carfile.write(records, path)
+    return path
+
+
+def with_castor(records, castor_deg):
+    """Records with the tyre castor scalar (tag 13, scalar 2, degrees) of every corner set to castor_deg."""
+    out = []
+    for tag, cid, v in records:
+        if tag == 13:
+            dims, sc, tabs = v
+            sc = np.array(sc, float)
+            sc[2] = castor_deg
+            v = (dims, sc, tabs)
+        out.append((tag, cid, v))
+    return out
+
+
+TOE_X = np.linspace(-0.02, 0.02, 11)      # m, the bump steer grid of cids 74-77
+BUMP_CIDS = {"fr": 74, "fl": 75, "rr": 76, "rl": 77}
+
+
+def with_bump(records, tables):
+    """Records with the bump steer tables (tag 7) of the corners in tables {corner: toe [rad]}; others zero."""
+    extra = [(7, BUMP_CIDS[c], (TOE_X, np.asarray(tables.get(c, np.zeros(TOE_X.size)), float))) for c in BUMP_CIDS]
+    return records[:-1] + extra + records[-1:]     # the end record stays last
+
+
+def k1_hand(castor, hp):
+    """K1 = tan c / sqrt(1 + tan^2 c + tan^2 sigma). sigma: front view of the lower -> upper outer ball joint."""
+    tc = np.tan(castor)
+    ts = (hp[5, 1] - hp[2, 1]) / (hp[5, 2] - hp[2, 2])
+    return tc / np.sqrt(1.0 + tc * tc + ts * ts)
+
+
+print("[cs_kinematics] steer camber: K1 from castor and kingpin, dynamic camber from delta (fake IPOPT, no solve)")
+DELTA = 0.05                              # rad, a left turn
+DELTA_N = DELTA / np.radians(35.0)        # the model: delta = 35 deg x delta_n
+DYN = ("delta", "dynamic_camber_fl", "dynamic_camber_fr", "dynamic_camber_rl", "dynamic_camber_rr")
+K_C2 = build_model(BASE)                  # castor 2 deg (build_records default), camber 0
+K1 = suspension_curves(K_C2.cs).k1
+hp_car = np.asarray(K_C2.cs.hardpoints.front_l, float)
+ok("the synthetic front hardpoints read back as written (1e-12)", np.allclose(hp_car, HP_LEFT, rtol=0, atol=1e-12))
+ok(f"K1 = {K1:.6f} equals the hand formula from castor 2 deg and the hardpoints (rel 1e-12)",
+   abs(K1 - k1_hand(K_C2.cs.tyre.fl["castor"], hp_car)) <= 1e-12 * abs(K1))
+x_st = state(K_C2, vx=20.0, zs=0.004, theta=0.01, phi=0.02)
+d0 = evaluate_u(K_C2, DYN, x_st, 0.0)
+d1 = evaluate_u(K_C2, DYN, x_st, DELTA_N)
+ok(f"the steer input gives delta = {d1['delta']:.6f} rad", abs(d1["delta"] - DELTA) < 1e-12)
+dfr = d1["dynamic_camber_fr"] - d0["dynamic_camber_fr"]
+dfl = d1["dynamic_camber_fl"] - d0["dynamic_camber_fl"]
+ok(f"front right channel moves by +K1 delta ({dfr:.6e} vs {K1 * DELTA:.6e}, rel 1e-9)",
+   abs(dfr - K1 * DELTA) <= 1e-9 * abs(K1 * DELTA))
+ok(f"front left channel moves by -K1 delta ({dfl:.6e} vs {-K1 * DELTA:.6e}, rel 1e-9)",
+   abs(dfl + K1 * DELTA) <= 1e-9 * abs(K1 * DELTA))
+ok(f"rear channels do not move with delta ({d1['dynamic_camber_rl'] - d0['dynamic_camber_rl']:.1e}, "
+   f"{d1['dynamic_camber_rr'] - d0['dynamic_camber_rr']:.1e})",
+   abs(d1["dynamic_camber_rl"] - d0["dynamic_camber_rl"]) < 1e-12
+   and abs(d1["dynamic_camber_rr"] - d0["dynamic_camber_rr"]) < 1e-12)
+
+K0_PATH = write_variant("castor0.car", with_castor(build_records(camber_deg=0.0), 0.0))
+K0 = build_model(K0_PATH)
+ok("castor 0 gives K1 = 0 exactly", suspension_curves(K0.cs).k1 == 0.0)
+e00, e01 = evaluate_u(K0, DYN, x_st, 0.0), evaluate_u(K0, DYN, x_st, DELTA_N)
+ok("castor 0: the front cambers do not move with delta (no term, 1e-15)",
+   abs(e01["dynamic_camber_fl"] - e00["dynamic_camber_fl"]) < 1e-15
+   and abs(e01["dynamic_camber_fr"] - e00["dynamic_camber_fr"]) < 1e-15)
+RNG = np.random.default_rng(6)
+
+
+def rand_state(ctx):
+    """A random straight-line state: speed 12-30 m/s, small heave, pitch, roll and unsprung travel."""
+    x = state(ctx, vx=RNG.uniform(12.0, 30.0), vy=RNG.uniform(-0.5, 0.5), sx=RNG.uniform(-0.03, 0.03),
+              zs=RNG.uniform(-0.01, 0.01), theta=RNG.uniform(-0.01, 0.01), phi=RNG.uniform(-0.01, 0.01))
+    x[15:19] = RNG.uniform(-1e-3, 1e-3, 4)
+    return x
+
+
+dx_0 = dx_1 = 0.0
+for _ in range(4):
+    x = rand_state(K_C2)
+    a0, b0 = dx_at(K_C2, x, 0.0), dx_at(K0, x, 0.0)
+    a1, b1 = dx_at(K_C2, x, DELTA_N), dx_at(K0, x, DELTA_N)
+    dx_0 = max(dx_0, np.max(np.abs(a0 - b0)) / np.max(np.abs(b0)))
+    dx_1 = max(dx_1, np.max(np.abs(a1 - b1)) / np.max(np.abs(b1)))
+ok(f"castor 2 and castor 0 cars: dx equal at delta 0 at random states (max rel {dx_0:.1e}): K1 enters only through delta",
+   dx_0 <= 1e-12)
+ok(f"castor 2 and castor 0 cars: dx differ at delta 0.05 (max rel {dx_1:.1e}, float noise is 0)", dx_1 > 1e-10)
+
+print("[cs_kinematics] steer camber: QSS apex camber and lap")
+# The QSS needs tyre peaks above zero: the default tables here give no lateral capacity. Peak = mu 1 x load.
+def with_peaks(records):
+    out = []
+    for tag, cid, v in records:
+        if tag == 13:
+            dims, sc, tabs = v
+            tabs = list(tabs)
+            load = np.linspace(1000.0, 25000.0, dims[0])
+            tabs[3] = np.concatenate([load, TYRE_TEMPS, np.outer(load, np.ones(dims[1])).ravel()])
+            v = (dims, sc, tabs)
+        out.append((tag, cid, v))
+    return out
+
+
+QK20 = write_variant("qss_castor20.car", with_peaks(with_castor(build_records(camber_deg=0.0), 20.0)))
+QK0 = write_variant("qss_castor0.car", with_peaks(with_castor(build_records(camber_deg=0.0), 0.0)))
+Q2, Q0 = qss_ctx(QK20), qss_ctx(QK0)
+K1_Q = suspension_curves(Q2.cs).k1
+ok(f"QSS car: K1 = {K1_Q:.4f} at castor 20 deg, and 0 at castor 0", K1_Q > 0 and suspension_curves(Q0.cs).k1 == 0.0)
+env2, env0 = build_envelope(Q2), build_envelope(Q0)
+# ponytail: the apex camber -K1 L ay / v^2 is internal to build_envelope_cs (no output carries it), so the check
+# compares the envelopes. On this car the front axle binds near 40 m/s only (20, 30, 50 m/s are rear limited),
+# so the one speed with a change is checked. A hand value needs the apex camber as an output.
+i2 = int(np.argmin(np.abs(env2.v_grid - 40.0)))
+i0 = int(np.argmin(np.abs(env0.v_grid - 40.0)))
+d40 = float(env2.ay_max[i2] - env0.ay_max[i0])
+ok(f"QSS ay_max at 40 m/s moves with K1 ({d40:+.4e} m/s^2, castor 20 minus castor 0)", abs(d40) > 1e-6)
+lap2, lap0 = float(Q2.data.lap_time), float(Q0.data.lap_time)
+ok(f"QSS lap of the castor 20 car differs from castor 0 ({lap2:.5f} vs {lap0:.5f} s)", abs(lap2 - lap0) > 1e-4)
+
+print("[cs_kinematics] bump steer: toe from the table at the wheel travel (fake IPOPT, no solve)")
+BUMP_FL_PATH = write_variant("bump_fl.car", with_bump(build_records(camber_deg=0.0), {"fl": 0.2 * TOE_X}))
+BUMP_FL = build_model(BUMP_FL_PATH)
+names_b = ["xs_fl", "xs_fr", "xs_rl", "xs_rr", "sa_fl", "sa_fr", "sa_rl", "sa_rr"]
+# The model's table is a sampled spline (vehModel_cs._curve), so a linear table is met to about 3e-6 relative.
+# Past the table end the clamp holds the end value to about 4e-5 m of travel (2e-5 rad of toe).
+for zs in (0.01, -0.01, 0.05, -0.05):
+    vb = evaluate(BUMP_FL, names_b, state(BUMP_FL, zs=zs))
+    v0 = evaluate(K_C2, names_b, state(K_C2, zs=zs))
+    dfl_ = vb["sa_fl"] - v0["sa_fl"]
+    dfr_ = vb["sa_fr"] - v0["sa_fr"]
+    xl, xr = vb["xs_fl"], vb["xs_fr"]
+    want_l = 0.2 * float(np.clip(xl, TOE_X[0], TOE_X[-1]))      # the table held at its ends
+    want_r = -0.2 * float(np.clip(xr, TOE_X[0], TOE_X[-1]))     # right side: mirror copy, minus sign (static toe)
+    inside = abs(xl) <= TOE_X[-1]
+    tol_l = 1e-5 * abs(want_l) if inside else 2e-5
+    ok(f"xs {xl * 1e3:+.1f} mm: FL slip angle moves by the table ({dfl_:+.7f} vs {want_l:+.7f} rad, "
+       f"tol {tol_l:.0e} rad)", abs(dfl_ - want_l) <= tol_l)
+    ok(f"xs {xr * 1e3:+.1f} mm: FR slip angle moves by minus the table (mirror of FL) "
+       f"({dfr_:+.7f} vs {want_r:+.7f} rad, tol {tol_l:.0e} rad)", abs(dfr_ - want_r) <= tol_l)
+    ok(f"xs {xl * 1e3:+.1f} mm: rear slip angles do not move (no rear table)",
+       abs(vb["sa_rl"] - v0["sa_rl"]) < 1e-12 and abs(vb["sa_rr"] - v0["sa_rr"]) < 1e-12)
+ok("the toe checks reach -10 mm and +10 mm of travel (inside the grid) and beyond -20 mm and +20 mm",
+   abs(abs(evaluate(BUMP_FL, names_b, state(BUMP_FL, zs=0.01))["xs_fl"]) - 0.01) < 2e-4
+   and abs(evaluate(BUMP_FL, names_b, state(BUMP_FL, zs=0.05))["xs_fl"]) > 0.02)
+
+BUMP4 = {c: (i + 1) * 1e-3 * TOE_X / 0.02 for i, c in enumerate(BUMP_CIDS)}   # a distinct line per corner, 1-4 mm
+car4 = load_car(write_variant("bump4.car", with_bump(build_records(camber_deg=0.0), BUMP4)))
+ok("four distinct bump steer tables decode by cid: 74 FR, 75 FL, 76 RR, 77 RL",
+   all(np.array_equal(bump_steer(car4, c)["y"], BUMP4[c]) for c in CORNERS))
+
+bad_x = [(t, c, (v[0][::-1], v[1]) if t == 7 and c == 75 else v) for t, c, v in with_bump(build_records(camber_deg=0.0), {"fl": 0.2 * TOE_X})]
+bad_car = load_car(write_variant("bump_bad_x.car", bad_x))
+try:
+    bump_steer(bad_car, "fl")
+    bad_msg = ""
+except ValueError as e:
+    bad_msg = str(e)
+ok("a live bump table with decreasing travel raises ValueError naming corner fl and cid 75",
+   "cid 75" in bad_msg and "fl" in bad_msg)
+
+ZERO = build_model(write_variant("bump_zero.car", with_bump(build_records(camber_deg=0.0), {})))
+worst_z = 0.0
+for _ in range(3):
+    x = rand_state(K_C2)
+    a, b = dx_at(K_C2, x, DELTA_N), dx_at(ZERO, x, DELTA_N)
+    worst_z = max(worst_z, np.max(np.abs(a - b)) / np.max(np.abs(a)))
+ok(f"zero bump steer tables add no node: dx equal to the car without tables (max rel {worst_z:.1e})", worst_z <= 1e-12)
+
+QB_PATH = write_variant("qss_bump_fl.car", with_peaks(with_bump(build_records(camber_deg=0.0), {"fl": 0.2 * TOE_X})))
+QB0_PATH = write_variant("qss_no_bump.car", with_peaks(build_records(camber_deg=0.0)))
+lap_b = float(qss_ctx(QB_PATH).data.lap_time)
+lap_nb = float(qss_ctx(QB0_PATH).data.lap_time)
+ok(f"the QSS ignores bump steer: lap {lap_b:.9f} s equals the car without tables {lap_nb:.9f} s",
+   abs(lap_b - lap_nb) <= 1e-12 * lap_nb)
 
 print(f"[cs_kinematics] synthetic: {PASS} checks passed")
 
@@ -575,6 +765,10 @@ for axle, k in (("front", vc.f), ("rear", vc.r)):
     step_cam = float(np.max(np.abs(np.diff(cam_v))))
     ok(f"GP3 {axle}: curves smooth (largest step per 0.5 mm: RC {step_rc * 1e3:.3f} mm, camber "
        f"{np.degrees(step_cam):.4f} deg)", step_rc < 1e-3 and np.degrees(step_cam) < 0.02)
+
+ok(f"GP3 front steer camber K1 {vc.k1:.4f} within 1e-3 of 0.1517", abs(vc.k1 - 0.1517) < 1e-3)
+ok("GP3 rear tyres have castor 0, so the rear K1 is 0 (tan 0 = 0)",
+   abs(car.tyre.rl["castor"]) < 1e-12 and abs(car.tyre.rr["castor"]) < 1e-12 and np.tan(car.tyre.rl["castor"]) == 0.0)
 
 print("[cs_kinematics] vendor GT3 (datum from the first stored values, rule (a))")
 gt3_cars = glob.glob(os.path.join(glob.escape(MODELS), "GT3", "*", "*.car"))

@@ -570,12 +570,14 @@ def build_envelope_cs(ctx, v_grid=None):
     ride heights that the aero load gives (a fixed point). The camber of the traction and brake limits uses the heave
     travel only (no pitch). The lateral load transfer follows the roll
     stiffness split of the springs and bars, with the tyre in series, and the roll centres of the curves at the heave travel.
+    The camber of a front wheel at the apex adds the steer camber -K1 L ay / v^2, with the steer clipped at the NLP bound.
+    The QSS skips bump steer, because it has no slip angles.
     The drive force is the gear envelope (the same smooth maximum as the NLP). Brakes: the brake force and
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     A car with the stability index flag (cid 655 = 1) and a live map (cid 656) gets env.apex_factor (_apex_factor).
     """
     from scipy.interpolate import PchipInterpolator
-    from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf, _clean, third_element
+    from vehModel_cs import C4, DELTA_MAX, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf, _clean, third_element
     import casadi as ca
     from functions.chassissim import suspension_curves
     vp, cs = ctx.vp, ctx.cs
@@ -704,6 +706,8 @@ def build_envelope_cs(ctx, v_grid=None):
         ro_f, ro_r = phi_f * Mx / ks["f"], (1 - phi_f) * Mx / ks["r"]      # roll angle of the suspension at each axle [rad]
         rf, rr = ro_f * t_f / 2, ro_r * t_r / 2                              # wheel travel from the roll, outer +, inner -
         ro_f = ro_r = Mx / (Kf + Kr)    # the camber follows the body roll vs the ground: suspension and tyres (state phi of the NLP)
+        if curves.k1:       # camber from steer: the apex steer is L kappa = L ay / v^2, at most the steer bound of the NLP.
+            ro_f = ro_f - curves.k1 * np.clip(L * ay / v ** 2, -DELTA_MAX, DELTA_MAX)     # the outer wheel gains negative camber
         return dF_f, dF_r, rf, rr, ro_f, ro_r
 
     def lat_capacity(ay):

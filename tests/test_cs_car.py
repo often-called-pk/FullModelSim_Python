@@ -351,8 +351,8 @@ BUMP_Y = {c: (i + 1) * 1e-3 * BUMP_X / 0.02 for i, c in enumerate(CORNERS)}   # 
 
 
 def bump_over(ys):
-    """Replacement records of cids 74-77: the toe change ys[corner], zero for a corner that is not in ys."""
-    return {74 + i: (BUMP_X, ys.get(c, np.zeros(len(BUMP_X)))) for i, c in enumerate(CORNERS)}
+    """Replacement records of cids 74-77 (FR, FL, RR, RL): the toe change ys[corner], zero for a corner not in ys."""
+    return {cid: (BUMP_X, ys.get(c, np.zeros(len(BUMP_X)))) for cid, c in ((74, "fr"), (75, "fl"), (76, "rr"), (77, "rl"))}
 
 
 bump = load_car(write_car("bump_all.car", over=bump_over(BUMP_Y))[0])
@@ -361,8 +361,8 @@ ok("bump steer tables decode per corner: x is the travel grid, y the stored toe 
        and np.allclose(getattr(bump.susp, f"bump_steer_{c}")["y"], BUMP_Y[c], rtol=0, atol=0) for c in CORNERS))
 bump_fl = load_car(write_car("bump_fl.car", over=bump_over({"fl": BUMP_Y["fl"]}))[0])
 ok("a car with one non-zero bump steer table loads", np.any(bump_fl.susp.bump_steer_fl["y"]))
-ok("suspension_curves raises ValueError that names bump steer for that car",
-   raises_naming(lambda: suspension_curves(bump_fl), "bump steer"))
+ok("suspension_curves accepts a live bump steer table (the refusal was removed in task 14)",
+   suspension_curves(bump_fl) is not None)
 curves = suspension_curves(load_car(SYN))
 ok("the synthetic car with zero bump steer gives front and rear curves (physical hardpoints)",
    np.isfinite(curves.f.zg) and np.isfinite(curves.r.zg) and curves.f.lo < 0 < curves.f.hi)

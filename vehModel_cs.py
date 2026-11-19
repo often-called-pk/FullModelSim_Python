@@ -19,7 +19,7 @@ from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq
 
 from vehModel import _chassis_corrected
-from functions.chassissim import suspension_curves, table_live
+from functions.chassissim import suspension_curves, table_live, bump_steer
 
 C4 = ("fl", "fr", "rl", "rr")
 W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
@@ -29,6 +29,7 @@ D_ALPHA = np.pi / 18000.0     # slip angle step of the cornering stiffness in th
 # The clipped point stays within 5e-4 of the plateau start (0.07 % of the GP3 value). The index is not in the NLP,
 # so a sharp corner costs no iterations.
 W_SC = 1e-3
+DELTA_MAX = 35.0 * (np.pi / 180.0)     # rad, road-wheel steer at the input bound (delta_n = 1)
 LAT_CAP = 0.9       # the lateral force of a wheel stays under this share of its pure lateral capacity
 B_GEAR = 80.0       # sharpness of the smooth maximum over the gears
 E_D, E_D2, P0_DET = 0.02, 0.01, 100.0   # diff: wheel speed width [m/s], map floor [m/s], Detroit gate force [N]
@@ -376,7 +377,7 @@ def vehModel_cs(ctx):
     F_ref = drive_scale(cs, Rw["r"])
     F_brk = cs.brake.force
     T_drive_n, T_brake_n, delta_n = SX.sym("T_drive_n"), SX.sym("T_brake_n"), SX.sym("delta_n")
-    T_drive, T_brake, delta = F_ref * T_drive_n, F_brk * T_brake_n, 35.0 * deg2rad * delta_n
+    T_drive, T_brake, delta = F_ref * T_drive_n, F_brk * T_brake_n, DELTA_MAX * delta_n
     u = ca.vertcat(T_drive_n, T_brake_n, delta_n)
     u_s = np.array([F_ref, F_brk, np.pi / 8])
     u_lim = np.array([[0.0, 1.0], [-1.0, 0.0], [-1.0, 1.0]])
@@ -481,11 +482,18 @@ def vehModel_cs(ctx):
         raise ValueError("Steering must be 'NA' or 'Ackermann'")
     sa_rl = ca.atan((vp.l_r*r - vy) / (vx - r*t_r/2)) + ty["rl"]["toe"]
     sa_rr = ca.atan((vp.l_r*r - vy) / (vx + r*t_r/2)) - ty["rr"]["toe"]
+    # Bump steer: the toe table at the wheel travel adds to the static toe, with the same side sign.
+    # ponytail: bump is positive travel, as the decode did not fix the sign. Flip the table if a log shows the opposite.
+    sa = {"fl": sa_fl, "fr": sa_fr, "rl": sa_rl, "rr": sa_rr}
+    for c in C4:
+        bs = bump_steer(cs, c)
+        if bs is not None:
+            sa[c] += (1.0 if c[1] == "l" else -1.0) * _curve(bs["x"], bs["y"])(xs[c])
+    sa_fl, sa_fr, sa_rl, sa_rr = (sa[c] for c in C4)
     v_fl = ca.sqrt((vy + vp.l_f*r)**2 + (vx - r*t_f/2)**2)
     v_fr = ca.sqrt((vy + vp.l_f*r)**2 + (vx + r*t_f/2)**2)
     v_rl = ca.sqrt((vy - vp.l_r*r)**2 + (vx - r*t_r/2)**2)
     v_rr = ca.sqrt((vy - vp.l_r*r)**2 + (vx + r*t_r/2)**2)
-    sa = {"fl": sa_fl, "fr": sa_fr, "rl": sa_rl, "rr": sa_rr}
     vxw = {"fl": v_fl*ca.cos(sa_fl), "fr": v_fr*ca.cos(sa_fr), "rl": v_rl*ca.cos(sa_rl), "rr": v_rr*ca.cos(sa_rr)}
     Om = {"fl": Om_fl, "fr": Om_fr, "rl": Om_rl, "rr": Om_rr}
     sx = {c: (Rw[c[0]] * Om[c] - vxw[c]) / vxw[c] for c in C4}
@@ -501,6 +509,8 @@ def vehModel_cs(ctx):
         # phi > 0 is the right side down (xs_fr > xs_fl). A left wheel then leans its top inward (camber +phi),
         # a right wheel outward (-phi). So the outer wheel of a turn loses negative camber and the inner one gains it.
         dyn = T["camber"] + poly_sx(kc.camber, xs[c], kc.lo, kc.hi) + (phi if c[1] == "l" else -phi)
+        if c[0] == "f" and curves.k1:    # camber from steer: delta > 0 is a left turn, whose outer (right) wheel gains negative camber
+            dyn = dyn + curves.k1 * delta * (1.0 if c[1] == "r" else -1.0)
         cam = _curve(T["camber_x"], T["camber_y"])(dyn)
         dcam[c] = dyn
         t4 = _surf({"x": T["fx_camber_x"], "z": T["fx_camber_load"], "data": T["fx_camber"]}, (5e-4, 5.0))(dyn, fze)   # Fx peak / Fy peak
@@ -591,7 +601,7 @@ def vehModel_cs(ctx):
         setattr(m, f"mu_{c}_x", mu_x[c])
         setattr(m, f"mu_{c}_y", mu_y[c])
         setattr(m, f"f_lift_{c}", {"fl": f_lift_fl, "fr": f_lift_fr, "rl": f_lift_rl, "rr": f_lift_rr}[c])
-        setattr(m, f"dynamic_camber_{c}", dcam[c] * (-1.0 if c[1] == "r" else 1.0))
+        setattr(m, f"dynamic_camber_{c}", dcam[c])      # per wheel, negative camber positive, as the ChassisSim log
     m.f_roll, m.f_drag, m.f_lift = f_roll, f_drag, f_lift
     m.Lon_acc, m.Lat_acc, m.ax, m.ay = Lon_acc, Lat_acc, ax, ay
     m.F_env, m.om_engine, m.v_r, m.rh_f, m.rh_r = F_env, om_eng, v_r, rh_f, rh_r
