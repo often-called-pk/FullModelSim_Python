@@ -725,11 +725,17 @@ def build_envelope_cs(ctx, v_grid=None):
     if sb is not None and sb.on == 1 and sb.map is not None and np.any(sb.map["data"] != 0):
         apex_factor = _apex_factor(cs, ty, ay_max, apex_state, axle, Fz_f, Fz_r, hv_f, hv_r, v, M, sh_f, sh_r, vp)
 
-    # ---- longitudinal: rear drive, brakes at the front bias, first-order pitch transfer ------------
+    # ---- longitudinal: rear or split drive, brakes at the front bias, first-order pitch transfer ------------
     bias = float(cs.brake.front_bias)
 
+    split = cs.engine.torque_split or 0.0       # front share of the drive force (no centre differential)
+
     def trac_capacity(F):
-        return axle("r", np.clip(Fz_r + F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False, hv_r, hv_r)
+        cr = axle("r", np.clip(Fz_r + F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False, hv_r, hv_r)
+        if split <= 0:
+            return cr
+        cf = axle("f", np.clip(Fz_f - F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False, hv_f, hv_f) / split
+        return np.minimum(cf, cr / (1.0 - split) if split < 1 else np.inf)
 
     def brk_capacity(F):
         dF = F * h_x / L
@@ -760,7 +766,7 @@ def build_envelope_cs(ctx, v_grid=None):
     r_fit = env.F_res(v)
     env.ax_acc = np.minimum((Fx_trac - r_fit) / M, (env.F_mot(v) - r_fit) / M_eff)
     env.ax_brk = np.minimum((Fx_brk + r_fit) / M, (env.F_brk(v) + r_fit) / M_eff)
-    env.info = dict(car=True, drive="rear", brake="front bias", rh_f=rh_f, rh_r=rh_r, F_res_exact=res,
+    env.info = dict(car=True, drive="rear" if not split else "split", brake="front bias", rh_f=rh_f, rh_r=rh_r, F_res_exact=res,
                     res_fit_err=float(np.max(np.abs(r_fit - res))), phi_f=float(phi_f), hRC=(hrc_f, hrc_r), h_x=h_x)
     return env
 

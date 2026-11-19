@@ -414,8 +414,8 @@ def vendor(cs_dir):
             loaded += 1
         except ValueError:
             refused += 1
-    ok(f"27 shipped car files load and 4 refuse, as before ({loaded} load, {refused} refuse)",
-       loaded == 27 and refused == 4)
+    ok(f"28 shipped car files load and 3 refuse (FSAE loads, WRX refuses) ({loaded} load, {refused} refuse)",
+       loaded == 28 and refused == 3)
     ok("the atmospheric factor is 1.0 for every car that loads", bool(factors) and all(f == 1.0 for f in factors))
 
 

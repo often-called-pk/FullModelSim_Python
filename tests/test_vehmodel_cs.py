@@ -572,8 +572,20 @@ ok(f"T_brake rate bounds equal the 4EM ramp x brake force (ub {float(np.ravel(ct
    f"lb {float(np.ravel(ctx.duk_lb)[1]):.4g} vs {lb_ref:.4g})",
    abs(float(np.ravel(ctx.duk_ub)[1]) - ub_ref) < 1e-9 * abs(ub_ref) and abs(float(np.ravel(ctx.duk_lb)[1]) - lb_ref) < 1e-9 * abs(lb_ref))
 
-# 5. refusals: cid 111 = 0.3 and a gap flag 2 raise ValueError
-ok("torque split 0.3 (cid 111) raises ValueError", raises(ValueError, build, write_car("split.car", over={111: 0.3})))
+# 5. torque split (cid 111) is a front share from 0 to 1: 0.3 builds; -0.2, 1.5 and NaN raise ValueError naming cid 111.
+#    A gap flag 2 raises ValueError.
+def split_msg(v, name):
+    try:
+        quiet(build, write_car(name, over={111: v}))
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+ok("torque split 0.3 (cid 111) builds", split_msg(0.3, "split_03.car") == "")
+for v, name in ((-0.2, "split_m02.car"), (1.5, "split_15.car"), (float("nan"), "split_nan.car")):
+    msg = split_msg(v, name)
+    ok(f"torque split {v} (cid 111) raises ValueError naming cid 111 ({msg[:50]!r})", "cid 111" in msg)
 ok("rubber gap flag 2 (cid 204) raises ValueError", raises(ValueError, build, write_car("flag.car", over={204: 2})))
 
 # 6. throttle channel = T_drive / F_env (share of the drive available at this speed)

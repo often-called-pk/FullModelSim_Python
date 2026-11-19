@@ -370,13 +370,33 @@ ev_z0, _ = evaluator(Z0)
 o = ev_z0(state(Z0, vx=20.0))
 ok("zero CLA map with cid 121 = 0 builds, lift is exactly 0", o["f_lift"] == 0.0 and o["f_drag"] > 0)
 
-# (d) a zero CLA map with cid 121 > 0 raises ValueError
-msg = ""
-try:
-    build(write_car("zero_bad.car", over={127: (9, (AX, AZ, np.zeros(81))), 121: (1, 1.0)}))
-except ValueError as e:
-    msg = str(e)
-ok(f"zero CLA map with cid 121 = 1.0 raises ValueError naming the aero map ({msg[:50]!r})", "aero map" in msg)
+# (d) a zero map or a zero scalar gives a zero force, CLA and CDA separately (ChassisSim: no refusal). A missing
+#     scalar and a negative peak still raise ValueError.
+def build_msg(name, over=None, omit=()):
+    try:
+        quiet(build, write_car(name, over=over, omit=omit))
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+ZERO_CLA = {127: (9, (AX, AZ, np.zeros(81)))}
+ZERO_CDA = {131: (9, (AX, AZ, np.zeros(81)))}
+for label, name, over in (("zero CLA map, cid 121 = 1.0", "zero_cla_1.car", {**ZERO_CLA, 121: (1, 1.0)}),
+                          ("CLA scalar 0, base map", "scalar_cla_0.car", {121: (1, 0.0)}),
+                          ("zero CDA map, cid 122 = 0.6", "zero_cda_map.car", ZERO_CDA),
+                          ("CDA scalar 0, base map", "scalar_cda_0.car", {122: (1, 0.0)})):
+    Zc = build(write_car(name, over=over))
+    ev_zc, _ = evaluator(Zc)
+    o = ev_zc(state(Zc, vx=20.0))
+    if "CLA" in label:
+        ok(f"{label} builds, lift is exactly 0 (drag {o['f_drag']:.3f} N stays > 0)", o["f_lift"] == 0.0 and o["f_drag"] > 0)
+    else:
+        ok(f"{label} builds, drag is exactly 0 (lift {o['f_lift']:.3f} N stays > 0)", o["f_drag"] == 0.0 and o["f_lift"] > 0)
+msg = build_msg("no_scalar.car", omit=(121,))
+ok(f"missing CLA scalar (cid 121) still raises ValueError ({msg[:50]!r})", "scalar" in msg)
+msg = build_msg("neg_peak.car", over={127: (9, (AX, AZ, -np.ones(81)))})
+ok(f"CLA map with a negative peak still raises ValueError ({msg[:50]!r})", "negative peak" in msg)
 
 # (e) the AB offset is added to the balance map, nothing else
 OFF = build(write_car("offset.car", over={123: (1, 0.1)}))

@@ -1,16 +1,20 @@
 """ChassisSim phase 2 task 7: rear differentials of a ChassisSim car (vehModel_cs.py, D8).
 
 The rear drive force P (T_drive) splits between the two rear wheels. The faster wheel loses T_x to the slower
-one. Types: 1 open, 2 super (split by the Fx peaks), 3 spool, 4 custom map, 5 Detroit. The checks build the
-synthetic car once per type with MLTP and a fake IPOPT (no solve), then evaluate the model outputs at chosen
-states. The vendor section (last) runs only when CHASSISSIM_DIR names the ChassisSim install folder. It
-builds the GP3 2013 car on Eastern Creek, reads its rear map and writes nothing into the vendor folders.
+one. Types: 1 open, 2 super (split by the Fx peaks), 3 spool, 4 custom map, 5 Detroit. A torque split (cid 111)
+sends a front share of T_drive to the front axle, with the same laws and the front differential (cid 112). The
+checks build the synthetic car once per type with MLTP and a fake IPOPT (no solve), then evaluate the model
+outputs at chosen states. The vendor section (last) runs only when CHASSISSIM_DIR names the ChassisSim install
+folder. It builds the GP3 2013 car on Eastern Creek and reads its rear map and writes nothing into the vendor
+folders. It also reads the strut car (WRX) and the zero-CLA car (FSAE) by folder glob.
 
     python tests/test_cs_diff.py
     CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_diff.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
+import glob
+import hashlib
 import io
 import os
 import tempfile
@@ -20,8 +24,10 @@ from pathlib import Path
 import casadi as ca
 import numpy as np
 
+import functions.ggv as G
 import functions.transcription as T
 from functions import carfile
+from functions.chassissim import check_car, load_car
 from MLTP import MLTP
 from vehModel_cs import K_SPOOL, _lock_map, drive_scale
 
@@ -34,7 +40,7 @@ CORNERS = ("fl", "fr", "rl", "rr")
 FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
                            (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
                            (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
-NAMES = ["T_rl", "T_rr", "T_drive", "T_brake", "mu_rl_x", "mu_rr_x", "fz_rl", "fz_rr"]
+NAMES = ["T_rl", "T_rr", "T_drive", "T_brake", "mu_rl_x", "mu_rr_x", "fz_rl", "fz_rr", "T_fl", "T_fr"]
 ZERO_TOL = 0.05     # N, the one-way and deadband floor: the map clamp width is 0.1 N, so its zero sits within 0.05 N
 
 
@@ -151,8 +157,9 @@ def tyre_record(i, corner):
     return 13, 80 + i, (list(DIMS), sc, tabs)
 
 
-def build_records(rear_type, omit=()):
-    """Records of the synthetic car. rear_type goes to cid 113; cid 113 is left out when it is in omit."""
+def build_records(rear_type, omit=(), over=None):
+    """Records of the synthetic car. rear_type goes to cid 113; cid 113 is left out when it is in omit. over maps a
+    file cid to (tag, value) and replaces every record of that cid."""
     R = []
 
     def add(tag, cid, v):
@@ -189,13 +196,15 @@ def build_records(rear_type, omit=()):
         add(10, cid, (0, np.concatenate([rows[:, 0], rows[:, 1], rows[:, 2]])))
     for i, c in enumerate(CORNERS):
         add(*tyre_record(i, c))
+    over = over or {}
+    R = [r for r in R if r[1] not in over] + [(tag, cid, v) for cid, (tag, v) in over.items()]
     R.append((carfile.END_TAG, carfile.END_CID, None))
     return R
 
 
-def write_car(name, rear_type, omit=()):
+def write_car(name, rear_type, omit=(), over=None):
     path = os.path.join(TMP.name, name)
-    carfile.write(build_records(rear_type, omit), path)
+    carfile.write(build_records(rear_type, omit, over), path)
     return path
 
 
@@ -391,6 +400,126 @@ for P, Tb, dv, phi in ((0.0, 0.0, 0.0, 0.0), (1500.0, 0.0, 0.4, 0.0), (6000.0, -
     worst = max(worst, abs(o["T_rl"] - exp_rl) / max(1.0, abs(exp_rl)), abs(o["T_rr"] - exp_rl) / max(1.0, abs(exp_rl)))
 ok(f"open: T_rl = T_rr = T_drive Rw/2 + rear brake part at 4 states (worst rel {worst:.1e})", worst <= 1e-9)
 
+print("[cs_diff] front-axle drive (torque split cid 111, front differential cid 112)")
+FRONT_MAP = (MAP_X, MAP_Z, MAP_DATA.ravel())      # a front map with the rear lock law (cid 114, tag 9)
+
+
+def graph_hash(ctx):
+    """First 16 hex digits of the sha256 of the serialized (dx, sf) graph of the model."""
+    m = ctx.m23
+    fn = ca.Function("d", [m.x, m.u, m.pv], [m.dx, m.sf])
+    return hashlib.sha256(fn.serialize().encode()).hexdigest()[:16]
+
+
+def refusal(car_path):
+    """The ValueError text of a build, or '' when it builds."""
+    try:
+        build(car_path)
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+def front_state(ctx, dv=0.0, vx=20.0):
+    """state() with front wheel speeds that differ by dv [m/s] (dv = Rw_f (Om_fl - Om_fr))."""
+    x = state(ctx, vx=vx)
+    Rf = ctx.cs.tyre.fl["radius"]
+    x[5] = vx / Rf + dv / (2 * Rf)
+    x[6] = vx / Rf - dv / (2 * Rf)
+    return x
+
+
+def front(ev, ctx, P, dv=0.0):
+    """Front wheel forces [N] (T / Rw_f) and the raw outputs at drive force P [N]."""
+    o = ev(front_state(ctx, dv=dv), P)
+    Rf = ctx.cs.tyre.fl["radius"]
+    return o["T_fl"] / Rf, o["T_fr"] / Rf, o
+
+
+FO = build(write_car("front_open.car", 1.0, over={111: (1, 0.5)}))      # split 0.5, front type 1 (open)
+ev_fo = evaluator(FO)
+w_sum = w_each = w_rear = 0.0
+for P in (1000.0, 4000.0, 9000.0):
+    for dv in (-0.6, 0.0, 0.3):
+        fl, fr, _ = front(ev_fo, FO, P, dv)
+        rl, rr, _ = rear(ev_fo, FO, P, dv)
+        w_sum = max(w_sum, abs(fl + fr - 0.5 * P) / P)
+        w_each = max(w_each, abs(fl - 0.25 * P) / P, abs(fr - 0.25 * P) / P)
+        w_rear = max(w_rear, abs(rl + rr - 0.5 * P) / P)
+ok(f"front open, split 0.5: front force sum = 0.5 T_drive (worst rel {w_sum:.1e})", w_sum <= 1e-9)
+ok(f"front open, split 0.5: each front wheel = 0.25 T_drive (worst rel {w_each:.1e})", w_each <= 1e-9)
+ok(f"front open, split 0.5: rear force sum = 0.5 T_drive (worst rel {w_rear:.1e})", w_rear <= 1e-9)
+
+FS = build(write_car("front_spool.car", 1.0, over={111: (1, 0.5), 112: (1, 3.0)}))     # front type 3 (spool)
+ev_fs = evaluator(FS)
+w_spool = 0.0
+for dv in (-0.4, -0.05, 0.1, 0.5):
+    fl, fr, _ = front(ev_fs, FS, 4000.0, dv)
+    tx = 0.5 * (fr - fl)                  # the transfer to the slower wheel [N]
+    w_spool = max(w_spool, abs(tx - K_SPOOL * dv) / (K_SPOOL * abs(dv)))
+ok(f"front spool: locking force = K_SPOOL x dv (K {K_SPOOL:.0f} N s/m, worst rel {w_spool:.1e})", w_spool <= 1e-9)
+
+F4 = build(write_car("front_t4.car", 1.0, over={111: (1, 0.5), 112: (1, 4.0), 114: (9, FRONT_MAP)}))
+F5 = build(write_car("front_t5.car", 1.0, over={111: (1, 0.5), 112: (1, 5.0), 114: (9, FRONT_MAP)}))
+h4, h5 = graph_hash(F4), graph_hash(F5)
+ok(f"front type 5 builds the graph of type 4 with the same front map (hash {h5} == {h4})", h4 == h5)
+
+S0 = build(write_car("front_s0.car", 1.0, over={111: (1, 0.0), 112: (1, 5.0)}, omit=(114,)))
+NOF = build(write_car("front_none.car", 1.0, omit=(111, 112, 114)))
+h0, hn = graph_hash(S0), graph_hash(NOF)
+ok(f"split 0 (front type 5, no front map) builds the graph of the car without front fields (hash {h0} == {hn})",
+   h0 == hn)
+
+S1 = build(write_car("front_s1.car", 1.0, over={111: (1, 1.0)}))
+ev_s1 = evaluator(S1)
+fl, fr, _ = front(ev_s1, S1, 4000.0)
+_, _, o_r = rear(ev_s1, S1, 4000.0, 0.0)
+ok(f"split 1: rear torques are 0 (T_rl {o_r['T_rl']:.1e}, T_rr {o_r['T_rr']:.1e} N m) and the front takes T_drive "
+   f"(sum err {abs(fl + fr - 4000.0):.1e} N)",
+   abs(o_r["T_rl"]) < 1e-6 and abs(o_r["T_rr"]) < 1e-6 and abs(fl + fr - 4000.0) <= 1e-9 * 4000.0)
+
+msg = refusal(write_car("front_no_type.car", 1.0, omit=(112,), over={111: (1, 0.5)}))
+ok(f"split > 0 without the front differential: check_car names diff.front_type ({msg[:60]!r})",
+   "diff.front_type" in msg)
+msg = refusal(write_car("front_no_map.car", 1.0, omit=(114,), over={111: (1, 0.5), 112: (1, 4.0)}))
+ok(f"front type 4 without the front map: check_car names diff.front_map ({msg[:60]!r})", "diff.front_map" in msg)
+
+
+def trac_fun(ctx):
+    """(QSS envelope, traction capacity closure) of ctx. The closure is the one build_envelope_cs solves."""
+    got = {}
+    orig = G._bisect_fixed_point
+
+    def spy(fun, lo, hi, *a, **k):
+        if fun.__name__ == "trac_capacity":
+            got["fun"] = fun
+        return orig(fun, lo, hi, *a, **k)
+    G._bisect_fixed_point = spy
+    try:
+        env = quiet(G.build_envelope_cs, ctx)
+    finally:
+        G._bisect_fixed_point = orig
+    return env, got["fun"]
+
+
+env_h, f_both = trac_fun(FO)          # split 0.5: F = min(cf / 0.5, cr / 0.5)
+_, f_rear = trac_fun(S0)              # split 0: returns cr
+_, f_front = trac_fun(S1)             # split 1: returns cf
+lo, hi = np.zeros_like(env_h.v_grid), np.full_like(env_h.v_grid, 1e6)
+for _ in range(80):                   # the hand fixed point from the two axle capacities of the envelope
+    mid = 0.5 * (lo + hi)
+    take = 2.0 * np.minimum(f_front(mid), f_rear(mid)) >= mid
+    lo, hi = np.where(take, mid, lo), np.where(take, hi, mid)
+rel = np.abs(env_h.Fx_trac - lo) / np.maximum(np.abs(lo), 1.0)
+i40 = int(np.argmin(np.abs(env_h.v_grid - 40.0)))
+ok(f"QSS drive limit, split 0.5: min(front / 0.5, rear / 0.5) at 40 m/s = {env_h.Fx_trac[i40]:.1f} N "
+   f"(hand {lo[i40]:.1f} N); worst over the speed grid {rel.max():.1e}", rel.max() <= 1e-6)
+
+HP4 = write_car("hp4.car", 1.0, over={49: (10, (0, np.concatenate([HP_RIGHT[:4, 0], HP_RIGHT[:4, 1], HP_RIGHT[:4, 2]])))})
+msg = refusal(HP4)
+ok(f"a hardpoint block with 4 points raises the strut message ({msg[:60]!r})",
+   "strut" in msg and "with 4 points" in msg)
+
 print(f"{PASS} checks passed (synthetic)")
 
 
@@ -410,9 +539,28 @@ def vendor(cs_dir):
     ok(f"GP3 model: F_rl + F_rr = P at 3 states (worst rel {worst:.1e})", worst <= 1e-9)
 
 
+def vendor_split(cs_dir):
+    print("[cs_diff] vendor: the strut car (WRX) and the zero-CLA car (FSAE), found by folder glob")
+    wrx = glob.glob(os.path.join(cs_dir, "*WRX*.car"))
+    ok("WRX car file found in the install folder", len(wrx) == 1)
+    msg = ""
+    try:
+        check_car(load_car(wrx[0]))
+    except ValueError as e:
+        msg = str(e)
+    ok(f"WRX car: strut hardpoint refusal naming 4 points ({msg[:60]!r})",
+       "strut" in msg and "with 4 points" in msg)
+    fsae = glob.glob(os.path.join(cs_dir, "*FSAE*.car"))
+    ok("FSAE car file found in the install folder", len(fsae) == 1)
+    cs = load_car(fsae[0])
+    cla_max = float(np.max(np.abs(cs.aero.cla_map["data"])))
+    ok(f"FSAE car loads, CLA map all zero (max |CLA| {cla_max:.1e})", cla_max == 0.0)
+
+
 CS = os.environ.get("CHASSISSIM_DIR")
 if not CS or not os.path.isdir(CS):
     print("SKIP: CHASSISSIM_DIR not set")
 else:
     vendor(CS)
+    vendor_split(CS)
 print(f"{PASS} checks passed")

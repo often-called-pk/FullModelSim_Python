@@ -445,11 +445,9 @@ def load_car(path, chassissim_dir=None):
             raise ValueError(f"The car file {path} has the aero map '{mp}' but a missing scalar '{sc}'.")
         if peak < 0:
             raise ValueError(f"The car file {path} has the aero map '{mp}' with a negative peak.")
-        if (peak == 0) != (scal == 0):
-            raise ValueError(f"The car file {path} has the aero map '{mp}' with a zero peak or a zero scalar '{sc}', "
-                             f"but not both. A car without this force needs both at zero.")
-        if peak > 0:        # a zero map with a zero scalar stays as it is
-            getattr(a, mp)["data"] = getattr(a, mp)["data"] * (scal / peak)
+        # A zero scalar gives a zero force in ChassisSim. A map with a zero peak makes ChassisSim divide by zero (NaN).
+        # Here each of the two gives a zero force, for CLA and CDA separately.
+        getattr(a, mp)["data"] = getattr(a, mp)["data"] * (scal / peak if peak > 0 else 0.0)
     groups["engine"].atmos = _atmos(chassissim_dir)
     return SimpleNamespace(path=path, sha8=sha8, **groups)
 
@@ -484,6 +482,9 @@ def _text_live(v):
 def power_refusals(cs):
     """Raise ValueError for a powertrain feature of the car that the model does not build."""
     r, e, h = cs.refused, cs.engine, cs.hybrid
+    s = e.torque_split
+    if s is not None and not 0 <= s <= 1:       # NaN fails the comparison too
+        raise ValueError(f"The car file {cs.path} holds a torque split (cid 111) of {s}. The split must be from 0 to 1.")
     on = lambda v: v not in (None, 0)       # the 'on' test of every flag
     for c, v in ((177, h.on), (535, h.use_brake_maps), (573, h.use_paddle)):
         if on(v):       # temporary: P4 builds the hybrid layer and removes this refusal
@@ -504,6 +505,11 @@ def check_car(cs):
     """Raise one ValueError that lists every field the car model or the QSS reads and the car file lacks.
     An aero map correction, a DRS value or a speed table counts only when its enable is 1."""
     C = ("fl", "fr", "rl", "rr")
+    for cid, n in zip(range(49, 53), ("front_r", "front_l", "rear_r", "rear_l")):
+        hp = getattr(cs.hardpoints, n)
+        if hp is not None and len(hp) != 6:
+            raise ValueError(f"The car file {cs.path} holds a hardpoint block (cid {cid}) with {len(hp)} points. "
+                             f"The car model needs 6 points (two wishbones). A strut suspension is not built yet.")
     need = {f"mass.{n}": getattr(cs.mass, n) for n in ("total", "unsprung_front", "unsprung_rear", "Ix", "Iy", "Iz", "front_share")}
     for grp, obj, names in (
             ("geom", cs.geom, ("wheelbase", "track_front", "track_rear", "cg_height", *(f"rc_height_{c}" for c in C),
@@ -517,6 +523,10 @@ def check_car(cs):
             ("brake", cs.brake, ("force", "front_bias")),
             ("tyre", cs.tyre, C)):
         need.update({f"{grp}.{n}": getattr(obj, n) for n in names})
+    if cs.engine.torque_split:      # a front drive share needs the front differential
+        need["diff.front_type"] = cs.diff.front_type
+        if (cs.diff.front_type or 0) >= 4:      # ChassisSim clamps the front type at 4, so a higher type reads the map
+            need["diff.front_map"] = cs.diff.front_map
     for c in C:                     # the rubber and its flag matter only when the corner has a gap
         if getattr(cs.susp, f"gap_{c}") not in (None, 0):
             need.update({f"susp.{p}_{c}": getattr(cs.susp, f"{p}_{c}") for p in ("gap_flag", "rubber")})
@@ -563,7 +573,7 @@ def car_vp(car):
     ChassisSim gives each unsprung mass as the sum of the left and right corners, as muf and mur of vehParams.
     wB of vehParams is the front share of the sprung mass. So wB = (front share x total - muf) / mb.
     vehParams holds one track, one tyre rate and one wheel radius: t and kt are the means of the axles,
-    and Rw is the rear radius (the driven wheel). The car model reads the axle values from the car record.
+    and Rw is the rear radius (the engine speed reference). The car model reads the axle values from the car record.
     Jw is CS_JW, because the car file holds no wheel inertia.
     Raise ValueError when the car lacks a field, so that no default of another car enters the solve.
     """

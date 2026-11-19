@@ -526,9 +526,6 @@ def userOpts(ctx,
         flags = [getattr(ctx.cs.susp, f"gap_flag_{c}") for c in ("fl", "fr", "rl", "rr")]
         if any(f not in (0, 1) for f in flags):
             raise ValueError("The car file holds a bump rubber gap flag (cids 204 to 207) other than 0 or 1.")
-        if ctx.cs.engine.torque_split not in (None, 0.0):
-            raise ValueError("The car sends drive torque to the front axle (torque split above 0). "
-                             "The car model drives the rear axle only.")
         chassissim.aero_refusals(ctx.cs)
         chassissim.power_refusals(ctx.cs)
         vp_overrides = {**chassissim.car_vp(ctx.cs), **(vp_overrides or {})}

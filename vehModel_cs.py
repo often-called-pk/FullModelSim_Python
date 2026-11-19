@@ -1,7 +1,7 @@
 """vehModel_cs.py - the car model of a whole ChassisSim car (first target: GP3 2013).
 
 The model has the 23 states and the channel names of vehModel. It has three inputs:
-T_drive (total rear drive force [N]), T_brake (total brake force [N], <= 0) and delta.
+T_drive (total drive force [N], rear axle or split between the axles), T_brake (total brake force [N], <= 0) and delta.
 The chassis equations come from vehModel._chassis_corrected. The car record ctx.cs
 (functions.chassissim.load_car) gives the tyre, aero, suspension and powertrain data.
 Every table becomes a C2 curve once, in numpy. The NLP sees only smooth expressions:
@@ -585,26 +585,46 @@ def vehModel_cs(ctx):
 
     # ===================== powertrain =======================================
     bias = cs.brake.front_bias
-    # Rear differential. P = T_drive is the drive force at the wheels. The faster wheel loses T_x to the slower one.
+    # Differentials. A drive force P at the wheels of an axle goes through the law of the axle type. The faster wheel
+    # loses T_x to the slower one. A split above 0 sends that share of T_drive to the front axle (no centre differential).
     E_DET = F_ref / (2 * K_SPOOL)       # ponytail: Detroit tanh width, so its slope at dv = 0 never exceeds the spool K at full drive
-    P, dv, dt = T_drive, Rw["r"] * (Om_rl - Om_rr), cs.diff.rear_type
-    if dt == 1:
-        T_rl, T_rr = T_drive * Rw["r"] / 2, T_drive * Rw["r"] / 2                               # open (the graph of the car before the diff types)
-    elif dt == 2:                                                           # super: the split follows the Fx peaks
-        T_rl, T_rr = (P * Cx[c] / (Cx["rl"] + Cx["rr"]) * Rw["r"] for c in ("rl", "rr"))
-    else:
+
+    def axle_drive(P, a):
+        """Return the wheel torques (T_left, T_right) [Nm] of axle a ('f' or 'r') for the drive force P [N].
+
+        ponytail: the model splits the drive force between the axles. ChassisSim splits the axle torque. The two
+        differ by R_f / R_r. Equal radii (the WRX) give the same split. Split the torque when a car needs it.
+        """
+        name = "front" if a == "f" else "rear"
+        R, dt, tab = Rw[a], getattr(cs.diff, name + "_type"), getattr(cs.diff, name + "_map")
+        if a == "f" and dt is not None:
+            dt = min(dt, 4)             # ChassisSim clamps the front type at 4, so a front type 5 acts as type 4
+        cl, cr_ = Cx[a + "l"], Cx[a + "r"]
+        dv = R * (Om[a + "l"] - Om[a + "r"])
+        if dt == 1:
+            return P * R / 2, P * R / 2                                     # open (the graph of the car before the diff types)
+        if dt == 2:                                                         # super: the split follows the Fx peaks
+            return P * cl / (cl + cr_) * R, P * cr_ / (cl + cr_) * R
         if dt == 3:
             T_x = K_SPOOL * dv                                              # spool
         elif dt == 4:
-            if cs.diff.rear_map is None:
-                raise ValueError("The car has a custom rear differential but no differential map.")
-            T_x = ca.tanh(dv / E_D) * _lock_map(cs.diff.rear_map)(P, ca.sqrt(dv ** 2 + E_D2 ** 2))
+            if tab is None:
+                raise ValueError(f"The car has a custom {name} differential but no differential map.")
+            T_x = ca.tanh(dv / E_D) * _lock_map(tab)(P, ca.sqrt(dv ** 2 + E_D2 ** 2))
         elif dt == 5:                                                       # Detroit: locked under drive
             T_x = 0.5 * P * 0.5 * (1 + ca.tanh(P / P0_DET)) * ca.tanh(dv / E_DET)
         else:
-            raise ValueError(f"The rear differential type {dt} is not known. Use 1 to 5.")
-        T_rl, T_rr = (P / 2 - T_x) * Rw["r"], (P / 2 + T_x) * Rw["r"]
-    T_w = {"fl": T_brake * bias / 2 * Rw["f"], "fr": T_brake * bias / 2 * Rw["f"],
+            raise ValueError(f"The {name} differential type {dt} is not known. Use 1 to 5.")
+        return (P / 2 - T_x) * R, (P / 2 + T_x) * R
+
+    split = cs.engine.torque_split or 0.0
+    if split > 0:
+        T_fl, T_fr = axle_drive(split * T_drive, "f")
+        T_rl, T_rr = axle_drive((1 - split) * T_drive, "r")
+    else:
+        T_fl = T_fr = 0.0
+        T_rl, T_rr = axle_drive(T_drive, "r")
+    T_w = {"fl": T_fl + T_brake * bias / 2 * Rw["f"], "fr": T_fr + T_brake * bias / 2 * Rw["f"],
            "rl": T_rl + T_brake * (1 - bias) / 2 * Rw["r"],
            "rr": T_rr + T_brake * (1 - bias) / 2 * Rw["r"]}
     v_r = 0.5 * (Om_rl + Om_rr) * Rw["r"]
