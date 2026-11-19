@@ -47,4 +47,4 @@
 - [ ] GP3 fixed line again (gate holds), F3 at its own circuit if it has one (no log: build and converge), F2 at Adelaide fixed line (report only), a synthetic-feature car (bump steer + hysteresis on) on Sturn converges.
 
 ### Task 17: Docs and final review
-- [ ] CLAUDE.md car paragraph (laws, refusals removed), tests list, CONTEXT.md terms if new. STE lint. Final whole-branch review (Fable) and fix wave.
+- [ ] CLAUDE.md car paragraph (laws, refusals removed), tests list, CONTEXT.md terms if new. STE lint. Final whole-branch review (Opus) and fix wave (Fable).
