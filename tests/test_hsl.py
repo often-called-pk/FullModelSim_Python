@@ -59,37 +59,58 @@ finally:
     if _saved_env is not None:
         os.environ["COINHSL_DIR"] = _saved_env
 
-# ---- 1b. resolve_hsl_dir: frozen bundle root (sys._MEIPASS) ------------------
-# In a PyInstaller-frozen exe the spec drops the Coin-HSL DLLs at the bundle
-# root (sys._MEIPASS); resolve_hsl_dir must find them there. Only when frozen.
+# ---- 1b. resolve_hsl_dir: frozen bundle folder (sys._MEIPASS/hsl) -----------
+# In a PyInstaller-frozen exe the spec puts the Coin-HSL libraries into the `hsl`
+# subfolder of the bundle root (sys._MEIPASS/hsl); resolve_hsl_dir must find that
+# folder. A library at the bundle root itself is not a candidate. Only when frozen.
 print("resolve_hsl_dir (frozen bundle)")
 _saved_env = os.environ.pop("COINHSL_DIR", None)
 _saved_frozen = getattr(sys, "frozen", None)
 _saved_meipass = getattr(sys, "_MEIPASS", None)
 try:
     meipass = tempfile.mkdtemp(prefix="hsl_meipass_")   # stands in for the bundle root
+    bundle_hsl = os.path.join(meipass, "hsl")
+    os.mkdir(bundle_hsl)                                 # the spec's hsl subfolder
+    open(os.path.join(bundle_hsl, "libhsl.so"), "wb").close()
+    open(os.path.join(meipass, "libhsl.so"), "wb").close()   # root copy: not a candidate
+    bare = tempfile.mkdtemp(prefix="hsl_bare_")          # a frozen root without hsl/
+    open(os.path.join(bare, "libhsl.so"), "wb").close()
     explicit = tempfile.mkdtemp(prefix="hsl_explicit_")
     sys._MEIPASS = meipass
 
-    # attr present but not frozen -> _MEIPASS must be ignored
+    # attr present but not frozen -> _MEIPASS/hsl must be ignored
     if hasattr(sys, "frozen"):
         del sys.frozen
-    ok("not frozen -> _MEIPASS ignored",
+    ok("not frozen -> _MEIPASS/hsl ignored",
        H.resolve_hsl_dir() is None)
 
-    # frozen -> bundle root resolves when env/explicit absent
+    # frozen -> the hsl subfolder resolves when env/explicit absent
     sys.frozen = True
-    ok("frozen -> _MEIPASS resolves",
-       H.resolve_hsl_dir() == os.path.abspath(meipass))
+    ok("frozen -> _MEIPASS/hsl resolves",
+       H.resolve_hsl_dir() == os.path.abspath(bundle_hsl))
+    ok("frozen -> hsllib_path finds the library in hsl/",
+       H.hsllib_path(H.resolve_hsl_dir()) == os.path.join(bundle_hsl, "libhsl.so"))
 
-    # explicit arg still wins over the bundle root
-    ok("explicit wins over _MEIPASS",
+    # frozen root WITHOUT an hsl/ folder -> no candidate, even with a library at the root
+    sys._MEIPASS = bare
+    ok("frozen root without hsl/ -> no candidate",
+       H.resolve_hsl_dir() is None)
+    sys._MEIPASS = meipass
+
+    # explicit arg still wins over the bundle hsl/ folder
+    ok("explicit wins over _MEIPASS/hsl",
        H.resolve_hsl_dir(explicit) == os.path.abspath(explicit))
+
+    # a missing explicit folder falls through to the bundle hsl/ folder
+    ok("missing explicit -> _MEIPASS/hsl",
+       H.resolve_hsl_dir(os.path.join(explicit, "no_such_dir")) == os.path.abspath(bundle_hsl))
 
     # COINHSL_DIR env still wins over everything
     os.environ["COINHSL_DIR"] = explicit
-    ok("env wins over _MEIPASS",
+    ok("env wins over _MEIPASS/hsl",
        H.resolve_hsl_dir() == os.path.abspath(explicit))
+    ok("env wins over explicit",
+       H.resolve_hsl_dir(bundle_hsl) == os.path.abspath(explicit))
     del os.environ["COINHSL_DIR"]
 finally:
     if _saved_env is not None:

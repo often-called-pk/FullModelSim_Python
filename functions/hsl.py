@@ -34,23 +34,22 @@ _bad_explicit = None     # the last explicit folder that was not a directory
 
 
 def _frozen_bundle_dir():
-    """The PyInstaller bundle root (sys._MEIPASS) when frozen, else None.
+    """The `hsl` folder of the PyInstaller bundle (sys._MEIPASS/hsl) when frozen, else None.
 
-    The build spec drops the Coin-HSL DLLs at the bundle root (`"."`), so in a
-    frozen exe that root is where the HSL library lives. Guarded on sys.frozen
-    so a stray _MEIPASS attribute in a dev process is never picked up.
+    The build spec puts the Coin-HSL libraries into that subfolder, apart from
+    the other libraries of the bundle. The check of sys.frozen makes sure that
+    a dev process with a stray _MEIPASS attribute never uses it.
     """
-    if getattr(sys, "frozen", False):
-        return getattr(sys, "_MEIPASS", None)
-    return None
+    root = getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
+    return os.path.join(root, "hsl") if root else None
 
 
 def resolve_hsl_dir(explicit=None):
     """Resolve the directory that should contain the HSL library.
 
     Precedence: COINHSL_DIR env var > `explicit` arg (GUI field or kwarg) >
-    the frozen bundle root (PyInstaller sys._MEIPASS, where the spec drops the
-    Coin-HSL DLLs). Returns the first candidate that is an existing directory,
+    the `hsl` folder of the frozen bundle (sys._MEIPASS/hsl, where the spec
+    puts the Coin-HSL libraries). Returns the first candidate that is an existing directory,
     as an absolute path, or None if none exist.
     """
     global _bad_explicit

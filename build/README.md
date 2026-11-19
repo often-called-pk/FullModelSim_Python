@@ -1,85 +1,119 @@
-# Building the FullModelSim Windows app
+# Building the FullModelSim app
 
-## Build (onedir)
+One spec, `build/app.spec`, builds a onedir app on Windows and on Linux.
 
-```powershell
-venv\Scripts\Activate.ps1
-# optional: bundle Coin-HSL DLLs so MA57/MA97 work in the frozen exe
-$env:COINHSL_DIR = "C:\path\to\coinhsl\bin"
-# optional: $env:FMS_CONSOLE = "1"   # debug build WITH a console window
-venv\Scripts\pyinstaller.exe build\windows-app.spec
+## Build locally
+
+Run all commands from the repository root.
+
+```
+uv sync
+uv run pyinstaller build/app.spec
 ```
 
-Output: `dist\FullModelSim\FullModelSim.exe` (onedir; resources under
-`dist\FullModelSim\_internal\`).
+Output on Windows: `dist\FullModelSim\FullModelSim.exe`.
+Output on Linux: `dist/FullModelSim/FullModelSim`.
+Resources are in the `_internal` folder next to the program.
+
+On Linux, install these libraries before the build. PyInstaller bundles them, but not libGL, libEGL and libxcb:
+`libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libegl1 libgl1 libfontconfig1 libdbus-1-3`.
+
+The Linux build took about 30 s on the dev machine. The folder is 533 MB and the `tar.gz` is 192 MiB.
+The spec collects only what the app reads. From Qt, these are QtCore, QtGui, QtWidgets, their plugins and the Qt libraries of the plugins.
+The data are the circuit files of the app, `Data/DATA_AA.mat` and the presets. The spec leaves out the casadi
+C headers (the frozen app runs without JIT) and the scipy tests.
+Delete `dist/` and `build/app/` after a test. Git ignores them.
 
 ### Build options
 
-- **Windowed by default (`console=False`).** No terminal window pops up on
-  launch; the IPOPT log streams into the GUI log pane instead (verified to reach
-  the QProcess pipe even though the exe is GUI-subsystem). Set `FMS_CONSOLE=1` at
-  build time for a debug build with a console so a startup-crash traceback is
-  visible.
-- **Version metadata** (`build/version_info.txt`) is embedded — visible under the
-  exe's right-click → Properties → Details (ProductName, FileVersion 1.0.0.0, …).
-- **Icon** is a drop-in: place `build/app.ico` and it is picked up automatically
-  (none shipped yet → default PyInstaller icon).
-- Because the windowed exe shows a **modal dialog** on an *unhandled* exception,
-  `headless_solve.main` catches solve failures, prints the traceback to stdout
-  (so it lands in the GUI log), and exits non-zero — no dialog from the solve
-  subprocess.
+- **Windows window mode.** The exe has no console window. The IPOPT log goes to the GUI log pane.
+  Set `FMS_CONSOLE=1` at build time for a debug build with a console. Linux always has a console.
+- **Windows version data.** `build/version_info.txt` goes into the exe. Linux builds have no version data.
+- **Icon.** Put `build/app.ico` in place and the Windows build uses it. No icon ships now.
+- **Coin-HSL.** Set `COINHSL_DIR` to the folder of the Coin-HSL libraries before the build.
+  The spec then bundles the `.dll` files (Windows) or the `.so` files (Linux) into the `hsl` folder
+  of the bundle. Without it, the app uses MUMPS. The CI release never sets it.
+- **Unhandled errors.** `headless_solve.main` catches solve failures and prints the traceback.
+  It exits with a non-zero code. The GUI shows no modal dialog from the solve process.
 
-## Packaging notes (why the spec is the way it is)
+## Release with CI
 
-- **Absolute entry-point.** `Analysis([os.path.join(ROOT, "app", "main.py")])`.
-  PyInstaller resolves a *relative* script path against the spec's own directory
-  (`build\`), so a bare `"app/main.py"` fails with "script not found".
-- **casadi DLL runtime hook (`build/rthook_casadi.py`).** `collect_all("casadi")`
-  drops the SWIG extension `_casadi.pyd` at the bundle root but casadi's runtime
-  DLLs (`libcasadi.dll` + the linsol/integrator/conic plugins) under
-  `_internal\casadi\`. The Windows loader does not search that subfolder for a
-  `.pyd` loaded from the root, so casadi fails to import. The runtime hook adds
-  `_internal\casadi\` to the DLL search path before casadi is imported.
-- **HSL in a frozen app (implemented in `functions/hsl.py`).** When `COINHSL_DIR`
-  is set at build time the spec bundles the Coin-HSL DLLs at the bundle root, and
-  `resolve_hsl_dir()` includes `sys._MEIPASS` (the frozen root) in its search
-  order: `COINHSL_DIR env > explicit arg > frozen _MEIPASS > seeded default`. If
-  HSL still fails to load, the solve falls back to MUMPS automatically — the app
-  always solves.
+Push a tag that starts with `v`:
 
-## Acceptance floor (manual, on a clean Windows VM with no Python)
+```
+git tag v1.1.0
+git push origin v1.1.0
+```
 
-1. Copy `dist\FullModelSim\` to the VM and launch `FullModelSim.exe`.
-2. Main tab: circuit `Sturn`, Aero `Static`, ATD on, linear solver `mumps`
-   (the MUMPS floor needs no Coin-HSL bundle); use `ma57` to exercise HSL.
-3. Run. The IPOPT iteration log streams into the log pane.
-4. On finish: summary shows a lap time; the Output tab lists plots; double-click
-   opens one in the browser. Results/Plots are written under
-   `%USERPROFILE%\Documents\FullModelSim`.
+The workflow `.github/workflows/release.yml` then does these steps on Windows and on Ubuntu 22.04:
+
+1. It runs `uv sync --locked`, the quick tests and `uv run pyinstaller build/app.spec`.
+2. It runs three smoke checks on the frozen app. A non-zero exit fails the job.
+   - `--headless` on a QSS config (circuit Sturn). The result file must exist.
+   - `--headless` on an NLP config with `max_iter` 1. This loads casadi, IPOPT and MUMPS.
+   - `--smoke` with the offscreen Qt platform. The window opens and closes after 1 s.
+3. It packs `FullModelSim-<tag>-windows.zip` and `FullModelSim-<tag>-linux.tar.gz`.
+4. On Linux, it extracts the archive in an `ubuntu:22.04` container.
+   The container gets only `libgl1`, `libegl1` and `libxcb1` from apt.
+   It runs the three smoke checks again: the headless QSS, the headless NLP and the offscreen GUI start.
+   It also runs `ldd` on the bundled `libqxcb.so`. Any line with `not found` fails the job.
+   The container has no X server, so no check opens a real window.
+5. The release job creates the GitHub Release with both archives.
+   A tag with a `-` (for example `v1.1.0-rc1`) gives a prerelease.
+
+The release has MUMPS only and no vendor data. The workflow `.github/workflows/tests.yml`
+runs `tests/run_tests.py --quick` on every push and pull request, on both systems.
+It also runs the setup script (`start.bat` or `start.sh`) with `--yes --no-gui --no-tests`.
+
+## Requirements of the Linux download
+
+- glibc 2.35 or later. The CI builds on Ubuntu 22.04.
+- libGL, libEGL and libxcb from the system. A Linux desktop has them.
+  On a minimal Ubuntu: `sudo apt-get install libgl1 libegl1 libxcb1`.
+
+The bundle carries the other xcb libraries, xkbcommon, fontconfig and dbus.
+
+## Packaging notes
+
+- **Absolute entry point.** The spec uses `Analysis([os.path.join(ROOT, "app", "main.py")])`.
+  PyInstaller resolves a relative script path against the folder of the spec (`build/`).
+  A bare `app/main.py` fails with "script not found".
+- **casadi DLL hook (`build/rthook_casadi.py`).** On Windows, the loader does not search
+  `_internal\casadi\` for `_casadi.pyd`. The hook adds that folder to the DLL search path
+  before casadi loads. On Linux the hook only adds that folder to `PATH`. The Linux loader
+  does not read `PATH`, and casadi loads without the hook.
+- **HSL in a frozen app.** `resolve_hsl_dir()` in `functions/hsl.py` searches in this order:
+  `COINHSL_DIR` env, explicit argument (the Coin-HSL field of the GUI), the `hsl` folder of
+  the frozen bundle (`sys._MEIPASS/hsl`). If HSL does not load, the solve uses MUMPS.
+
+## Acceptance floor
+
+Run the checks on a machine without Python. Use a clean Windows VM and a clean Ubuntu 22.04 install.
+
+1. Copy or extract the `FullModelSim` folder and start the program.
+   On Linux, start `./FullModelSim`.
+2. Main tab: circuit `Sturn`, Aero `Static`, ATD on, linear solver `mumps`.
+3. Click Run. The IPOPT log shows in the log pane.
+4. When the solve ends, the summary shows a lap time. The Output tab lists the plots.
+   A double-click opens a plot in the browser.
+   Results and plots go to the `FullModelSim` folder of the user's documents folder.
 5. Advanced tab: set Run to `qss` and click Run. After about 1 s, the summary shows
-   "QSS estimate (not an optimum)" and a lap time, and the Output tab lists no plots.
-   This step checks that the frozen exe holds `MLTP_screen` (F2). No check on this
-   machine ran the QSS mode or `freeze_support` in a frozen exe yet.
+   "QSS estimate (not an optimum)" and a lap time. The Output tab lists no plots.
 
-### Verified (frozen run on the dev machine, HSL bundle)
+On Linux, run the QSS check headless in a terminal:
+`QT_QPA_PLATFORM=offscreen ./FullModelSim --headless cfg.json`.
+The CI container run covers the headless QSS, one NLP iteration and the offscreen GUI start.
+It does not cover a window on a real X server. Do steps 1 to 5 by hand for that.
+The Windows frozen app has no run on the dev machine. Its first run is the CI smoke test.
 
-`FullModelSim.exe --headless cfg.json` (the subprocess the GUI Run button
-spawns) with `circuit=Sturn, linear_solver=ma57`:
+## Earlier Windows check of the HSL bundle (old record)
 
-- casadi imports from the bundle (runtime hook); IPOPT 3.14.11 runs **`ma57`**
-  loaded from the bundled Coin-HSL (no MUMPS fallback) for both the warm-start
-  and the full 23-state solve;
-- `EXIT: Optimal Solution Found.`, lap time 25.574 s;
-- results + 9 Plotly plots written under `%USERPROFILE%\Documents\FullModelSim`.
+This record is from the Windows-only spec, with the legacy tyre set and the libraries at the bundle root.
+It is not a check of the current spec. Its lap time (25.574 s) is not the current Sturn lap.
 
-### Self-containment (sanitized-environment run)
-
-Re-running the frozen `--headless` solve with `PATH` stripped to the standard
-Windows system dirs and `COINHSL_DIR` unset still imports casadi and runs
-**`ma57` from the bundled Coin-HSL** (no MUMPS fallback, no DLL errors) at both
-the warm-start and full-solve banners — i.e. neither casadi nor HSL leaks a DLL
-from the dev `PATH`; the bundle is self-contained.
-
-A literal clean-VM run (no Python/casadi/HSL installed) remains the gold-standard
-final check — the sanitized run strongly approximates it but a real bare machine
-is the only way to prove the total absence of host-environment leakage.
+`FullModelSim.exe --headless cfg.json` with `circuit=Sturn` and `linear_solver=ma57`:
+casadi loaded from the bundle, IPOPT ran `ma57` from the bundled Coin-HSL,
+and the solve ended with `Optimal Solution Found`.
+A run with a stripped `PATH` gave the same result, so no DLL came from the dev machine.
+The `hsl` folder of the current spec has no run with a real Coin-HSL library yet.

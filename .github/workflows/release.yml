@@ -1,0 +1,107 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # The Qt 6 xcb plugin needs these libraries at build time. PyInstaller bundles them,
+      # but not libGL, libEGL and libxcb: the system of the user supplies those three.
+      - name: Install Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libegl1 libgl1 libfontconfig1 libdbus-1-3
+      - run: uv sync --locked
+      - run: uv run python tests/run_tests.py --quick
+      - run: uv run pyinstaller build/app.spec
+      # RUNNER_TEMP has backslashes on Windows. JSON text does not accept them, so use forward slashes.
+      - name: Write the smoke configs
+        shell: bash
+        run: |
+          RT="${RUNNER_TEMP//\\//}"
+          COMMON='"circuit": "Sturn", "vi": 60.0, "AeroConfig": "Static", "ATD": "On", "Electric_4Motors": "Off", "TyreModel": "CombinedSlip", "linear_solver": "mumps"'
+          printf '{"mode": "qss", %s, "output_dir": "%s/out"}\n' "$COMMON" "$RT" > "$RT/qss.json"
+          printf '{"mode": "nlp", %s, "max_iter": 1, "save": false, "plot": false, "output_dir": "%s/out"}\n' "$COMMON" "$RT" > "$RT/nlp.json"
+          cat "$RT/qss.json" "$RT/nlp.json"
+      # The QSS lap, one IPOPT iteration (casadi, IPOPT and MUMPS load), then the GUI start (offscreen).
+      - name: Smoke test
+        shell: bash
+        run: |
+          RT="${RUNNER_TEMP//\\//}"
+          EXE=dist/FullModelSim/FullModelSim
+          if [ "$RUNNER_OS" = Windows ]; then EXE="$EXE.exe"; fi
+          "$EXE" --headless "$RT/qss.json"
+          test -f "$RT/out/Results/Sturn_Static_ATDOn_EM4Off_qss.mat"
+          "$EXE" --headless "$RT/nlp.json"
+          "$EXE" --smoke
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/FullModelSim -DestinationPath "FullModelSim-$env:TAG-windows.zip"
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf "FullModelSim-$TAG-linux.tar.gz" FullModelSim
+      # A plain Ubuntu 22.04 with only the three system libraries that the bundle does not carry.
+      - name: Clean container check (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir "$RUNNER_TEMP/extract"
+          tar -C "$RUNNER_TEMP/extract" -xzf "FullModelSim-$TAG-linux.tar.gz"
+          docker run --rm -e QT_QPA_PLATFORM=offscreen -v "$RUNNER_TEMP:/work" ubuntu:22.04 bash -c '
+            set -e
+            apt-get update
+            apt-get install -y --no-install-recommends libgl1 libegl1 libxcb1
+            cd /work/extract/FullModelSim
+            ./FullModelSim --headless /work/qss.json
+            ./FullModelSim --headless /work/nlp.json
+            ./FullModelSim --smoke
+            missing=$(LD_LIBRARY_PATH=_internal ldd _internal/PySide6/Qt/plugins/platforms/libqxcb.so | grep "not found" || true)
+            echo "missing: $missing"
+            test -z "$missing"'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ runner.os }}
+          path: |
+            FullModelSim-*.zip
+            FullModelSim-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          files: |
+            FullModelSim-*.zip
+            FullModelSim-*.tar.gz
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

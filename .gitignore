@@ -190,7 +190,7 @@ cython_debug/
 # the _pyi_build.log), then re-include only the hand-written source files.
 !build/
 build/*
-!build/windows-app.spec
+!build/app.spec
 !build/README.md
 !build/rthook_casadi.py
 !build/version_info.txt
