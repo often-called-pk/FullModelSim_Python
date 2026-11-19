@@ -138,13 +138,17 @@ _C4 = ("fl", "fr", "rl", "rr")
 _GAPS = (*_C4, "third_f", "third_r")
 
 
+# corner -> (flag cid, curve cid) of the bump rubber hysteresis records
+_HYST_CID = {c: (657 + i, 661 + i) for i, c in enumerate(("fr", "fl", "rr", "rl"))}
+
+
 def _corners(group, base, prefix=""):
     """Return the CAR_FIELDS entries of four corner records. base is the cid of the front left one."""
     return {base + i: (f"{group}.{prefix}{c}", 1.0) for i, c in enumerate(_C4)}
 
 
 # cid -> (group.name, factor to SI). A tuple factor has one entry per part of the decoded record:
-#   tag 7 (x, y)   tag 9 (x, z, data)   tag 11 (preload, rate, x, y)   tag 12 (unused, force)
+#   tag 4 (x, force)   tag 7 (x, y)   tag 9 (x, z, data)   tag 11 (preload, rate, x, y)   tag 12 (unused, force)
 # The file stores springs, bars and dampers in SI, so no field needs lbf/in. It stores a ride height in mm
 # and a damper velocity in mm/s.
 # ponytail: skipped the cids that the sheet leaves unnamed (54, 56, 58, 60, 62, 64, 66, 68, 94, 95, 97, 126, 150-153).
@@ -174,6 +178,14 @@ CAR_FIELDS = {
     **_corners("susp", 31, "damper_"), 35: ("susp.damper_third_f", 1.0), 36: ("susp.damper_third_r", 1.0),
     **{49 + i: (f"hardpoints.{n}", 1.0) for i, n in enumerate(("front_l", "front_r", "rear_l", "rear_r"))},
     **_corners("tyre", 80),
+    # Bump rubber hysteresis per corner: the enable flag (tag 6) and the curve (tag 4: x, loading force, unloading force).
+    # x is the compression past the rubber air gap [m]. The cids run FR, FL, RR, RL, as bump steer does.
+    **{c: (f"susp.hyst_flag_{n}", 1.0) for n, (c, _) in _HYST_CID.items()},
+    **{c: (f"susp.hyst_{n}", 1.0) for n, (_, c) in _HYST_CID.items()},
+    # Third-spring hysteresis flags (tag 6), front and rear. load_car refuses a value other than 0.
+    # ponytail: the cids are confirmed. The third spring needs the same law on the heave, with the curves of
+    # cids 640 / 641 (not read). Add it when a car sets a flag.
+    638: ("susp.hyst_flag_third_f", 1.0), 639: ("susp.hyst_flag_third_r", 1.0),
     121: ("aero.cla", 1.0), 122: ("aero.cda", 1.0), 123: ("aero.offset", 1.0), 125: ("aero.rho", 1.0),
     127: ("aero.cla_map", 1.0), 131: ("aero.cda_map", 1.0), 135: ("aero.balance_map", 1.0),
     **{c: (f"aero.drs_{c}", 1.0) for c in range(336, 342)},
@@ -231,6 +243,9 @@ def _conv(tag, v, f):
         return float(v) * _f(f, 0)
     if tag == 2:
         return np.asarray(v, float) * _f(f, 0)
+    if tag == 4:
+        a = np.asarray(v, float).reshape(3, -1)
+        return {"x": a[0] * _f(f, 0), "load": a[1] * _f(f, 1), "unload": a[2] * _f(f, 1)}
     if tag == 6:
         return int(v)
     if tag == 7:
@@ -249,6 +264,39 @@ def _conv(tag, v, f):
         return {"flag": int(v[0]), "scalars": np.asarray(v[1], float), "velocity": a[0] * MM,
                 "bump": a[1] * _f(f, 1), "rebound": a[2] * _f(f, 1)}
     return v
+
+
+# Record tag that load_car expects for each hysteresis cid: 6 for a flag, 4 for a curve.
+_HYST_TAG = {**dict.fromkeys((638, 639, *range(657, 661)), 6), **dict.fromkeys(range(661, 665), 4)}
+
+
+def _check_hyst(h, c, cid, path):
+    """Raise ValueError when the hysteresis curve h of corner c (record cid) cannot give a rubber law."""
+    x, lo, up = h["x"], h["load"], h["unload"]
+    who = f"The car file {path} has a bump rubber hysteresis curve of corner {c} (cid {cid})"
+    if (x.size < 2 or not np.all(np.isfinite(np.r_[x, lo, up])) or np.any(np.diff(x) <= 0)
+            or not np.max(lo) > 0):
+        raise ValueError(f"{who} that the model cannot use. The curve needs at least 2 points, finite values, "
+                         f"an x column that increases strictly and a loading force above 0.")
+    if np.any(up > lo + 0.01 * np.max(lo)):
+        raise ValueError(f"{who} with an unloading force above the loading force. "
+                         f"The limit is 1 % of the peak loading force.")
+
+
+def hyst_thresholds(h, tol=0.05):
+    """Return (lower, upper) of a hysteresis curve h, or None when its two forces never differ by more than tol.
+    tol is a share of the peak loading force. The result has the unit of h["x"] (m after load_car).
+    Lower is the first x where |load - unload| exceeds tol x the peak loading force.
+    Upper is the next x where the two forces meet again, at most the x midpoint of the curve.
+    Lower can exceed upper when the loop opens past the midpoint. The model does not read these values.
+    They are for reports and tests."""
+    d = np.abs(h["load"] - h["unload"]) > tol * np.max(h["load"])
+    if not d.any():
+        return None
+    i = int(np.argmax(d))
+    mid = 0.5 * (h["x"][0] + h["x"][-1])
+    j = np.flatnonzero(~d[i:])
+    return float(h["x"][i]), min(float(h["x"][i + j[0]]) if j.size else mid, mid)
 
 
 def file_sha8(path):
@@ -275,6 +323,9 @@ def load_car(path):
     the slip and camber curves, the peak slip angle and ratio, the radius and the vertical rate.
     A hardpoint block has shape (6, 3), in the car frame of ChassisSim. The rows are lower inner front,
     lower inner aft, lower outer, upper inner front, upper inner aft and upper outer.
+    susp.hyst_<c> is the bump rubber hysteresis curve of corner c: a dict with x in m and the load and unload
+    forces in N. susp.hyst_thr_<c> holds its (lower, upper) thresholds in m, or None when the flag
+    susp.hyst_flag_<c> is not 1. A flag-1 curve that cannot give a rubber law raises ValueError.
     """
     path = os.path.abspath(path)
     sha8 = file_sha8(path)
@@ -287,7 +338,25 @@ def load_car(path):
         if cid in recs:
             g, a = name.split(".")
             t, v = recs[cid]
+            want = _HYST_TAG.get(cid, t)
+            if t != want:
+                raise ValueError(f"The car file {path} holds the rubber hysteresis record {cid} with tag {t}. "
+                                 f"The model expects tag {want}.")
             setattr(groups[g], a, _tyre_decode(v) if t == 13 else _conv(t, v, f))
+    su = groups["susp"]
+    for cid, a in ((638, "f"), (639, "r")):
+        if getattr(su, f"hyst_flag_third_{a}") not in (None, 0):
+            raise ValueError(f"The car file {path} sets a third-spring hysteresis flag (cid {cid}). "
+                             f"The car model has no third-spring hysteresis.")
+    for c, (cid_flag, cid_curve) in _HYST_CID.items():     # hysteresis on: check the curve, then derive the thresholds
+        flag, h = getattr(su, f"hyst_flag_{c}"), getattr(su, f"hyst_{c}")
+        if flag not in (None, 0, 1):
+            raise ValueError(f"The car file {path} holds a bump rubber hysteresis flag of corner {c} "
+                             f"(cid {cid_flag}) other than 0 or 1.")
+        live = flag == 1 and h is not None
+        if live:
+            _check_hyst(h, c, cid_curve, path)
+        setattr(su, f"hyst_thr_{c}", hyst_thresholds(h) if live else None)
     sb, mp = groups["stability"], groups["stability"].map
     # The QSS reads the map only with the flag on and a map that is not all zero. Only then the axes must be valid.
     if (sb.on == 1 and mp is not None and np.any(mp["data"] != 0)
@@ -359,6 +428,8 @@ def check_car(cs):
     for c in C:                     # the rubber and its flag matter only when the corner has a gap
         if getattr(cs.susp, f"gap_{c}") not in (None, 0):
             need.update({f"susp.{p}_{c}": getattr(cs.susp, f"{p}_{c}") for p in ("gap_flag", "rubber")})
+            if getattr(cs.susp, f"hyst_flag_{c}") == 1:
+                need[f"susp.hyst_{c}"] = getattr(cs.susp, f"hyst_{c}")
     for a in "fr":                  # a live third rubber needs its flag
         if 0 < (getattr(cs.susp, f"gap_third_{a}") or 0) < 0.5 and getattr(cs.susp, f"rubber_third_{a}") is not None:
             need[f"susp.gap_flag_third_{a}"] = getattr(cs.susp, f"gap_flag_third_{a}")

@@ -22,6 +22,8 @@ from vehModel import _chassis_corrected
 from functions.chassissim import suspension_curves, table_live, bump_steer
 
 C4 = ("fl", "fr", "rl", "rr")
+V_HYST = 0.01       # m/s, width of the loading / unloading switch of a hysteresis rubber (tanh of the damper speed)
+V0_HYST = 2 * V_HYST          # m/s, damper extension speed at the middle of the switch (at rest: the loading curve)
 W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
 FZ_FLOOR = 20.0     # N, scale of the tyre load floor (smooth maximum of the load and 0)
 D_ALPHA = np.pi / 18000.0     # slip angle step of the cornering stiffness in the stability index [rad]
@@ -249,19 +251,47 @@ def _rubber_law(rub):
 
 
 def _rubber(cs, c, vp=None):
-    """Return F(xs): the bump rubber force on the wheel [N] at the strut travel xs [m, SX].
+    """Return F(xs, xsdot=None): the bump rubber force on the wheel [N] at the strut travel xs [m, SX].
     The rubber and its gap sit at the damper. The compression is sm(xs) - gap, with sm the spring travel of the
     motion-ratio law (gap from rubber_gap), and the wheel force is mr(xs) x the rubber force. The onset is smooth
     (softplus, width W_RUBBER). A table (flag 1: compression in m, force in N) gives the law. Else the rate does.
-    A corner without rubber gives 0."""
+    A corner without rubber gives 0.
+    A corner with the hysteresis flag on uses its curve, not the rubber record.
+    Force = mr x (L - D s). L is the loading curve, with the last-chord extension of the table.
+    D is the curve through max(loading - unloading, 0). Past the table end, D keeps its end value.
+    s = 0.5 (1 - tanh((v + V0_HYST) / V_HYST)), and v = mr x xsdot is the damper speed [m/s].
+    At rest and in compression the force is the loading curve. The unloading curve needs an extension speed above V0_HYST.
+    D is never negative, so the term only removes energy: dF/dxsdot >= 0.
+    Without xsdot (the QSS) the loading curve holds.
+    ponytail: ChassisSim switches at position thresholds, with one state per corner. Past an upper threshold (at most
+    the curve midpoint) it sits on the unloading curve at rest. This law sits on the loading curve, as the QSS does.
+    The curve x is the compression past the rubber air gap [m], like the table."""
     gap = rubber_gap(cs, c, vp)
     if gap is None:
-        return lambda xs: 0.0
-    rub = getattr(cs.susp, f"rubber_{c}")
+        return lambda xs, xsdot=None: 0.0
     sm, mr = _mr(getattr(cs.susp, f"mr_{c}"))
-    law = (_rubber_law(rub) if rub["flag"] == 1
-           else (lambda comp: rub["rate"] * comp))
-    return lambda xs: mr(xs) * law(W_RUBBER * _sp((sm(xs) - gap) / W_RUBBER))
+    comp = lambda xs: W_RUBBER * _sp((sm(xs) - gap) / W_RUBBER)
+    if getattr(cs.susp, f"hyst_flag_{c}") == 1:
+        h = getattr(cs.susp, f"hyst_{c}")
+        law = _rubber_law({"x": h["x"], "y": h["load"]})
+        gap_f = np.maximum(h["load"] - h["unload"], 0.0)
+        if gap_f.any():
+            # PCHIP keeps D >= 0 on this data. The B-spline rings a little next to a knee, so d^2 / sqrt(d^2 + e^2)
+            # (a smooth |d| that is 0 at 0) keeps the sign.
+            dif, e = _curve(np.r_[0.0, h["x"]], np.r_[0.0, gap_f]), 1e-3 * float(gap_f.max())
+
+            def hyst(xs, xsdot=None):
+                m, cx = mr(xs), comp(xs)
+                if xsdot is None:
+                    return m * law(cx)
+                d = dif(cx)
+                return m * (law(cx) - d * d / ca.sqrt(d * d + e * e) * 0.5 * (1 - ca.tanh((m * xsdot + V0_HYST) / V_HYST)))
+            return hyst
+    else:
+        rub = getattr(cs.susp, f"rubber_{c}")
+        law = (_rubber_law(rub) if rub["flag"] == 1
+               else (lambda comp: rub["rate"] * comp))
+    return lambda xs, xsdot=None: mr(xs) * law(comp(xs))
 
 
 def _damper_curve(dm, who):
@@ -412,7 +442,7 @@ def vehModel_cs(ctx):
         mr0 = float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
         F0 = getattr(vp, f"m_c_{c}") * vp.g             # static sprung corner load
         spring = (F0 / mr0 + sp["rate"] * sm(xs[c])) * mr(xs[c])
-        rubber = _rubber(cs, c, vp)(xs[c])
+        rubber = _rubber(cs, c, vp)(xs[c], xsdot[c])
         dm = getattr(cs.susp, f"damper_{c}")
         key = (np.asarray(dm["velocity"], float).tobytes(), np.asarray(dm["bump"], float).tobytes(),
                np.asarray(dm["rebound"], float).tobytes())

@@ -149,6 +149,10 @@ def build_records(omit=(), over=None):
         add(6, cid, 10 + cid - 366)                                       # one byte
     for cid in range(204, 210):
         add(6, cid, 1)                                                    # rubber ground-gap flags (fl..rr, third f/r), one byte
+    for cid in (638, 639, *range(657, 661)):
+        add(6, cid, 0)                                                    # hysteresis flags (third f/r, then fr, fl, rr, rl), off as shipped
+    for cid in range(661, 665):
+        add(4, cid, np.zeros(33))                                         # hysteresis curves, 3 x 11 (x, loading, unloading), zero as shipped
     for cid in (74, 75, 76, 77):
         add(7, cid, (BUMP_X, np.zeros(len(BUMP_X))))                      # bump steer, all zero as shipped
     add(7, 101, (ENGINE_RPM, ENGINE_NM))

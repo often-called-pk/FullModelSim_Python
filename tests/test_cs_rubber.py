@@ -22,11 +22,13 @@ from pathlib import Path
 
 import casadi as ca
 import numpy as np
+from scipy.interpolate import PchipInterpolator
+from scipy.optimize import brentq
 
 import functions.transcription as T
 import vehModel_cs as V
 from functions import carfile
-from functions.chassissim import load_car
+from functions.chassissim import check_car, load_car
 from MLTP import MLTP
 from MLTP_screen import MLTP_screen
 
@@ -437,6 +439,218 @@ ok(f"flag 0 with a zero spring rate (fl) raises ValueError naming the rate: {msg
    hit and "has no rate" in msg and "corner fl" in msg)
 
 
+# ==== 8. bump rubber hysteresis (ChassisSim phase 2b, task 15) ===============================================
+print("[cs_rubber] 8. bump rubber hysteresis")
+HYST_IDX = np.arange(21)
+HYST_X = 0.001 * HYST_IDX          # m, compression after the gap: 0 to 20 mm
+HYST_LOAD = 5.0e5 * HYST_X         # N, loading curve: 10 kN at 20 mm
+
+
+def loop_curve(lo_idx, hi_idx):
+    """Return (x, loading, unloading): unloading = 0.5 x loading on grid points lo_idx to hi_idx, else equal."""
+    fac = np.where((HYST_IDX >= lo_idx) & (HYST_IDX <= hi_idx), 0.5, 1.0)
+    return HYST_X, HYST_LOAD, HYST_LOAD * fac
+
+
+LOOP = loop_curve(4, 8)            # loop from 4 to 8 mm: thresholds by hand 4 mm and 9 mm (meet at 9 mm)
+SCALE = np.r_[[2.0, 0.3, 0.1, 0.5, 0.02], [3.0] * 4, [0.02, 0.2, 0.002, 0.02, 0.002, 0.02], [0.002] * 8]
+
+
+HYST_ORDER = ("fr", "fl", "rr", "rl")   # corner order of cids 657 to 660 (flags) and 661 to 664 (curves)
+
+
+def hyst_car(name, curves, flags, extra=()):
+    """Synthetic car with the hysteresis records. curves maps a corner to (x, loading, unloading), flags maps a
+    corner to its enable flag. A corner that is not named holds flag 0 and no curve. extra holds more records."""
+    R = build_records()
+    end = R.pop()
+    R += list(extra)
+    for i, c in enumerate(HYST_ORDER):
+        R.append((6, 657 + i, flags.get(c, 0)))
+    for i, c in enumerate(HYST_ORDER):
+        if c in curves:
+            x, lo, up = curves[c]
+            R.append((4, 661 + i, np.concatenate([x, lo, up])))
+    R.append(end)
+    path = os.path.join(TMP.name, name)
+    carfile.write(R, path)
+    return path
+
+
+def rubber_sx(cs, vp, c, w, xsdot=None):
+    """Model bump rubber force [N] of corner c at strut travel w [m]. xsdot None gives the loading form (the QSS)."""
+    x = ca.SX.sym("x")
+    if xsdot is None:
+        return float(ca.Function("R", [x], [V._rubber(cs, c, vp)(x)])(w))
+    v = ca.SX.sym("v")
+    return float(ca.Function("R", [x, v], [V._rubber(cs, c, vp)(x, v)])(w, xsdot))
+
+
+def hyst_hand(cs, c, w, curve):
+    """Hand values at strut travel w for a flag-1 corner c with the hysteresis curve (x, loading, unloading).
+    Return (compression after the gap, loading force, unloading force, mr). The loading force is mr x PCHIP of the
+    loading column at the compression. The unloading force is the loading force - mr x PCHIP of
+    max(loading - unloading, 0), as the model builds it. The curve starts at the origin."""
+    gap = float(getattr(cs.susp, f"gap_{c}"))
+    mrc = np.asarray(getattr(cs.susp, f"mr_{c}"), float)
+    sm = sum(v / (i + 1) * w ** (i + 1) for i, v in enumerate(mrc))
+    mr = float(sum(v * w ** i for i, v in enumerate(mrc)))
+    comp = float(V.W_RUBBER * np.log1p(np.exp((sm - gap) / V.W_RUBBER)))
+    x, lo, up = curve
+    Lh = float(PchipInterpolator(x, lo)(comp))
+    return (comp, mr * Lh, mr * (Lh - float(PchipInterpolator(x, np.maximum(lo - up, 0.0))(comp))), mr)
+
+
+# 8.1 thresholds: lower = first x with |load - unload| > 5 % of max load; upper = where they meet, at most the midpoint
+car_loop = load_car(hyst_car("hyst_thr_loop.car", {"fl": LOOP}, {"fl": 1}))
+thr = car_loop.susp.hyst_thr_fl or (np.nan, np.nan)
+ok(f"thresholds of the loop 4 to 8 mm: lower {thr[0]*1e3:.2f} mm, upper {thr[1]*1e3:.2f} mm (by hand 4.00, 9.00)",
+   abs(thr[0] - 0.004) < 1e-12 and abs(thr[1] - 0.009) < 1e-12)
+car_cap = load_car(hyst_car("hyst_thr_cap.car", {"fl": loop_curve(4, 16)}, {"fl": 1}))
+thr_c = car_cap.susp.hyst_thr_fl or (np.nan, np.nan)
+ok(f"loop 4 to 16 mm: upper capped at the midpoint, 10.00 mm (got {thr_c[1]*1e3:.2f} mm), lower 4.00 mm",
+   abs(thr_c[0] - 0.004) < 1e-12 and abs(thr_c[1] - 0.010) < 1e-12)
+ok("corners without flag 1 have no thresholds",
+   car_loop.susp.hyst_thr_fr is None and car_loop.susp.hyst_thr_rl is None and car_loop.susp.hyst_thr_rr is None)
+
+# 8.2 model force inside the loop, with the sign of xsdot
+PATH_H1 = hyst_car("hyst_loop.car", {"fl": LOOP}, {"fl": 1})
+CTX_H1 = build(PATH_H1)
+cs_h, vp_h = CTX_H1.cs, CTX_H1.vp
+w_h = brentq(lambda w: hyst_hand(cs_h, "fl", w, LOOP)[0] - 0.006, 0.0, 0.05)
+comp_h, L, U, mr_h = hyst_hand(cs_h, "fl", w_h, LOOP)
+ok(f"compression at the test travel {comp_h*1e3:.4f} mm, inside the loop, and loading > unloading > 0 "
+   f"({L:.2f} N > {U:.2f} N)", abs(comp_h - 0.006) < 1e-9 and L > U > 0.0)
+F_load = rubber_sx(cs_h, vp_h, "fl", w_h)
+F_pos = rubber_sx(cs_h, vp_h, "fl", w_h, 1.0)
+F_neg = rubber_sx(cs_h, vp_h, "fl", w_h, -1.0)
+F_zero = rubber_sx(cs_h, vp_h, "fl", w_h, 0.0)
+ok(f"no xsdot gives the loading force: {F_load:.4f} N vs hand {L:.4f} N",
+   abs(F_load - L) <= 1e-6 * abs(L))
+ok(f"xsdot > 0 (compressing) gives the loading force: {F_pos:.4f} N vs hand {L:.4f} N",
+   abs(F_pos - L) <= 1e-6 * abs(L))
+# The loop table (loading - unloading) has steps at 4 mm and 9 mm. Its B-spline (vehModel_cs._curve) rings a
+# little next to a step, so the unloading and rest checks use 1e-5. The loading table agrees to 2e-7.
+ok(f"xsdot < 0 (extending) gives the unloading force L - D: {F_neg:.4f} N vs hand {U:.4f} N",
+   abs(F_neg - U) <= 1e-5 * abs(U))
+S_REST = 0.5 * (1 - np.tanh(2.0))       # blend weight at rest: 1.8 % of the loop
+ok(f"xsdot = 0 gives the loading force less 1.8 % of the loop: {F_zero:.4f} N vs hand {L - (L - U) * S_REST:.4f} N "
+   f"(loading {L:.4f} N)",
+   abs(F_zero - (L - (L - U) * S_REST)) <= 1e-5 * abs(L) and 0.0 < L - F_zero < 0.02 * (L - U))
+
+# 8.3 blend weight around the switch speed: s = 0.5 at xsdot = -V0_HYST / mr, 0.5 (1 -+ tanh(1)) at V_HYST / mr on each side
+ok(f"V0_HYST = 2 V_HYST ({V.V0_HYST} m/s, {V.V_HYST} m/s)", V.V0_HYST == 2 * V.V_HYST)
+weight = lambda v: (rubber_sx(cs_h, vp_h, "fl", w_h, v / mr_h) - F_load) / (F_neg - F_load)
+s_mid, s_plus, s_minus = weight(-V.V0_HYST), weight(-V.V0_HYST + V.V_HYST), weight(-V.V0_HYST - V.V_HYST)
+ok(f"blend at the damper speed -V0_HYST: s {s_mid:.12f} = 0.5 (rel 1e-9)", abs(s_mid - 0.5) <= 1e-9 * 0.5)
+ok(f"blend at -V0_HYST + V_HYST: s {s_plus:.12f} = 0.5 (1 - tanh 1) (rel 1e-9)",
+   abs(s_plus - 0.5 * (1 - np.tanh(1.0))) <= 1e-9 * 0.5 * (1 - np.tanh(1.0)))
+ok(f"blend at -V0_HYST - V_HYST: s {s_minus:.12f} = 0.5 (1 + tanh 1) (rel 1e-9)",
+   abs(s_minus - 0.5 * (1 + np.tanh(1.0))) <= 1e-9 * 0.5 * (1 + np.tanh(1.0)))
+
+# 8.4 flag 0 on the same car: the plain rubber, and dx equal to a car without the curves
+CTX_H0 = build(hyst_car("hyst_fl0.car", {"fl": LOOP}, {"fl": 0}))
+CTX_HN = build(hyst_car("hyst_nocurve.car", {}, {}))
+plain = hand_rubber(CTX_H0.cs, "fl", float(CTX_H0.cs.susp.gap_fl), w_h)
+peak = max(abs(plain), 1.0)
+F0_pos = rubber_sx(CTX_H0.cs, CTX_H0.vp, "fl", w_h, 1.0)
+F0_neg = rubber_sx(CTX_H0.cs, CTX_H0.vp, "fl", w_h, -1.0)
+ok(f"flag 0: the plain rubber at both signs of xsdot ({F0_pos:.4f}, {F0_neg:.4f} N) vs hand {plain:.4f} N, "
+   f"and not the curve (loading {L:.1f} N)",
+   abs(F0_pos - plain) <= 1e-5 * peak and abs(F0_neg - plain) <= 1e-5 * peak and abs(plain - L) > 1e-3 * abs(L))
+rng = np.random.default_rng(15)
+states = [static_x(CTX_HN, 30.0) + rng.uniform(-1.0, 1.0, 23) * SCALE for _ in range(6)]
+diff_dx = max(float(np.max(np.abs(dx_at(CTX_H0, x) - dx_at(CTX_HN, x)))) for x in states)
+size_dx = max(float(np.max(np.abs(dx_at(CTX_HN, x)))) for x in states)
+ok(f"flag 0: dx equals a car without the curves at 6 random states (max diff {diff_dx:.2e} of {size_dx:.2e})",
+   diff_dx <= 1e-12 * max(1.0, size_dx))
+
+# 8.5 QSS: the envelope calls the rubber with no xsdot, so it gets the loading curve
+calls = []
+_plain_rubber = V._rubber
+
+
+def _spy_hyst(cs, c, vp=None):
+    f = _plain_rubber(cs, c, vp)
+
+    def g(xs, xsdot=None):
+        if c == "fl":
+            calls.append(xsdot is None)
+        return f(xs) if xsdot is None else f(xs, xsdot)
+    return g
+
+
+V._rubber = _spy_hyst
+try:
+    QSS_H = quiet(MLTP_screen, car=f"chassissim:{PATH_H1}", circuit=f"chassissim:{CIRC}",
+                  chassissim_dir=INSTALL, physics="corrected", save=False, verbose=False)
+finally:
+    V._rubber = _plain_rubber
+F_qss = rubber_sx(cs_h, QSS_H.vp, "fl", w_h)
+ok(f"QSS: the fl rubber is called {len(calls)} times, all with no xsdot", len(calls) > 0 and all(calls))
+ok(f"QSS: the axle rubber force at the test travel is the loading curve: {F_qss:.4f} N vs hand {L:.4f} N",
+   abs(F_qss - L) <= 1e-6 * abs(L))
+
+# 8.6 refusals
+recs = build_records()
+recs.insert(-1, (4, 657, np.zeros(33)))             # flag cid 657 (fr) with tag 4 (the curve tag)
+bad_tag = os.path.join(TMP.name, "hyst_bad_tag.car")
+carfile.write(recs, bad_tag)
+hit, msg = refusal(load_car, bad_tag)
+ok(f"cid 657 with tag 4 raises ValueError naming the record and the tag: {msg[:70]!r}",
+   hit and "rubber hysteresis record 657 with tag 4" in msg)
+hit, msg = refusal(check_car, load_car(hyst_car("hyst_flag1_nocurve.car", {}, {"fl": 1})))
+ok(f"flag 1 without its curve: check_car raises naming susp.hyst_fl: {msg[:70]!r}",
+   hit and "susp.hyst_fl" in msg)
+E3 = np.array([])
+X11 = 0.002 * np.arange(11)
+L11 = 5.0e5 * X11
+BAD = {"empty": (E3, E3, E3),
+       "zero (uninitialised)": (np.zeros(11), np.zeros(11), np.zeros(11)),
+       "tiny (uninitialised)": (np.full(11, 1e-304), np.full(11, 1e-304), np.zeros(11)),
+       "NaN": (X11, np.where(np.arange(11) == 5, np.nan, L11), 0.5 * L11),
+       "descending x": (X11[::-1], L11[::-1], 0.5 * L11[::-1])}
+for i, (what, curve) in enumerate(BAD.items()):
+    hit, msg = refusal(load_car, hyst_car(f"hyst_bad_{i}.car", {"rr": curve}, {"rr": 1}))
+    ok(f"flag 1 with a curve that is {what}: load_car raises naming corner rr and cid 663",
+       hit and "corner rr (cid 663)" in msg and "cannot use" in msg)
+ok("the same curves with flag 0 load",
+   all(load_car(hyst_car(f"hyst_bad0_{i}.car", {"rr": c}, {})).susp.hyst_thr_rr is None for i, c in enumerate(BAD.values())))
+hit, msg = refusal(load_car, hyst_car("hyst_flag2.car", {"fr": LOOP}, {"fr": 2}))
+ok(f"flag 2 raises ValueError naming corner fr and cid 657: {msg[-70:]!r}",
+   hit and "corner fr (cid 657) other than 0 or 1" in msg)
+for cid in (638, 639):
+    hit, msg = refusal(load_car, hyst_car(f"hyst_third_{cid}.car", {}, {}, extra=[(6, cid, 1)]))
+    ok(f"third-spring hysteresis flag cid {cid} = 1 raises ValueError naming the cid",
+       hit and f"third-spring hysteresis flag (cid {cid})" in msg)
+ok("third-spring hysteresis flags 0 load",
+   load_car(hyst_car("hyst_third_0.car", {}, {}, extra=[(6, 638, 0), (6, 639, 0)])).susp.hyst_flag_third_r == 0)
+
+# 8.7 the hysteresis term only removes energy: dF/dxsdot >= 0. Curve C1 has steps in the loop, curve C4 a loop
+# that closes at the table end. A curve with the two columns of C1 swapped (unloading above loading) raises.
+X_C1 = np.linspace(0.0, 0.018, 10)
+L_C1 = 1.0e6 * X_C1
+C1 = (X_C1, L_C1, L_C1 * (1 - 0.4 * ((X_C1 >= 0.004) & (X_C1 <= 0.012))))
+X_C4 = np.linspace(0.0, 0.02, 11)
+L_C4 = 5.0e7 * X_C4 ** 2
+C4 = (X_C4, L_C4, L_C4 * (1 - 0.35 * np.sin(np.pi * X_C4 / 0.02)))
+for name, curve in (("C1", C1), ("C4", C4)):
+    car = load_car(hyst_car(f"hyst_pass_{name}.car", {"fl": curve}, {"fl": 1}))
+    xw, xv = ca.SX.sym("xw"), ca.SX.sym("xv")
+    Fr = V._rubber(car, "fl")(xw, xv)
+    w_lo = brentq(lambda w: hyst_hand(car, "fl", w, curve)[0] - 1e-5, -0.05, 0.05)
+    w_hi = brentq(lambda w: hyst_hand(car, "fl", w, curve)[0] - (curve[0][-1] + 0.006), 0.0, 0.2)
+    Wg, Vg = np.meshgrid(np.linspace(w_lo, w_hi, 2001), np.r_[-1.0, -0.2, np.linspace(-0.08, 0.04, 61), 0.2, 1.0])
+    out = ca.Function("d", [xw, xv], [ca.jacobian(Fr, xv), Fr]).map(Wg.size)(Wg.reshape(1, -1), Vg.reshape(1, -1))
+    dF, Fv = np.asarray(out[0]).reshape(Wg.shape), np.asarray(out[1]).reshape(Wg.shape)
+    ok(f"{name}: min dF/dxsdot {dF.min():.3e} N s/m >= 0 on {Wg.size} points (compression up to 6 mm past the "
+       f"table end), max {dF.max():.3e}; extending force - compressing force at most {np.max(Fv[0] - Fv[-1]):.2e} N",
+       dF.min() >= 0.0 and dF.max() > 1e3 and np.max(Fv[0] - Fv[-1]) <= 0.0)
+hit, msg = refusal(load_car, hyst_car("hyst_swapped.car", {"rl": (C1[0], C1[2], C1[1])}, {"rl": 1}))
+ok(f"C1 with unloading above loading raises ValueError naming corner rl and cid 664: {msg[-80:]!r}",
+   hit and "corner rl (cid 664)" in msg and "unloading force above the loading force" in msg)
+
+
 # ==== vendor ================================================================================================
 def find_car(folder, pattern):
     """First car file of folder that matches pattern (sorted), or a missing path when none does."""
@@ -488,9 +702,22 @@ def vendor(cs_dir):
        hit and "ground datum of the front axle" in msg)
 
 
+def vendor_hysteresis(cs_dir):
+    """Every shipped car in the Models folder loads, and no bump rubber hysteresis flag is on. No file name is printed."""
+    files = sorted(glob.glob(str(Path(cs_dir).parent / "Models" / "**" / "*.car"), recursive=True))
+    ok(f"the Models folder holds shipped car files ({len(files)} found)", len(files) > 0)
+    flags = []
+    for p in files:
+        car = load_car(p)
+        flags += [getattr(car.susp, f"hyst_flag_{c}") for c in CORNERS]
+    ok(f"all {len(files)} shipped cars load, every bump rubber hysteresis flag 0 or absent",
+       all(f in (0, None) for f in flags))
+
+
 CS = os.environ.get("CHASSISSIM_DIR")
 if not CS or not os.path.isdir(CS):
     print("SKIP: CHASSISSIM_DIR not set")
 else:
     vendor(CS)
+    vendor_hysteresis(CS)
 print(f"{PASS} checks passed")
