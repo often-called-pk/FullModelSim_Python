@@ -84,6 +84,28 @@ _Avoid_: CVT, ideal gearbox, gear map
 The rule that splits the drive force between the two driven wheels: open, super, spool, custom map or Detroit. The car file gives it per axle. The faster wheel always loses force.
 _Avoid_: diff mode, LSD setting
 
+**Torque split**:
+The constant share of the drive force that goes to the front axle. The rear axle gets the rest. Each axle's differential then divides its share between its wheels.
+_Avoid_: centre differential, AWD bias
+
+**Shift cut**:
+The drop in drive torque during an upshift. The torque falls to a minimum share for the shift time and then ramps back to full.
+_Avoid_: shift time, torque interruption
+
+### Hybrid
+
+**Deploy**:
+The hybrid drive force that adds to the engine's force. The deploy power and the energy budget limit it.
+_Avoid_: boost, KERS
+
+**Harvest**:
+The energy that the hybrid system recovers at the wheels. Brake regen takes over part of the friction braking. Paddle regen adds deceleration.
+_Avoid_: charge, regen
+
+**Energy budget**:
+The energy that the hybrid system can deploy in one lap. It is the energy harvested in that lap, up to a cap, plus a free allowance.
+_Avoid_: state of charge, battery level
+
 ### Suspension
 
 **Roll-centre height**:
