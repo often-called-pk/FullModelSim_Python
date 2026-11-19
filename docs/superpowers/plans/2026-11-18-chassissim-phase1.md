@@ -11,12 +11,12 @@
 T1 circuit source, T2 `.ld` reader (uses T1 in its vendor check), T3 codec (brief completed when the teammate layout v1 lands; T1 and T2 do not wait), T4 docs, V validation.
 
 ## Global constraints
-- Worktree `.claude/worktrees/physics-fixes`, branch `chassissim-cars`, cwd = worktree root, never cd outside. Python `/home/pk/.venvs/fullmodelsim/bin/python`. One commit per task by Opus: `git -c user.name="Prashant Kumar" -c user.email="prashant.jps@gmail.com" commit`, STE body, no attribution lines, no push.
+- Worktree `.claude/worktrees/physics-fixes`, branch `chassissim-cars`, cwd = worktree root, never cd outside. Python `<venv python>`. One commit per task by Opus: `git -c user.name=<owner name> -c user.email=<owner email> commit`, STE body, no attribution lines, no push.
 - Ponytail: shortest correct diff, reuse before writing, no new dependency, no knob beyond the task text. Zero cost at defaults.
 - Snapshot gate after every task: `python .superpowers/sdd/chassissim/map/nlp_snapshot.py . <out.json> .superpowers/sdd/chassissim/map/nlp_base.json` prints `SNAPSHOT DIFF: none`. Default result stems unchanged.
 - Parity gates `tests/test_vehmodel_matlab.py`, `tests/test_matlab_parity.py` green, never edited.
-- Vendor data: ChassisSim install `CHASSISSIM_DIR` = `/home/pk/Downloads/pk-backup-d-drive/Software Installs/ChassisSimTechnologies/ChassisSim_v3_41`, models `<CHASSISSIM_DIR>/../Models`. Never copy a vendor file, value table or log into the repo. Tests write synthetic files into `tempfile.TemporaryDirectory`. Vendor checks sit in a final test section that prints SKIP and exits 0 when `CHASSISSIM_DIR` is unset or missing. `.gitignore` gets `*.car`, `*.ld`, `*.ldx`.
-- Never read `/home/pk/Downloads/pk-backup-d-drive/IRP/MLTP_Python/*.csv`.
+- Vendor data: ChassisSim install `$CHASSISSIM_DIR`, models `<CHASSISSIM_DIR>/../Models`. Never copy a vendor file, value table or log into the repo. Tests write synthetic files into `tempfile.TemporaryDirectory`. Vendor checks sit in a final test section that prints SKIP and exits 0 when `CHASSISSIM_DIR` is unset or missing. `.gitignore` gets `*.car`, `*.ld`, `*.ldx`.
+- Never read the other team's telemetry folder.
 - No IPOPT in build and test steps (fake solver via `functions.transcription._make_solver`, as `nlp_snapshot.py`). Real solves: Opus only, one at a time, `free -g` available >= 6 GB.
 - Tests: plain scripts, `import _bootstrap` first, top-level asserts with `[PASS]` lines, exit non-zero on failure. Builders (Sonnet) never edit tests. Test writers (Haiku) edit only the task's test file and must run it.
 - Style: briefs and agent replies caveman. Docstrings, comments, commit bodies, new error and warning messages STE (short sentences, active voice, no semicolons). Code ponytail. No em dash, ASCII only.

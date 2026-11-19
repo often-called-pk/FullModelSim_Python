@@ -8,7 +8,7 @@
 **Spec:** owner decisions of 2026-10-19 (add the factors; standard MF definitions; `Fz0_shift` unchanged; full model and QSS, not the 7-state model) + research report `docs/tyre_scaling_track_method.md` Table 5 (add LMUX and LMUY only, default 1; LKX, LKY, LFZO and the Cd / Cl scales are not identifiable from temperature, pressure and lap times, so they stay out).
 
 ## Global constraints
-- Python `/home/pk/.venvs/fullmodelsim/bin/python`, cwd = worktree root `.claude/worktrees/physics-fixes`, branch `sim-phase2`. Commit per task: `git -c user.name="Prashant Kumar" -c user.email="prashant.jps@gmail.com" commit`. No attribution lines. No push.
+- Python `<venv python>`, cwd = worktree root `.claude/worktrees/physics-fixes`, branch `sim-phase2`. Commit per task: `git -c user.name=<owner name> -c user.email=<owner email> commit`. No attribution lines. No push.
 - Defaults byte-identical: NLP snapshot `/tmp/phase2_scratch/nlp_snapshot.py <worktree> <out.json> /tmp/phase2_scratch/nlp_base.json` prints "SNAPSHOT DIFF: none". Parity guards `tests/test_vehmodel_matlab.py`, `tests/test_matlab_parity.py` green, asserts untouched (`EXPECTED = set()`).
 - `MLTP.py` / `MLTP_initial.py` / `MLTP_paramOptim.py` keep 4 / 4 / 3 `ca.Function` calls. No new module (`setup_sweep._CODE_FILES` unchanged).
 - No IPOPT in build/test steps. Real-IPOPT test files (`test_setup_sweep`, `test_ladder`, `test_paramoptim_warmstart`, `test_refine`, `test_hsl`): Opus only, one at a time, `free -g` available >= 4 GB, no other solve.

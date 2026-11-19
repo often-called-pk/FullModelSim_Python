@@ -9,7 +9,7 @@
 **Roles:** Opus orchestrates + verifies + applies fixes from test results. Sonnet builds. Haiku writes tests. Fable only when Opus fix fails first pass.
 
 ## Global constraints
-- Python: `/home/pk/.venvs/fullmodelsim/bin/python`, cwd = worktree root `.claude/worktrees/physics-fixes`.
+- Python: `<venv python>`, cwd = worktree root `.claude/worktrees/physics-fixes`.
 - physics='matlab' (default): every existing test passes unchanged. Parity guards: `tests/test_vehmodel_matlab.py`, `tests/test_matlab_parity.py`. Do not edit their asserts (only exception: CG_p hit, Task 5).
 - Values: `PHYSICS = ("matlab", "corrected")`, case-sensitive, anything else -> ValueError.
 - Tests: plain scripts `tests/test_*.py`, `import _bootstrap` first line, top-level asserts, no pytest.
@@ -68,7 +68,7 @@ def static_state(c, vx):
 ---
 
 ### Task 1: Setup + baseline (Opus)
-- [x] venv `/home/pk/.venvs/fullmodelsim` (casadi 3.7.2, numpy, scipy, plotly, PySide6).
+- [x] venv `<venv>` (casadi 3.7.2, numpy, scipy, plotly, PySide6).
 - [x] worktree `.claude/worktrees/physics-fixes`, branch `physics-fixes` from `worktree-speed-phase1` (d54864d).
 - [x] `git mv circuits Circuits` (code + MATLAB use `Circuits/`, Linux is case-sensitive).
 - [x] baseline: `python /tmp/physfix/run_tests.py <worktree> /tmp/physfix/baseline` -> record pass/fail, fix Linux-only failures.

@@ -8,7 +8,7 @@
 **Spec:** no separate spec. Binding evidence = section "Evidence" below (debug run wf_4aa3e6d4-f63: investigator + skeptic). Raw notes: `/tmp/phase2_scratch/rolling_dbg/challenge.md`.
 
 ## Global constraints
-- Python `/home/pk/.venvs/fullmodelsim/bin/python`, cwd = worktree root `.claude/worktrees/physics-fixes`, branch `sim-phase2`. Commit per task: `git -c user.name="Prashant Kumar" -c user.email="prashant.jps@gmail.com" commit`. No attribution lines. No push.
+- Python `<venv python>`, cwd = worktree root `.claude/worktrees/physics-fixes`, branch `sim-phase2`. Commit per task: `git -c user.name=<owner name> -c user.email=<owner email> commit`. No attribution lines. No push.
 - Defaults byte-identical: `start_state='matlab'` and `'periodic'` builds unchanged. NLP snapshot `/tmp/phase2_scratch/nlp_snapshot.py <worktree> <out.json> /tmp/phase2_scratch/nlp_base.json` prints "SNAPSHOT DIFF: none". Parity guards `tests/test_vehmodel_matlab.py`, `tests/test_matlab_parity.py` green, asserts untouched.
 - `MLTP.py` keeps 4 `ca.Function` calls (`tests/test_casadi_opts.py`). No new module (`setup_sweep._CODE_FILES` unchanged).
 - No IPOPT in build/test steps: fake solver only (`tests/test_start_wiring.py` helpers `fake_ipopt`, `quiet`, `run_stub`). Solves only in Task 2, Opus, one at a time, foreground or one background job, `free -g` available >= 6 GB, MUMPS, `save=False`.
