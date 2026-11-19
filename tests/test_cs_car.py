@@ -155,6 +155,8 @@ def build_records(omit=(), over=None):
     add(2, 110, GEARS)
     for cid, ((nx, nz), _) in MAPS.items():
         add(9, cid, (0.5 * np.arange(nx), 1.0 * np.arange(nz) + 0.1, arb(nx * nz, cid)))
+    add(6, 655, 0)                                                        # stability index correction off, as shipped
+    add(9, 656, (np.array([-50.0, 0.0, 50.0]), np.array([10.0, 30.0, 60.0]), np.zeros(9)))   # stability map, all zero
     # Task 8 aero corrections, refused features and DRS-free speed tables: 1-D tables (tag 7) zero in y,
     # enables (tag 6) 0, 2-D maps (tag 9) zero in data. Axes are non-degenerate; only the values are zero.
     for cid in (128, 132, 136, 139, 416, 417, 418, 437, 438, 439, 870):

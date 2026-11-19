@@ -16,6 +16,7 @@ import numpy as np
 import casadi as ca
 from types import SimpleNamespace
 from scipy.interpolate import PchipInterpolator
+from scipy.optimize import brentq
 
 from vehModel import _chassis_corrected
 from functions.chassissim import suspension_curves, table_live
@@ -23,6 +24,11 @@ from functions.chassissim import suspension_curves, table_live
 C4 = ("fl", "fr", "rl", "rr")
 W_RUBBER = 1e-3     # m, width of the bump rubber onset (softplus)
 FZ_FLOOR = 20.0     # N, scale of the tyre load floor (smooth maximum of the load and 0)
+D_ALPHA = np.pi / 18000.0     # slip angle step of the cornering stiffness in the stability index [rad]
+# Width of the smooth minimum that clips the operating point of the stability index [normalised slip].
+# The clipped point stays within 5e-4 of the plateau start (0.07 % of the GP3 value). The index is not in the NLP,
+# so a sharp corner costs no iterations.
+W_SC = 1e-3
 LAT_CAP = 0.9       # the lateral force of a wheel stays under this share of its pure lateral capacity
 B_GEAR = 80.0       # sharpness of the smooth maximum over the gears
 E_D, E_D2, P0_DET = 0.02, 0.01, 100.0   # diff: wheel speed width [m/s], map floor [m/s], Detroit gate force [N]
@@ -120,10 +126,25 @@ def _lock_map(tab, kx=4, kz=20):
     return lambda P, dv: _smin(_smax(f(P, dv), lo, 0.1), hi, 0.1)     # the B-spline may ring by a few N at a kink
 
 
+def stbi_index(lf, lr, Cf, Cr, V, floor):
+    """Return the stability index of ChassisSim in percent. Cf and Cr are the axle cornering stiffnesses [N/rad].
+    The divisor is the wheelbase, not the mass. In ChassisSim the divisor field follows l_f and l_r.
+    With the wheelbase the index matches the log level (GP3 log states: median -8.3 against -8.8 %).
+    Plain arithmetic: SX and numpy both work.
+    ponytail: Cf + Cr is floored smoothly at floor [N/rad] (width floor), so a tyre past its peak slip gives a finite index.
+    ponytail: lf and lr are the distances of the sprung-mass CG. ChassisSim may use the CG of the total mass.
+    On the GP3 the two differ by 6.1 mm, about 0.2 points of the index. Change the arguments if a log shows the offset.
+    """
+    c = Cf + Cr
+    c = 0.5 * (c + floor + ((c - floor) ** 2 + floor ** 2) ** 0.5)
+    return 100.0 * (((lf * Cf - lr * Cr) - (lf ** 2 * Cf + lr ** 2 * Cr) / V) / (c * (lf + lr)))
+
+
 def _slip_curve(T, cap=None):
     """Return h(v) = fn(v)/v for the normalised slip table of a tyre. fn is odd, so h is even and positive.
     The table gets two more points on a falling or flat last slope, then fn holds. cap clips fn (the lateral cap).
-    Past S_MAX the force holds at fn x F', because c = min(v, S_MAX) and h = fn(c) / v x c. h(0) = fn'(0)."""
+    Past S_MAX the force holds at fn x F', because c = min(v, S_MAX) and h = fn(c) / v x c. h(0) = fn'(0).
+    Without a cap, h.s_c is the first slip where fn reaches min(max fn, LAT_CAP): the start of the capped plateau."""
     x, y = np.asarray(T["slip_x"], float), np.asarray(T["slip_y"], float)
     if np.any(np.diff(x) < 0):
         raise ValueError("The slip table of the tyre must have increasing x.")
@@ -146,6 +167,10 @@ def _slip_curve(T, cap=None):
     def hv(v):                  # v >= 1e-3 in the model. c stays inside (0, S_MAX), so inside the grid.
         c = _smin(v, S_MAX, 4e-3)
         return f(c) * c / v
+    if cap is None:
+        kc = min(float(np.max(y)), LAT_CAP)
+        i = int(np.argmax(y >= kc))
+        hv.s_c = float(x[i]) if y[i] == kc else float(brentq(lambda v: p(v) - kc, x[i - 1], x[i]))
     return hv
 
 
@@ -466,7 +491,7 @@ def vehModel_cs(ctx):
     sx = {c: (Rw[c[0]] * Om[c] - vxw[c]) / vxw[c] for c in C4}
 
     # ===================== tyre forces ======================================
-    fx, fy, mu_x, mu_y, dcam, Cx = {}, {}, {}, {}, {}, {}
+    fx, fy, mu_x, mu_y, dcam, Cx, fy_pm = {}, {}, {}, {}, {}, {}, {}
     for c in C4:
         T = ty[c]
         fze = _smax(fz[c], 0.0, 2 * FZ_FLOOR)                                   # load floor
@@ -481,8 +506,16 @@ def vehModel_cs(ctx):
         t4 = _surf({"x": T["fx_camber_x"], "z": T["fx_camber_load"], "data": T["fx_camber"]}, (5e-4, 5.0))(dyn, fze)   # Fx peak / Fy peak
         sa_n, ss_n = sa[c] / T["peak_slip_angle"], sx[c] / T["peak_slip_ratio"]
         sn = ca.sqrt(sa_n ** 2 + ss_n ** 2 + 1e-6)
-        fy[c] = Fp * cam * _slip_curve(T, LAT_CAP)(sn) * sa_n         # the lateral force stays under 0.9 of its capacity
-        fx[c] = Fp * cam * t4 * _slip_curve(T)(sn) * ss_n
+        hl, hu = _slip_curve(T, LAT_CAP), _slip_curve(T)      # hu has no cap: Fx, and the stability index
+        fy[c] = Fp * cam * hl(sn) * sa_n         # the lateral force stays under 0.9 of its capacity
+        # Stability index: ChassisSim takes the slope of the law without the cap at a clipped operating point.
+        # The point is the combined slip, held at or below hu.s_c (the start of the capped plateau).
+        # Past s_c the capped force is flat, so the slip of this model is arbitrary there.
+        # q scales the slip angle and the slip ratio. Then the slip angle moves by +- D_ALPHA.
+        q = _smin(sn, hu.s_c, W_SC) / sn
+        fy_pm[c] = tuple(Fp * cam * hu(ca.sqrt((q * sa_n + e) ** 2 + (q * ss_n) ** 2 + 1e-6)) * (q * sa_n + e)
+                         for e in (D_ALPHA / T["peak_slip_angle"], -D_ALPHA / T["peak_slip_angle"]))
+        fx[c] = Fp * cam * t4 * hu(sn) * ss_n
         mu_x[c], mu_y[c] = Fp * cam * t4 / fze, Fp * cam / fze
         Cx[c] = Fp * cam * t4                                       # the Fx peak of the corner [N]
     f_roll_c = {c: ty[c]["rolling_drag"] * fz[c] for c in C4}
@@ -562,7 +595,10 @@ def vehModel_cs(ctx):
     m.f_roll, m.f_drag, m.f_lift = f_roll, f_drag, f_lift
     m.Lon_acc, m.Lat_acc, m.ax, m.ay = Lon_acc, Lat_acc, ax, ay
     m.F_env, m.om_engine, m.v_r, m.rh_f, m.rh_r = F_env, om_eng, v_r, rh_f, rh_r
-    m.veh_extra = [("om_gear", om_eng), ("throttle", T_drive / F_env), ("F_env", F_env)]
+    # Stability index [%] of ChassisSim. C = cornering stiffness of an axle, the central difference of its two tyres.
+    Ca = {a: sum((fy_pm[a + s][0] - fy_pm[a + s][1]) / (2 * D_ALPHA) for s in "lr") for a in "fr"}
+    stbi = stbi_index(vp.l_f, vp.l_r, Ca["f"], Ca["r"], vx, 2e-2 * vp.m * vp.g)
+    m.veh_extra = [("om_gear", om_eng), ("throttle", T_drive / F_env), ("F_env", F_env), ("stbi", stbi)]
     ctx.m23 = m
     return ctx
 

@@ -128,6 +128,7 @@ class Envelope:
     Fz_front: np.ndarray = None   # [N]     front-axle load, static + aero (no transfer)
     Fz_rear: np.ndarray = None    # [N]     rear-axle load, static + aero (no transfer)
     F_drive_tab: np.ndarray = None  # [N]     drive force on v_grid (a car: its gear envelope). None: torque, power and rpm
+    apex_factor: object = None    # callable(v_apex) -> factor of the apex speed (a car with a stability index map). None: off
     info: dict = field(default_factory=dict)
 
     def F_res(self, v):
@@ -157,7 +158,7 @@ class Envelope:
         """Plain dict for scipy.io.savemat (no None values)."""
         out = {}
         for key, val in vars(self).items():
-            if val is None:
+            if val is None or callable(val):       # apex_factor is a function: savemat cannot store it
                 continue
             if key == "info":
                 out[key] = {k: (v if v is not None else "") for k, v in val.items()}
@@ -508,6 +509,58 @@ def _camber_tables(cs, T):
     return (lambda c: np.interp(c, c5, v5)), t4f
 
 
+def _apex_factor(cs, ty, ay_max, apex_state, axle, Fz_f, Fz_r, hv_f, hv_r, v, M, sh_f, sh_r, vp):
+    """Return f(v_apex) = map(stbi, v_apex), the apex speed factor of the stability index (cids 655, 656).
+
+    ChassisSim averages the index over turn-in and exit of a corner. The QSS has no such phase.
+    It takes the index at the apex state instead. This state has the loads, wheel travels and body roll at ay_max(v).
+    The slip angle of an axle is the one that gives the axle share of M ay_max on the slip curve of its tyres.
+    Both tyres of an axle have the same angle (no toe, no steer, no slip ratio).
+    The slip curve is the one of the NLP without the 0.9 cap (vehModel_cs._slip_curve, sampled).
+    The peak of axle() is F' x kc, with kc = min(peak of the slip curve, LAT_CAP). So axle() / kc = F', the scale of
+    the slip curve. The uncapped peak is F' x the peak of the slip curve.
+    C of an axle is the central difference of its two tyres at this angle. The step is 0.01 deg.
+    The operating point follows the rule of the NLP channel: the slip stays at or below s_c, the start of the capped
+    plateau. The axle share is at most F' x kc, so the slip already sits at or below s_c. The minimum only removes
+    the error of the slip grid.
+    The index comes from vehModel_cs.stbi_index, as in the NLP channel. The map clamps at its ends.
+    ponytail: the units of the map axes are guesses. Axis x is the index in percent (as the log channel), and axis z
+    is the speed in m/s. No shipped car has a live map. Check both against a car that has one.
+    ponytail: the apex index is not the corner average of ChassisSim. With an identity map the GP3 gives -6.6 % at
+    20 m/s and -18.0 % at 70 m/s. The log corner bands are -11.2 to -9.0 %. At 0.8 ay_max the QSS gives -7.1 to
+    -11.4 %. ChassisSim averages over turn-in and exit, where the tyres use less of their capacity.
+    Upgrade: build that average when a car with a live map exists.
+    """
+    import casadi as ca
+    from scipy.interpolate import RegularGridInterpolator
+    from vehModel_cs import LAT_CAP, S_MAX, D_ALPHA, _slip_curve, stbi_index
+    lf, lr = vp.l_f, vp.l_r
+    dF_f, dF_r, rf, rr, ro_f, ro_r = apex_state(ay_max)
+    xs = np.linspace(0.0, S_MAX, 4001)
+    C = {}
+    for a, Fz, dF, hv, r_, ro, sh in (("f", Fz_f, dF_f, hv_f, rf, ro_f, sh_f), ("r", Fz_r, dF_r, hv_r, rr, ro_r, sh_r)):
+        T = ty[a + "l"]      # the slip curve, the peak slip angle and kc of the left tyre serve both tyres of the axle
+        kc = min(float(np.max(T["slip_y"])), LAT_CAP)
+        Fu = axle(a, Fz, dF, True, hv + r_, hv - r_, ro) / kc             # F' of the two tyres, summed
+        hu, z = _slip_curve(T), ca.SX.sym("z")
+        gf = ca.Function("g", [z], [hu(ca.sqrt(z ** 2 + 1e-6)) * z])      # the NLP law at zero slip ratio, in slip / peak slip
+        g = lambda q: np.asarray(gf.map(np.size(q))(np.asarray(q, float).reshape(1, -1))).ravel()
+        gs, pa = g(xs), T["peak_slip_angle"]
+        tgt = np.minimum(M * ay_max * sh / Fu, gs.max())                                  # g(x) of the axle share
+        xa = np.minimum(xs[np.argmax(gs[None, :] >= tgt[:, None], axis=1)], hu.s_c)
+        e = D_ALPHA / pa
+        C[a] = Fu * (g(xa + e) - g(np.maximum(xa - e, 0.0))) / (xa + e - np.maximum(xa - e, 0.0)) / pa
+    stbi = stbi_index(lf, lr, C["f"], C["r"], v, 2e-2 * vp.m * vp.g)
+    mp = cs.stability.map
+    f = RegularGridInterpolator((mp["x"], mp["z"]), mp["data"], bounds_error=False, fill_value=None)
+
+    def factor(va):
+        va = np.asarray(va, float)
+        sv = np.interp(va, v, stbi)
+        return f(np.stack([np.clip(sv, mp["x"][0], mp["x"][-1]), np.clip(va, mp["z"][0], mp["z"][-1])], axis=-1))
+    return factor
+
+
 def build_envelope_cs(ctx, v_grid=None):
     """Return the Envelope of a ChassisSim car (ctx.cs), on the speed grid v_grid (default: 0.1 m/s steps from 2 m/s
     to the top speed, so the gear steps of the drive force stay sharp).
@@ -519,6 +572,7 @@ def build_envelope_cs(ctx, v_grid=None):
     stiffness split of the springs and bars, with the tyre in series, and the roll centres of the curves at the heave travel.
     The drive force is the gear envelope (the same smooth maximum as the NLP). Brakes: the brake force and
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
+    A car with the stability index flag (cid 655 = 1) and a live map (cid 656) gets env.apex_factor (_apex_factor).
     """
     from scipy.interpolate import PchipInterpolator
     from vehModel_cs import C4, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf, _clean, third_element
@@ -642,7 +696,7 @@ def build_envelope_cs(ctx, v_grid=None):
     hrc_f, hrc_r = curves.f.rc_h(np.clip(hv_f, curves.f.lo, curves.f.hi)), curves.r.rc_h(np.clip(hv_r, curves.r.lo, curves.r.hi))   # roll centre above the ground at the heave travel
     sh_f, sh_r = vp.l_r / L, vp.l_f / L
 
-    def lat_capacity(ay):
+    def apex_state(ay):      # load transfer, wheel travel from the roll and body roll at the lateral acceleration ay
         Fy_f, Fy_r = M * ay * sh_f, M * ay * sh_r
         Mx = Fy_f * (h_x - hrc_f) + Fy_r * (h_x - hrc_r)
         dF_f = np.clip((phi_f * Mx + Fy_f * hrc_f) / t_f, 0.0, 0.5 * Fz_f)
@@ -650,10 +704,20 @@ def build_envelope_cs(ctx, v_grid=None):
         ro_f, ro_r = phi_f * Mx / ks["f"], (1 - phi_f) * Mx / ks["r"]      # roll angle of the suspension at each axle [rad]
         rf, rr = ro_f * t_f / 2, ro_r * t_r / 2                              # wheel travel from the roll, outer +, inner -
         ro_f = ro_r = Mx / (Kf + Kr)    # the camber follows the body roll vs the ground: suspension and tyres (state phi of the NLP)
+        return dF_f, dF_r, rf, rr, ro_f, ro_r
+
+    def lat_capacity(ay):
+        dF_f, dF_r, rf, rr, ro_f, ro_r = apex_state(ay)
         return np.minimum(axle("f", Fz_f, dF_f, True, hv_f + rf, hv_f - rf, ro_f) / (M * sh_f),
                           axle("r", Fz_r, dF_r, True, hv_r + rr, hv_r - rr, ro_r) / (M * sh_r))
     ay0 = lat_capacity(np.zeros_like(v))
     ay_max = _bisect_fixed_point(lat_capacity, np.zeros_like(v), 2.0 * ay0 + 1.0)
+
+    # ---- stability index apex correction (only a car with the flag and a live map) --------------
+    apex_factor = None
+    sb = getattr(cs, "stability", None)
+    if sb is not None and sb.on == 1 and sb.map is not None and np.any(sb.map["data"] != 0):
+        apex_factor = _apex_factor(cs, ty, ay_max, apex_state, axle, Fz_f, Fz_r, hv_f, hv_r, v, M, sh_f, sh_r, vp)
 
     # ---- longitudinal: rear drive, brakes at the front bias, first-order pitch transfer ------------
     bias = float(cs.brake.front_bias)
@@ -686,7 +750,7 @@ def build_envelope_cs(ctx, v_grid=None):
                    ax_acc=np.zeros_like(v), ax_brk=np.zeros_like(v), M=M, M_eff=float(M_eff),
                    c_res0=float(c0), c_res2=float(c2), F_mot_trq=float(F_ref), P_mot=np.inf, v_rpm=np.inf,
                    F_brk_trq=float(cs.brake.force), P_regen=None, v_cap=v_cap, load_model="car",
-                   F_lift=F_lift, F_drag=F_drag, Fz_front=Fz_f, Fz_rear=Fz_r, F_drive_tab=F_drive)
+                   F_lift=F_lift, F_drag=F_drag, Fz_front=Fz_f, Fz_rear=Fz_r, F_drive_tab=F_drive, apex_factor=apex_factor)
     r_fit = env.F_res(v)
     env.ax_acc = np.minimum((Fx_trac - r_fit) / M, (env.F_mot(v) - r_fit) / M_eff)
     env.ax_brk = np.minimum((Fx_brk + r_fit) / M, (env.F_brk(v) + r_fit) / M_eff)
@@ -815,6 +879,8 @@ def march(env, s, k, vi, ds_fine=None, s_out=None):
     vi     : initial speed [m/s] (the NLP's Xi; the final speed is free)
     ds_fine: march step [m] (default 1 m; the track is resampled uniformly)
     s_out  : optional stations (e.g. discretise()['s_full']) to resample onto
+    env.apex_factor (a car with a stability index map): the apex speed of a curved station below env.v_cap is
+    multiplied by apex_factor(v_apex), and stays inside [_V_FLOOR, env.v_cap].
 
     Returns a dict: s, k, v, v_apex, v_fwd, v_bwd, t, ax, ay, lap_time, ds,
     vi_feasible (+ s_out, v_out, t_out, ax_out, ay_out, v_apex_out if s_out).
@@ -832,6 +898,8 @@ def march(env, s, k, vi, ds_fine=None, s_out=None):
     kabs = np.abs(k_f)
 
     v_apex = apex_speeds(env, kabs)
+    if env.apex_factor is not None:
+        v_apex = np.where((kabs > 0.0) & (v_apex < env.v_cap), np.clip(v_apex * env.apex_factor(v_apex), _V_FLOOR, env.v_cap), v_apex)
     lut = _lut(env)
     kl, vapl = kabs.tolist(), v_apex.tolist()
     v0 = min(float(vi), vapl[0])

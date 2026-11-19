@@ -190,6 +190,8 @@ CAR_FIELDS = {
     116: ("diff.rear_map", 1.0),
     107: ("brake.force", 1.0), 108: ("brake.front_bias", 1.0), 109: ("brake.delay", 1.0),
     390: ("env.track_temp", 1.0),
+    # Stability index correction of the QSS apex speed: 655 = 1 turns it on, 656 = map (avg stbi, speed) -> factor.
+    655: ("stability.on", 1.0), 656: ("stability.map", (1.0, 1.0, 1.0)),
 }
 
 
@@ -260,7 +262,7 @@ def file_sha8(path):
 def load_car(path):
     """Read a ChassisSim car file and return its consumed fields in SI.
 
-    The result has the groups mass, geom, tyre, aero, susp, engine, diff, brake, hardpoints and env.
+    The result has the groups mass, geom, tyre, aero, susp, engine, diff, brake, hardpoints, env and stability.
     Each group is a SimpleNamespace. A field that the file lacks is None. The result also holds
     path (absolute) and sha8 (the first 8 hex digits of the sha256 of the file bytes).
     Angles are in rad and lengths in m. The engine axis is in rad/s and the torque is in N m.
@@ -285,6 +287,11 @@ def load_car(path):
             g, a = name.split(".")
             t, v = recs[cid]
             setattr(groups[g], a, _tyre_decode(v) if t == 13 else _conv(t, v, f))
+    sb, mp = groups["stability"], groups["stability"].map
+    # The QSS reads the map only with the flag on and a map that is not all zero. Only then the axes must be valid.
+    if (sb.on == 1 and mp is not None and np.any(mp["data"] != 0)
+            and (np.any(np.diff(mp["x"]) <= 0) or np.any(np.diff(mp["z"]) <= 0))):
+        raise ValueError(f"The car file {path} has a stability index map (cid 656) with axes that do not increase strictly.")
     a = groups["aero"]
     for mp, sc in (("cla_map", "cla"), ("cda_map", "cda")):
         # ChassisSim scales the CLA and CDA maps to a peak of 1 and multiplies them by the scalar.
