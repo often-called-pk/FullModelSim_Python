@@ -17,11 +17,14 @@ def main(argv=None):
         cfg_path = argv[i + 1]
         import headless_solve
         return headless_solve.main([cfg_path])
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
     from app.mainwindow import MainWindow
     app = QApplication(argv)
     win = MainWindow()
     win.show()
+    if "--smoke" in argv:    # start, then quit after 1 s (setup script, CI)
+        QTimer.singleShot(1000, app.quit)
     return app.exec()
 
 

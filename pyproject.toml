@@ -1,0 +1,35 @@
+[project]
+name = "fullmodelsim"
+version = "0.1.0"
+description = "Minimum-lap-time solver (direct collocation, IPOPT) with a PySide6 GUI"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    # casadi 3.8.2 changes every NLP graph hash. Raise the limit only with a new snapshot baseline.
+    "casadi>=3.6,<3.8",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "plotly>=5.18",
+    "PySide6-Essentials",  # the code imports QtCore, QtGui and QtWidgets only
+]
+
+[project.scripts]
+fullmodelsim = "app.main:main"
+
+[dependency-groups]
+dev = ["pyinstaller"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# The repo root holds the solver modules. The solve reads Circuits/, Data/ and
+# Results/ relative to the working directory, so run from the repo root.
+[tool.setuptools]
+packages = ["app", "functions"]
+py-modules = [
+    "headless_solve", "MLTP", "MLTP_initial", "MLTP_paramOptim", "MLTP_screen",
+    "MLTP_TyreOptim", "plotSDI", "Powertrain", "setup_sweep", "userOpts",
+    "vehModel", "vehModel_cs", "vehModel_initial", "vehParams", "gg_plots",
+    "bench_linear_solver",
+]

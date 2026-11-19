@@ -28,7 +28,7 @@ There are two ways to use it:
 | Desktop GUI app (`app/`) | ✅ working |
 | Standalone Windows `.exe` (PyInstaller) | ✅ builds & runs; verified end-to-end |
 | Coin-HSL inside the frozen exe (`sys._MEIPASS`) | ✅ verified (`ma57`, self-contained) |
-| Automated test suite (55 files in `tests/`) | ✅ 55/55 |
+| Automated test suite (the files in `tests/`) | ✅ all pass |
 
 The frozen build has been verified on the dev machine end-to-end (Sturn solve on
 `ma57` from the bundled Coin-HSL → `Optimal Solution Found`, results + plots
@@ -39,14 +39,42 @@ the gold-standard final acceptance check, see [`build/README.md`](build/README.m
 
 ## Setup
 
-Everything assumes the **repo root as working directory**, all paths are
-relative (`Circuits/`, `Data/`, `Results/`, `Plots/`). Use the in-repo venv:
+Run every command from the repo root. All paths are relative (`Circuits/`, `Data/`,
+`Results/`, `Plots/`).
 
-```powershell
-python -m venv venv
-venv\Scripts\Activate.ps1                 # PowerShell; or call venv\Scripts\python.exe directly
-pip install -r requirements.txt           # casadi, numpy, scipy, plotly, kaleido(optional), PySide6, pyinstaller
+Developer route. You need Git and one of Python 3.10 or newer or
+[uv](https://docs.astral.sh/uv/). The platforms are Windows x64 and Linux x64 with glibc
+2.34 or newer (Ubuntu 22.04 or newer). One command does the whole setup:
+
 ```
+./start.sh          # Linux. The command "sh start.sh" works too.
+.\start.bat         # Windows, in PowerShell and in cmd
+```
+
+The script does these steps:
+
+1. It installs uv if uv is missing. It asks first.
+2. It creates `.venv` from `uv.lock`. uv downloads Python 3.13 if the machine does not have it.
+3. It checks the Qt system libraries (Linux) and `Data/DATA_AA.mat`.
+4. It builds the model and computes one QSS lap.
+5. It runs the quick tests.
+6. It opens the GUI.
+
+The flags are `--yes` (no questions), `--no-gui` and `--no-tests`.
+
+Manual steps:
+
+```
+uv sync                 # create .venv from uv.lock
+uv run fullmodelsim     # start the GUI
+uv run python tests/run_tests.py --quick
+```
+
+`requirements.txt` is generated from `uv.lock` for pip users. Do not edit it. To change
+a dependency, edit `pyproject.toml`. Then run `uv lock` and
+`uv export --no-dev --no-hashes --no-emit-project -o requirements.txt`.
+
+Download route (a packaged app for each OS): added with the release workflow.
 
 `Data/DATA_AA.mat` (aerodynamic coefficients) is **required for a real solve**.
 
@@ -61,17 +89,17 @@ with hardcoded args. Either edit the `__main__` call or import and call with
 kwargs:
 
 ```powershell
-python MLTP_initial.py                         # 7-state warm-start solve
-python MLTP.py                                 # full 23-state solve (Sturn by default)
+uv run python MLTP_initial.py                         # 7-state warm-start solve
+uv run python MLTP.py                                 # full 23-state solve (Sturn by default)
 
 # pick circuit/config via kwargs:
-python -c "from MLTP import MLTP; MLTP(circuit='BCN', AeroConfig='Static', ATD='On', Electric_4Motors='Off', TyreModel='CombinedSlip')"
+uv run python -c "from MLTP import MLTP; MLTP(circuit='BCN', AeroConfig='Static', ATD='On', Electric_4Motors='Off', TyreModel='CombinedSlip')"
 
 # co-optimise design parameters jointly with the racing line:
-python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit='Sturn')"
+uv run python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit='Sturn')"
 
 # one setup change, started from the stored default result (B5):
-python -c "from MLTP import MLTP; MLTP(circuit='Sturn', continue_from='auto', vp_overrides={'LMUY': 0.95})"
+uv run python -c "from MLTP import MLTP; MLTP(circuit='Sturn', continue_from='auto', vp_overrides={'LMUY': 0.95})"
 ```
 
 The two-stage solve: `MLTP()` first builds a reduced 7-state warm start
@@ -97,8 +125,8 @@ A formula gives its curvature, so it needs no `.mat` file.
 
 ### B) Run the desktop GUI (development)
 
-```powershell
-venv\Scripts\python.exe -m app.main
+```
+uv run fullmodelsim
 ```
 
 The GUI writes a JSON config, spawns the solve as a subprocess, streams the IPOPT
@@ -122,9 +150,8 @@ The Output tab finds the result file with the same name rule as the solve.
 ### C) Build the standalone Windows exe
 
 ```powershell
-venv\Scripts\Activate.ps1
 $env:COINHSL_DIR = "C:\path\to\coinhsl\bin"   # optional: bundle Coin-HSL for MA57/MA97
-venv\Scripts\pyinstaller.exe build\windows-app.spec
+uv run pyinstaller build\app.spec
 ```
 
 Output: `dist\FullModelSim\FullModelSim.exe` (onedir). It launches the GUI; run
@@ -242,33 +269,34 @@ DLL. Choose the solver per call (`MLTP(circuit='BCN', linear_solver='ma97')` or
 `'mumps'`), and benchmark them with:
 
 ```powershell
-python bench_linear_solver.py
+uv run python bench_linear_solver.py
 ```
 
 ---
 
 ## Tests
 
-There is **no pytest**, the 55 `tests/test_*.py` files are plain scripts whose asserts
-run at module top level. Run a file directly; the finest selectable unit is a
-whole file. Every test starts with `import _bootstrap` (`tests/_bootstrap.py`), which puts
-the repo root on `sys.path` and makes it the working directory, so a test runs from any
-directory and writes its scratch files to a temp dir, never the repo. Run the full suite
-(each in turn):
+There is no pytest. The files `tests/test_*.py` are plain scripts, and their asserts run
+at module top level. The smallest unit that you can select is a whole file. Every test
+starts with `import _bootstrap` (`tests/_bootstrap.py`). That module puts the repo root on
+`sys.path` and makes it the working directory. Thus a test runs from any directory, and it
+writes its scratch files to a temp directory.
 
-```powershell
-python tests\test_foundation.py                                   # one file
-foreach ($f in Get-ChildItem tests\test_*.py) { python $f.FullName }
+```
+uv run python tests/test_foundation.py        # one file
+uv run python tests/run_tests.py --quick      # all files but the four that iterate IPOPT on a vehicle NLP
+uv run python tests/run_tests.py --all        # every file
 ```
 
 These cover the numerical/config core (collocation, mesh, warm start, QSS screener),
 plus the app's config/serialisation/results layer. `CLAUDE.md` lists each file and what
 it needs (casadi, `Data/DATA_AA.mat`, PySide6). Only `test_setup_sweep.py` (about a
 minute), `test_paramoptim_warmstart.py` and `test_ladder.py` (both capped at 5 iterations)
-solve the real 23-state NLP with IPOPT. Smoke-test the symbolic model with:
+solve the real 23-state NLP with IPOPT. `test_refine.py` runs one small real solve. The
+`--quick` run skips these four files. Smoke-test the symbolic model with:
 
-```powershell
-python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
+```
+uv run python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
 ```
 
 ---
