@@ -53,7 +53,7 @@ The rear axle's share of its grip limit minus the front axle's share. A positive
 _Avoid_: STBI, stability index, handling balance
 
 **Stability index**:
-ChassisSim's own measure of under- and oversteer. ChassisSim averages it per corner and uses the average to correct the corner speed. It is not the axle balance.
+ChassisSim's own measure of under- and oversteer, in percent and negative for understeer. It comes from the cornering stiffness of each axle. ChassisSim can average it per corner and use the average to correct the corner speed. It is not the axle balance.
 _Avoid_: STBI channel, balance
 
 ### Circuits
@@ -91,5 +91,17 @@ The height of the roll centre above the contact patches of an axle. It changes w
 _Avoid_: stored roll-centre value, roll axis height
 
 **Dynamic camber**:
-The camber of a wheel against the road. It is the static camber, plus the camber change from the wheel travel, plus the body roll angle.
+The camber of a wheel against the road. It is the static camber, plus the camber change from the wheel travel, plus the body roll angle. A steered wheel also adds the camber change from the steer, which the castor and the kingpin inclination set.
 _Avoid_: camber gain, kinematic camber
+
+**Bump steer**:
+The toe change of a wheel with its travel. It adds to the static toe of that wheel.
+_Avoid_: roll steer, toe curve
+
+**Third element**:
+A spring, a bump rubber and a damper that act on the heave of an axle, the mean travel of its two wheels. It does not resist roll.
+_Avoid_: heave spring, monoshock
+
+**Rubber hysteresis**:
+A bump rubber that pushes back less while it extends than while it compresses, at the same compression.
+_Avoid_: rubber damping
