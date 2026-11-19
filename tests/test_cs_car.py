@@ -167,12 +167,24 @@ def build_records(omit=(), over=None):
     add(9, 656, (np.array([-50.0, 0.0, 50.0]), np.array([10.0, 30.0, 60.0]), np.zeros(9)))   # stability map, all zero
     # Task 8 aero corrections, refused features and DRS-free speed tables: 1-D tables (tag 7) zero in y,
     # enables (tag 6) 0, 2-D maps (tag 9) zero in data. Axes are non-degenerate; only the values are zero.
-    for cid in (128, 132, 136, 139, 416, 417, 418, 437, 438, 439, 870):
+    for cid in (128, 132, 136, 139, 416, 417, 418, 437, 438, 439):
         add(7, cid, (AERO_X, np.zeros(len(AERO_X))))
     for cid in (413, 414, 415, 434, 435, 436):
         add(6, cid, 0)
     for cid in (*range(452, 464), 872, 873, 874, 875):
         add(9, cid, (AERO_X, AERO_X, np.zeros(len(AERO_X) ** 2)))
+    # Powertrain and hybrid records of P1 to P4, off as shipped. Tags as the shipped files hold them: 1 scalar,
+    # 6 flag or byte, 7 engine-brake table (x in rpm, y in N m), 8 text, 9 map (x in rpm, z throttle, data).
+    for cid in (104, 105, 106, 179, 180, 181, 182, 183, 465, 836, 871):
+        add(1, cid, 0.0)
+    add(1, 160, 0.5)                                                     # brake left share, even split
+    add(7, 161, (ENGINE_RPM, np.zeros(len(ENGINE_RPM))))                  # engine-brake table, zero in y
+    for cid in (177, 178, 464, 466, 535, 573, 590, 870, 876, 877, 878, 879, 419, 423, 426, 428, 520, 571, 598, 649):
+        add(6, cid, 0)                                                   # flags, off
+    for cid in (897, 906):
+        add(8, cid, b"")                                                 # text, empty
+    for cid in (467, 468):
+        add(9, cid, (ENGINE_RPM, np.array([0.0, 1.0]), np.zeros(2 * len(ENGINE_RPM))))   # deploy map, zero data
     for cid in range(31, 37):                                            # dampers fr, fl, rr, rl, third f (35), third r (36)
         add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP * DAMP[cid], REB])))
     for cid, rows in zip(HARD, (HP_RIGHT, HP_LEFT, HP_RIGHT, HP_LEFT)):
@@ -303,6 +315,17 @@ ok("engine torque curve: rpm axis in rad/s, torque in N m",
    np.allclose(car.engine.torque_curve["x"], ENGINE_RPM * RPM_T, rtol=0, atol=1e-12)
    and np.allclose(car.engine.torque_curve["y"], ENGINE_NM, rtol=0, atol=0))
 ok("gears read as stored (6)", len(car.engine.gears) == 6 and np.allclose(car.engine.gears, GEARS, rtol=0, atol=0))
+ok("P1 cids read as stored: cut delay 104, brake left share 160 (0.5), regen front share 871 (0)",
+   car.engine.cut_delay == 0.0 and car.brake.left_share == 0.5 and car.hybrid.regen_front_share == 0.0)
+ok("P1 flags and text read as stored: 571 and 897 off (0 and empty bytes), 870 flag 0",
+   car.refused.c571 == 0 and car.refused.c897 == b"" and car.hybrid.regen_front_on == 0)
+ok("hybrid deploy maps 467 (front) and 468 (rear): rpm axis in rad/s (3000 rpm -> 314.159), throttle z, zero data",
+   abs(car.hybrid.map_front["x"][1] - 314.159) < 1e-3 and abs(car.hybrid.map_rear["x"][2] - 6000 * RPM_T) < 1e-9
+   and np.allclose(car.hybrid.map_front["z"], [0.0, 1.0], rtol=0, atol=0)
+   and car.hybrid.map_rear["data"].shape == (len(ENGINE_RPM), 2) and not np.any(car.hybrid.map_rear["data"]))
+ok("engine-brake table 161: rpm axis in rad/s, zero y",
+   np.allclose(car.engine.brake_table["x"], ENGINE_RPM * RPM_T, rtol=0, atol=1e-12)
+   and not np.any(car.engine.brake_table["y"]))
 
 # tyres: every decoded field of one tyre record
 print("  -- tyres")

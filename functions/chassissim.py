@@ -211,14 +211,32 @@ CAR_FIELDS = {
     128: ("aero.ss_cla", 1.0), 132: ("aero.ss_cda", 1.0), 136: ("aero.ss_ab", 1.0),
     **{413 + i: (f"aero.sp_on_{n}", 1.0) for i, n in enumerate(("cla", "cda", "ab"))},
     **{416 + i: (f"aero.sp_{n}", 1.0) for i, n in enumerate(("cla", "cda", "ab"))},
-    # Features that the car model refuses when they are live: steer correction, roll split, 2-D maps, wake maps.
-    **{c: (f"aero.refused_{c}", 1.0) for c in (139, *range(434, 440), *range(452, 464), 870, *range(872, 876))},
+    # Features that the car model refuses when they are live: steer correction, roll split, 2-D maps, wake maps
+    # (maps 872 to 875, with the flags refused.c876 to c879).
+    **{c: (f"aero.refused_{c}", 1.0) for c in (139, *range(434, 440), *range(452, 464), *range(872, 876))},
     100: ("engine.efficiency", 1.0), 101: ("engine.torque_curve", (RPM, 1.0)),
     102: ("engine.rpm_idle", RPM), 103: ("engine.rpm_limit", RPM), 110: ("engine.gears", 1.0),
     111: ("engine.torque_split", 1.0),
+    # Shift cut: delay [s], minimum torque factor, ramp-back time [s] (P3). Engine-brake table (tag 7): refused when live.
+    104: ("engine.cut_delay", 1.0), 105: ("engine.cut_min", 1.0), 106: ("engine.cut_ramp", 1.0),
+    161: ("engine.brake_table", (RPM, 1.0)),
+    # Hybrid layer (P4). 177 master, 178 deploy mode, 179 regen clamp [W], 180 deploy scale [W], 181 energy cap [J],
+    # 182 regen scale, 183 deploy scale after the map, 836 free energy offset, 590 brake regen gate.
+    # 870 = 1 sends the regen front share 871 to the front axle (0: rear axle only).
+    # Deploy maps 467 (front) and 468 (rear): x engine speed, z throttle / 100, data = fraction of cid 180.
+    **{c: (f"hybrid.{n}", 1.0) for c, n in ((177, "on"), (178, "mode"), (179, "clamp_regen"), (180, "scale_deploy"),
+                                             (181, "e_cap"), (182, "k_regen"), (183, "k_deploy"), (836, "e_free"),
+                                             (590, "gate_brake"), (535, "use_brake_maps"), (573, "use_paddle"),
+                                             (464, "blend_on"), (465, "blend"), (466, "map_on"),
+                                             (870, "regen_front_on"), (871, "regen_front_share"))},
+    467: ("hybrid.map_front", (RPM, 1.0, 1.0)), 468: ("hybrid.map_rear", (RPM, 1.0, 1.0)),
+    # Features that the model refuses when on: brake ramp 571, split recompute 598, push-to-pass 649, torque
+    # multiplier maps 520, throttle trims 419 / 423 / 426 / 428, battery plugin 897 / 906, wake map flags 876 to 879.
+    **{c: (f"refused.c{c}", 1.0) for c in (571, 598, 649, 520, 419, 423, 426, 428, 897, 906, *range(876, 880))},
     112: ("diff.front_type", 1.0), 113: ("diff.rear_type", 1.0), 114: ("diff.front_map", 1.0),
     116: ("diff.rear_map", 1.0),
     107: ("brake.force", 1.0), 108: ("brake.front_bias", 1.0), 109: ("brake.delay", 1.0),
+    160: ("brake.left_share", 1.0),
     390: ("env.track_temp", 1.0),
     # Stability index correction of the QSS apex speed: 655 = 1 turns it on, 656 = map (avg stbi, speed) -> factor.
     655: ("stability.on", 1.0), 656: ("stability.map", (1.0, 1.0, 1.0)),
@@ -309,13 +327,58 @@ def file_sha8(path):
     return h.hexdigest()[:8]
 
 
-def load_car(path):
+def _atmos(chassissim_dir=None):
+    """Return the engine torque factor of the Atmos_Cond.ini file that ChassisSim uses.
+    ChassisSim joins the install folder and the file name without a separator. So the file is
+    '<install folder name>Atmos_Cond.ini' in the parent of the install folder. A file in the install folder is not read.
+    The folder is the argument, else CHASSISSIM_DIR, as install_dir. The factor is 1.0 when neither is set, without
+    the file, or with Eng Corr = 0 (the default). A folder that does not exist raises ValueError.
+    Factor = sqrt(T_eng / T_cur) x (P_cur - Pw_cur) / (P_eng - Pw_eng), the temperatures in K, the pressures in bar.
+    In the two sections, a missing key takes Atm Press 1.013 bar, Water Press 0 bar and Temperature 15 degC.
+    Section and key names ignore case. A value that is not a finite number raises ValueError."""
+    if not (chassissim_dir or os.environ.get("CHASSISSIM_DIR")):
+        return 1.0
+    # ChassisSim joins the install folder and the file name without a separator. We read the same path.
+    folder = os.path.abspath(install_dir(chassissim_dir))
+    f = _find(os.path.dirname(folder), os.path.basename(folder) + "Atmos_Cond.ini")
+    if f is None:
+        return 1.0
+    cp = configparser.ConfigParser(strict=False, interpolation=None, inline_comment_prefixes=(";", "#"))
+    key = "the sections"
+
+    def get(sec, k, d):
+        nonlocal key
+        key = f"the key '{k}' of the section [{sec}]"
+        v = float(secs[sec].get(k, d)) if sec in secs else d
+        if not np.isfinite(v):
+            raise ValueError
+        return v
+    try:
+        with open(f, "rb") as fh:
+            cp.read_string(fh.read().removeprefix(b"\xef\xbb\xbf").decode(ENC))
+        secs = {s.lower(): cp[s] for s in cp.sections()}
+        if get("preferences", "eng corr", 0.0) == 0:       # ChassisSim applies the correction when the flag is not 0
+            return 1.0
+        (pc, wc, tc), (pe, we, te) = (
+            (get(sec, "atm press", 1.013), get(sec, "water press", 0.0), get(sec, "temperature", 15.0) + 273.15)
+            for sec in ("current conditions", "engine conditions"))
+    except (configparser.Error, ValueError) as ex:
+        raise ValueError(f"{f}: cannot read {key}. The file needs sections with lines 'key = finite number'.") from ex
+    if min(tc, te) <= 0 or pe - we <= 0 or pc - wc <= 0:
+        raise ValueError(f"{f}: the temperatures must be above -273.15 degC and each dry air pressure above 0.")
+    return float(np.sqrt(te / tc) * (pc - wc) / (pe - we))
+
+
+def load_car(path, chassissim_dir=None):
     """Read a ChassisSim car file and return its consumed fields in SI.
 
-    The result has the groups mass, geom, tyre, aero, susp, engine, diff, brake, hardpoints, env and stability.
+    The result has the groups mass, geom, tyre, aero, susp, engine, hybrid, refused, diff, brake, hardpoints, env
+    and stability. hybrid holds the records of the hybrid layer. refused holds the flags of features that
+    power_refusals and aero_refusals refuse.
     Each group is a SimpleNamespace. A field that the file lacks is None. The result also holds
     path (absolute) and sha8 (the first 8 hex digits of the sha256 of the file bytes).
-    Angles are in rad and lengths in m. The engine axis is in rad/s and the torque is in N m.
+    Angles are in rad and lengths in m. Every engine-speed axis is in rad/s (the torque curve, the engine-brake
+    table and the hybrid deploy maps). The torque is in N m.
     A damper holds the velocity in m/s and the bump and rebound forces in N, both positive.
     Its table is active when it has points. A spring holds its preload in m and its rate in N/m.
     Toe is positive for toe-out. Camber is the negative camber: positive when the top of the wheel leans in.
@@ -330,6 +393,9 @@ def load_car(path):
     As ChassisSim does, a left record that is absent or all zero takes the record of its right sibling, when
     that record holds a value. This applies to the springs, the rubber air gaps (the gap flag goes with the gap),
     the rubber tables, the corner and bar motion ratios, the dampers and the tyres.
+    engine.atmos is the atmospheric torque factor of the Atmos_Cond.ini file of the ChassisSim folder (the argument,
+    else CHASSISSIM_DIR). _atmos gives the path. It is 1.0 when no folder is set, without the file, or with
+    Eng Corr = 0.
     """
     path = os.path.abspath(path)
     sha8 = file_sha8(path)
@@ -384,6 +450,7 @@ def load_car(path):
                              f"but not both. A car without this force needs both at zero.")
         if peak > 0:        # a zero map with a zero scalar stays as it is
             getattr(a, mp)["data"] = getattr(a, mp)["data"] * (scal / peak)
+    groups["engine"].atmos = _atmos(chassissim_dir)
     return SimpleNamespace(path=path, sha8=sha8, **groups)
 
 
@@ -394,13 +461,43 @@ def aero_refusals(cs):
     for what, names in (
             ("the roll split table (cid 139)", ["refused_139"]),
             ("a 2-D steer or state map (cids 452 to 463)", [f"refused_{c}" for c in range(452, 464)]),
-            ("a wake map (cids 870, 872 to 875)", [f"refused_{c}" for c in (870, 872, 873, 874, 875)])):
+            ("a wake map (cids 872 to 875)", [f"refused_{c}" for c in range(872, 876)])):
         if live(*names):
             raise ValueError(f"The car file {cs.path} uses {what}. The car model does not build it.")
+    for c in range(876, 880):
+        if getattr(cs.refused, f"c{c}") not in (None, 0):
+            raise ValueError(f"The car file {cs.path} sets a wake map flag (cid {c}). The car model does not build it.")
     if any(getattr(a, f"refused_{c}", None) == 1 for c in (434, 435, 436)):     # ChassisSim ignores a table with its enable at 0
         raise ValueError(f"The car file {cs.path} uses the steer correction (cids 434 to 436). The car model does not build it.")
     if a.multi_drs_366 == 1:
         raise ValueError(f"The car file {cs.path} uses the multiple DRS zones (cid 366). The car model does not build it.")
+
+
+def _text_live(v):
+    """Return True when a text record (tag 8) holds more than NUL bytes and white space."""
+    if v is None:
+        return False
+    b = v if isinstance(v, (bytes, bytearray)) else str(v).encode(ENC)
+    return bool(bytes(b).replace(b"\x00", b"").strip())
+
+
+def power_refusals(cs):
+    """Raise ValueError for a powertrain feature of the car that the model does not build."""
+    r, e, h = cs.refused, cs.engine, cs.hybrid
+    on = lambda v: v not in (None, 0)       # the 'on' test of every flag
+    for c, v in ((177, h.on), (535, h.use_brake_maps), (573, h.use_paddle)):
+        if on(v):       # temporary: P4 builds the hybrid layer and removes this refusal
+            raise ValueError(f"The hybrid layer (cid {c}) is not built yet. The car file {cs.path} sets this cid.")
+    for what, c, hit in (
+            ("the brake ramp", 571, on(r.c571)),
+            ("the per-step torque split recompute", 598, on(r.c598)),
+            *(("a battery plugin", c, _text_live(getattr(r, f"c{c}"))) for c in (897, 906)),
+            ("push-to-pass", 649, on(r.c649)),
+            ("the engine torque multiplier maps", 520, on(r.c520)),
+            *(("a throttle trim", c, on(getattr(r, f"c{c}"))) for c in (419, 423, 426, 428)),
+            ("a non-zero engine-brake table", 161, table_live(e.brake_table))):
+        if hit:
+            raise ValueError(f"The car file {cs.path} uses {what} (cid {c}). The car model does not build it.")
 
 
 def check_car(cs):

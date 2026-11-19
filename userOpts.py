@@ -259,7 +259,9 @@ def _parse_n_bounds(n_bounds, s):
 # in data['provenance']['setup']. Every userOpts argument is a setup knob, so a new argument is hashed at once.
 # These arguments are not: the file stem has them already, or they change only how the same NLP is solved
 # or where files live (ipopt_overrides goes to provenance['run']). TyreModel (an MLTP argument) is a knob too,
-# and so are load_model and ds_fine (MLTP_screen arguments).
+# and so are load_model and ds_fine (MLTP_screen arguments). chassissim_dir is the folder of the circuits and of
+# the car's Atmos_Cond.ini (path: chassissim._atmos). The folder is not a knob, but an atmospheric factor other
+# than 1.0 is (car_atmos).
 _NOT_SETUP = frozenset({"circuit", "AeroConfig", "ATD", "Electric_4Motors", "tyre_set", "physics", "start_state",
                         "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "chassissim_dir", "data_dir",
                         "ipopt_overrides", "car"})
@@ -295,6 +297,11 @@ def car_id(car):
         raise ValueError(f"Cannot read the car file {path}: {e}") from e
 
 
+def car_atmos(chassissim_dir=None):
+    """Atmospheric engine torque factor of a ChassisSim car (chassissim._atmos), rounded to 12 significant digits."""
+    return float(f"{chassissim._atmos(chassissim_dir):.12g}")
+
+
 def setup_knobs(kw):
     """{name: value} of the setup knobs in ``kw`` that differ from their defaults, {} for the default setup.
 
@@ -304,6 +311,7 @@ def setup_knobs(kw):
     count. vp_overrides keeps the A5 keys and the entries that differ from the default of the tyre set. A (lo, hi)
     n_bounds pair is hashed by value (the stem says only 'nbCustom'). A number W is in the stem (hw<W>), so it is
     not a knob. A ChassisSim car adds the knob ``car_file`` (``car_id``: absolute path and sha8 of the file).
+    It adds the knob ``car_atmos`` when the atmospheric factor of Atmos_Cond.ini (``car_atmos``) is not 1.0.
     A file tyre set (C5) adds the knob ``tyre_file``, the absolute path. The stem has the base name
     only, so the tag tells two files with one name apart."""
     defaults = {k: p.default for k, p in inspect.signature(userOpts).parameters.items()
@@ -328,6 +336,9 @@ def setup_knobs(kw):
         out["tyre_file"] = os.path.abspath(ts[5:])
     if kw.get("car") is not None:
         out["car_file"] = car_id(kw["car"])
+        atmos = car_atmos(kw.get("chassissim_dir"))
+        if atmos != 1.0:
+            out["car_atmos"] = atmos
     return out
 
 
@@ -453,7 +464,8 @@ def userOpts(ctx,
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
              circuits_dir="Circuits",
-             chassissim_dir=None,          # ChassisSim install folder for circuit='chassissim:<name>' (else env CHASSISSIM_DIR)
+             chassissim_dir=None,          # ChassisSim install folder (else env CHASSISSIM_DIR): the circuits of
+                                           # circuit='chassissim:<name>' and the Atmos_Cond.ini of a car
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
              hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
@@ -506,8 +518,9 @@ def userOpts(ctx,
                                ("collocation", collocation != "legendre", "Radau is not tested with the car model.")):
             if bad:
                 raise ValueError(f"A ChassisSim car does not accept {name}={locals()[name]!r}. {why}")
-        ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):])
+        ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):], chassissim_dir)
         ctx.car = f"{ctx.cs.path}#{ctx.cs.sha8}"
+        ctx.car_atmos = car_atmos(chassissim_dir)       # 1.0 = no correction, else the value of the knob car_atmos
         chassissim.check_car(ctx.cs)
         chassissim.vp_refusal(vp_overrides)
         flags = [getattr(ctx.cs.susp, f"gap_flag_{c}") for c in ("fl", "fr", "rl", "rr")]
@@ -517,6 +530,7 @@ def userOpts(ctx,
             raise ValueError("The car sends drive torque to the front axle (torque split above 0). "
                              "The car model drives the rear axle only.")
         chassissim.aero_refusals(ctx.cs)
+        chassissim.power_refusals(ctx.cs)
         vp_overrides = {**chassissim.car_vp(ctx.cs), **(vp_overrides or {})}
 
     # ---- start state: checked before any work, like the physics flag

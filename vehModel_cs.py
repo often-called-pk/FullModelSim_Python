@@ -178,12 +178,17 @@ def _slip_curve(T, cap=None):
 
 
 # ---------------------------------------------------------------- car numbers (numpy)
+def _eff(e):
+    """Return the engine torque scale: efficiency times the atmospheric factor (a float, no graph node)."""
+    return e.efficiency * getattr(e, "atmos", 1.0)
+
+
 def drive_scale(cs, R):
     """Largest drive force of any gear [N]: the scale of T_drive."""
     e = cs.engine
     w = np.linspace(e.rpm_idle, e.rpm_limit, 400)
     te = PchipInterpolator(e.torque_curve["x"], e.torque_curve["y"])(w)
-    return float(e.efficiency * te.max() * np.max(e.gears) / R)
+    return float(_eff(e) * te.max() * np.max(e.gears) / R)
 
 
 def _mr(c):
@@ -208,7 +213,7 @@ def _gear_envelope(cs, R, v):
     for G in np.asarray(e.gears, float):
         w = v * G / R
         win = 0.5 * (1 + ca.tanh((e.rpm_limit - w) / dw))
-        f.append(e.efficiency * te(_smax(w, e.rpm_idle, 5.0)) * G / R * win)
+        f.append(_eff(e) * te(_smax(w, e.rpm_idle, 5.0)) * G / R * win)
         w_e.append(w)
     F_env = F_ref / B_GEAR * ca.log(sum(ca.exp(B_GEAR * fi / F_ref) for fi in f))
     om = sum(ca.exp(B_GEAR * (fi - F_env) / F_ref) * _smax(wi, e.rpm_idle, 5.0) for fi, wi in zip(f, w_e))

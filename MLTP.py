@@ -886,6 +886,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             data[key] = getattr(ctx, key)
     if ctx.atd_tbr is not None:         # C4: the torque-bias rows. A result without the field has none.
         data["atd_tbr"] = float(ctx.atd_tbr)
+    if getattr(ctx, "car_atmos", 1.0) != 1.0:   # ChassisSim car: the atmospheric torque factor, only when not 1.0
+        data["car_atmos"] = ctx.car_atmos
     if setup_tag:                       # the other setup knobs: the last part of the stem (E2)
         data["setup_tag"] = setup_tag
     data["provenance"] = provenance_record(
