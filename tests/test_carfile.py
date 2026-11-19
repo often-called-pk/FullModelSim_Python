@@ -6,8 +6,8 @@ directory and run no solve. The vendor section runs only when CHASSISSIM_DIR nam
 reads the 31 shipped car files, checks the encode(decode(f)) == f gate and pins the GP3 2013 Eastern Creek variants.
 It writes nothing into the vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_carfile.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_carfile.py
+    python tests/test_carfile.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_carfile.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import glob

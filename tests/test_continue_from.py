@@ -1,6 +1,6 @@
 """B5: MLTP(continue_from='auto') (plain script, no pytest). Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_continue_from.py
+    python tests/test_continue_from.py
 
 continue_from='auto' starts one off-default solve from the stored default result of the same
 circuit, config, tyre set, physics, mesh request and start state. The solve takes the primal and

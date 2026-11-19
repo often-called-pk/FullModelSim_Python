@@ -13,7 +13,7 @@ Run order: sections 7 and 10 first (casadi-free), then sections 1-6, 8, 9, 11 an
 number order. Sections 1-6, 8, 9, 11 and 12 build the real NLP through a stand-in (no IPOPT)
 and need casadi and Data/DATA_AA.mat (SKIP, exit 0 otherwise). Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_start_wiring.py
+    python tests/test_start_wiring.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

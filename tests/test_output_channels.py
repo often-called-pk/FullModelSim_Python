@@ -10,7 +10,7 @@ the stored Sturn point and section 3 runs a stand-in. Sections 4-5 are numpy onl
 Results/BCN_Static_ATDOn_EM4Off.mat. Without DATA_AA the casadi sections print SKIP and the run
 still exits 0. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_output_channels.py
+    python tests/test_output_channels.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

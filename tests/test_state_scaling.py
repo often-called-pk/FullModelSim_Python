@@ -7,7 +7,7 @@ Sections 3-5 use build_only or a stand-in that stops before the solver. Section 
 with a fake and starts from Results/Sturn_Static_ATDOn_EM4Off.mat (SKIP if it is missing). No section runs
 IPOPT. Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_state_scaling.py
+    python tests/test_state_scaling.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

@@ -9,7 +9,7 @@ with finite differences of the rebuilt Lagrangian. Section 8 tests setup_gradien
 first-order gradients dJ*/dp of setup parameters. They need casadi and Data/DATA_AA.mat (SKIP,
 exit 0 otherwise). No section runs IPOPT. Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_sensitivity.py
+    python tests/test_sensitivity.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

@@ -1,6 +1,6 @@
 """E2: setup knobs in the result file name and data.provenance (plain script, no pytest). Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_provenance.py
+    python tests/test_provenance.py
 
 A setup knob that differs from its default adds 8 hex digits to the result stem, so a knob run never
 overwrites the default result. The knob is also listed in data.provenance.setup. The default setup keeps

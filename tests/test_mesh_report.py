@@ -8,7 +8,7 @@ compares vehModel.vertical_eigs with the AD block eigenvalues of tests/test_phys
 Sections 5 and 6 run MLTP with IPOPT faked (no solve). Without the files the run prints SKIP and
 exits 0. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_mesh_report.py
+    python tests/test_mesh_report.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

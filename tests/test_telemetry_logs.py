@@ -4,7 +4,7 @@ Task 11 of the phase 3 plan. The test uses synthetic data only. A stand-in resul
 Sturn centrelines. Every file goes to a temporary directory. The test needs numpy, scipy and plotly. It runs no solve
 and needs no Data/DATA_AA.mat. Run it from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_telemetry_logs.py
+    python tests/test_telemetry_logs.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import json

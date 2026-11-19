@@ -1,7 +1,7 @@
 """MLTP_TyreOptim nominal-load coupling (item C6). Plain script: no solve, no IPOPT.
 Run from the repo root:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_tyreoptim_fz0.py
+    python tests/test_tyreoptim_fz0.py
 
 MLTP_TyreOptim.m:128 sets vp.Fz0 = 4905*vp.Fz0_shift before vehModel. optimise_design with
 Fz0_follows_shift=True (passed only by MLTP_TyreOptim) does the same with the promoted

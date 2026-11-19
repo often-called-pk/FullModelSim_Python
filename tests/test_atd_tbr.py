@@ -10,7 +10,7 @@ SKIP and the file exits 0. Sections 3 to 5 use a stand-in build or the QSS. Sect
 fake and starts from Results/Sturn_Static_ATDOn_EM4Off.mat (SKIP if it is missing). No IPOPT runs. Run from any
 directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_atd_tbr.py
+    python tests/test_atd_tbr.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

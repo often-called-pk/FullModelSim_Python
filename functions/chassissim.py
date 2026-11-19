@@ -150,34 +150,38 @@ def _corners(group, base, prefix="", f=1.0):
 _SIDES = [(b + i, b + i + 1) for b in (1, 7, 13, 23, 31, 80) for i in (0, 2)] + [(27, 170), (28, 171)]
 
 
-def _raw_live(v):
-    """Return True when a record as decoded from the file holds a value that is not zero."""
-    if isinstance(v, (tuple, list)):
-        return any(_raw_live(e) for e in v)
+def table_live(v):
+    """Return True when a record holds a value that is not zero, raw from the file or decoded.
+    A decoded table counts by its y or data, not its axis. A text value counts as content."""
+    if v is None:
+        return False
+    if isinstance(v, dict):
+        v = v["y"] if "y" in v else v.get("data", 0.0)
+    if isinstance(v, str):      # a str holds str elements: the loop below would never end
+        return True
     try:
         return bool(np.any(np.asarray(v, float) != 0))
-    except (TypeError, ValueError):     # a value that is not a number counts as content
-        return True
+    except (TypeError, ValueError):
+        return any(table_live(e) for e in v)
 
 
 # cid -> (group.name, factor to SI). A tuple factor has one entry per part of the decoded record:
 #   tag 4 (x, force)   tag 7 (x, y)   tag 9 (x, z, data)   tag 11 (preload, rate, x, y)   tag 12 (unused, force)
 # The file stores springs, bars and dampers in SI, so no field needs lbf/in. It stores a ride height in mm
 # and a damper velocity in mm/s.
-# ponytail: skipped the cids that the sheet leaves unnamed (54, 56, 58, 60, 62, 64, 66, 68, 94, 95, 97, 126, 150-153).
+# ponytail: skipped the cids that the sheet leaves unnamed (56, 60, 64, 68, 94, 95, 97, 126, 150-153).
 # Add one when a task needs it.
 CAR_FIELDS = {
     84: ("mass.total", 1.0), 85: ("mass.unsprung_front", 1.0), 86: ("mass.unsprung_rear", 1.0),
     87: ("mass.Ix", 1.0), 88: ("mass.Iy", 1.0), 89: ("mass.Iz", 1.0), 96: ("mass.front_share", 1.0),
     90: ("geom.wheelbase", 1.0), 91: ("geom.track_front", 1.0), 92: ("geom.track_rear", 1.0),
     93: ("geom.cg_height", 1.0),
-    # The second value of each stored geometry block (cids 54-57, 58-61, 62-65, 66-69) is the roll-centre height.
-    # ponytail: the corner order of the blocks, the ride heights and the hardpoints is not confirmed in the binary.
-    # They follow the rule of the confirmed records (the lowest cid is FR). Every shipped car has left = right there.
+    # A stored geometry block is a flag and a triple per corner: FR flag 53, triple 54-56. FL 57, 58-60.
+    # RR 61, 62-64. RL 65, 66-68. Cid 69 is a trailing flag. The second value of a triple is the roll-centre height.
     **{55 + 4 * i: (f"geom.rc_height_{c}", 1.0) for i, c in enumerate(_C4)},
-    # The first value of each block (cids 54, 58, 62, 66). Its meaning is not decoded. It equals the roll-centre
-    # height above the ground when the hardpoints are in the ground frame.
-    **{54 + 4 * i: (f"geom.rc_first_{c}", 1.0) for i, c in enumerate(_C4)},
+    # The first value of a triple (cids 54, 58, 62, 66): the RC height at the hardpoint datum. That is the height
+    # with the contact patch on z = 0 of the hardpoint frame.
+    **{54 + 4 * i: (f"geom.rc_datum0_{c}", 1.0) for i, c in enumerate(_C4)},
     **_corners("geom", 117, "ride_height_", MM),
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(_GAPS)},
@@ -296,22 +300,6 @@ def _check_hyst(h, c, cid, path):
                          f"The limit is 1 % of the peak loading force.")
 
 
-def hyst_thresholds(h, tol=0.05):
-    """Return (lower, upper) of a hysteresis curve h, or None when its two forces never differ by more than tol.
-    tol is a share of the peak loading force. The result has the unit of h["x"] (m after load_car).
-    Lower is the first x where |load - unload| exceeds tol x the peak loading force.
-    Upper is the next x where the two forces meet again, at most the x midpoint of the curve.
-    Lower can exceed upper when the loop opens past the midpoint. The model does not read these values.
-    They are for reports and tests."""
-    d = np.abs(h["load"] - h["unload"]) > tol * np.max(h["load"])
-    if not d.any():
-        return None
-    i = int(np.argmax(d))
-    mid = 0.5 * (h["x"][0] + h["x"][-1])
-    j = np.flatnonzero(~d[i:])
-    return float(h["x"][i]), min(float(h["x"][i + j[0]]) if j.size else mid, mid)
-
-
 def file_sha8(path):
     """Return the first 8 hex digits of the sha256 of the file bytes."""
     h = hashlib.sha256()
@@ -337,8 +325,7 @@ def load_car(path):
     A hardpoint block has shape (6, 3), in the car frame of ChassisSim. The rows are lower inner front,
     lower inner aft, lower outer, upper inner front, upper inner aft and upper outer.
     susp.hyst_<c> is the bump rubber hysteresis curve of corner c: a dict with x in m and the load and unload
-    forces in N. susp.hyst_thr_<c> holds its (lower, upper) thresholds in m, or None when the flag
-    susp.hyst_flag_<c> is not 1. A flag-1 curve that cannot give a rubber law raises ValueError.
+    forces in N. With the flag susp.hyst_flag_<c> at 1, a curve that cannot give a rubber law raises ValueError.
     The file stores the right wheel first: the lowest cid of four corner records is FR, then FL, RR, RL.
     As ChassisSim does, a left record that is absent or all zero takes the record of its right sibling, when
     that record holds a value. This applies to the springs, the rubber air gaps (the gap flag goes with the gap),
@@ -348,7 +335,7 @@ def load_car(path):
     sha8 = file_sha8(path)
     recs = {c: (t, v) for t, c, v in carfile.decode(path)}
     for r, l in _SIDES:
-        if r in recs and _raw_live(recs[r][1]) and not (l in recs and _raw_live(recs[l][1])):
+        if r in recs and table_live(recs[r][1]) and not (l in recs and table_live(recs[l][1])):
             recs[l] = recs[r]
             if 7 <= r <= 10 and r + 197 in recs:        # the flag of a copied rubber gap (cids 204 to 207)
                 recs[l + 197] = recs[r + 197]
@@ -370,16 +357,13 @@ def load_car(path):
         if getattr(su, f"hyst_flag_third_{a}") not in (None, 0):
             raise ValueError(f"The car file {path} sets a third-spring hysteresis flag (cid {cid}). "
                              f"The car model has no third-spring hysteresis.")
-    for cid_flag, c in zip(range(657, 661), _C4):          # hysteresis on: check the curve, then derive the thresholds
-        cid_curve = cid_flag + 4
+    for cid_flag, c in zip(range(657, 661), _C4):          # hysteresis on: check the curve
         flag, h = getattr(su, f"hyst_flag_{c}"), getattr(su, f"hyst_{c}")
         if flag not in (None, 0, 1):
             raise ValueError(f"The car file {path} holds a bump rubber hysteresis flag of corner {c} "
                              f"(cid {cid_flag}) other than 0 or 1.")
-        live = flag == 1 and h is not None
-        if live:
-            _check_hyst(h, c, cid_curve, path)
-        setattr(su, f"hyst_thr_{c}", hyst_thresholds(h) if live else None)
+        if flag == 1 and h is not None:
+            _check_hyst(h, c, cid_flag + 4, path)
     sb, mp = groups["stability"], groups["stability"].map
     # The QSS reads the map only with the flag on and a map that is not all zero. Only then the axes must be valid.
     if (sb.on == 1 and mp is not None and np.any(mp["data"] != 0)
@@ -401,18 +385,6 @@ def load_car(path):
         if peak > 0:        # a zero map with a zero scalar stays as it is
             getattr(a, mp)["data"] = getattr(a, mp)["data"] * (scal / peak)
     return SimpleNamespace(path=path, sha8=sha8, **groups)
-
-
-def table_live(v):
-    """Return True when a decoded aero record holds a non-zero value. A table counts by its y or data, not its axis."""
-    if v is None:
-        return False
-    if isinstance(v, dict):
-        v = v["y"] if "y" in v else v.get("data", 0.0)
-    try:
-        return bool(np.any(np.asarray(v, float) != 0))
-    except (TypeError, ValueError):
-        return any(table_live(e) for e in v)
 
 
 def aero_refusals(cs):
@@ -538,7 +510,7 @@ def _line_hit(a, b, c, d):
     return a + t[0] * (b - a)
 
 
-def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_first=None, radius=None):
+def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_datum0=None, radius=None):
     """Solve the front view of one double wishbone and fit the curves. hp has shape (6, 3): the rows of the car
     file (lower inner front, lower inner aft, lower outer, upper inner front, upper inner aft, upper outer).
     The inner points of each wishbone are projected to one pivot (the mean of the two). The upright is rigid and
@@ -547,8 +519,11 @@ def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_first
     ground at which the static roll centre equals rc_static. The result holds the datum, the curves as poly1d in
     w [m]: rc_h [m] above the contact patches and camber [rad]. The camber is the change of the negative camber
     against the body: positive when the top leans in. The result also holds the range lo, hi [m].
-    If rc_first (mean of the first stored values) equals the roll-centre height at zg = 0 within 1 mm, the
-    hardpoints are in the ground frame and zg = 0. With radius, zg must lie in [LO_z - radius, LO_z]."""
+    With radius, zg must lie in [LO_z - radius, LO_z]: the contact patch is below the lower outer ball joint by at
+    most the tyre radius. If the datum from rc_static fails this check, or rc_static is exactly 0.0 (not set),
+    zg = 0 is the fallback. The fallback needs
+    rc_datum0 (the stored RC height at the hardpoint datum) to equal the roll-centre height of this geometry at
+    zg = 0 within 1 mm. Then the geometry agrees with the file, and the stored height rc_static is not usable."""
     li, lo, ui, uo = hp[:2, 1:].mean(0), hp[2, 1:], hp[3:5, 1:].mean(0), hp[5, 1:]
     L1, L2, Lu = np.hypot(*(lo - li)), np.hypot(*(uo - ui)), np.hypot(*(uo - lo))
     th0 = np.arctan2(*(lo - li)[::-1])
@@ -586,8 +561,13 @@ def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_first
     if abs(k) < 1e-9:
         raise ValueError(f"The stored roll-centre height of the {name} axle cannot set the ground datum, "
                          "because the roll centre of this geometry does not depend on the ground height.")
-    zg = 0.0 if rc_first is not None and abs(h0 - rc_first) <= 1e-3 else (rc_static - h0) / k
-    if radius is not None and not lo[1] - radius <= zg <= lo[1]:
+    ok = lambda z: radius is None or lo[1] - radius <= z <= lo[1]
+    # ponytail: a stored height of exactly 0.0 counts as not set (one shipped car). A car with a true roll centre
+    # at 0.0 of the chassis frame takes the fallback too. Add a flag when a car needs that height.
+    zg = None if rc_static == 0.0 else (rc_static - h0) / k
+    if (zg is None or not ok(zg)) and rc_datum0 is not None and abs(h0 - rc_datum0) <= 1e-3:
+        zg = 0.0
+    if zg is None or not ok(zg):
         raise ValueError(f"The ground datum of the {name} axle is not plausible. The contact patch must lie "
                          "below the lower outer ball joint by at most the tyre radius.")
     w = np.linspace(-travel, travel, n)
@@ -618,15 +598,15 @@ def suspension_curves(car):
         need = (g.rc_height_fl, g.rc_height_fr, g.rc_height_rl, g.rc_height_rr, h.front_l, h.rear_l)
         if any(v is None for v in need):
             raise ValueError("The car file lacks the roll-centre heights (cids 55, 59, 63, 67) or the hardpoints (cids 49-52).")
-        def first(a, b):
-            v = (getattr(g, f"rc_first_{a}", None), getattr(g, f"rc_first_{b}", None))
+        def datum0(a, b):
+            v = (getattr(g, f"rc_datum0_{a}", None), getattr(g, f"rc_datum0_{b}", None))
             return None if None in v else 0.5 * (v[0] + v[1])
         ty, hf = car.tyre, np.asarray(h.front_l, float)
         car._curves = SimpleNamespace(
             f=axle_kinematics(hf, g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front",
-                              rc_first=first("fl", "fr"), radius=ty.fl["radius"] if ty.fl else None),
+                              rc_datum0=datum0("fl", "fr"), radius=ty.fl["radius"] if ty.fl else None),
             r=axle_kinematics(np.asarray(h.rear_l, float), g.track_rear, 0.5 * (g.rc_height_rl + g.rc_height_rr), name="rear",
-                              rc_first=first("rl", "rr"), radius=ty.rl["radius"] if ty.rl else None))
+                              rc_datum0=datum0("rl", "rr"), radius=ty.rl["radius"] if ty.rl else None))
         # K1 = x component of the kingpin unit vector: castor c (tyre scalar), inclination sigma (front view of the
         # line from the lower to the upper outer ball joint). No castor or no front tyre gives 0.
         # ponytail: K1 is the camber rate per rad of kingpin rotation. Per rad of road-wheel yaw, small-angle

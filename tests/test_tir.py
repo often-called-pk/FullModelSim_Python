@@ -5,7 +5,7 @@ It uses INFLPRES and NOMPRES. The checks run in the full model and in the QSS sc
 
 Plain script, no pytest. Each check prints PASS or FAIL. The first FAIL stops the file. Run from the repo root:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_tir.py
+    python tests/test_tir.py
 
 Every tyre file here is synthetic. The test writes each file at run time, from the in-repo MF205 coefficients.
 The files go into a temporary directory and carry made-up pressure terms. No licensed tyre data enters the repo.

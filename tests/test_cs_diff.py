@@ -6,8 +6,8 @@ synthetic car once per type with MLTP and a fake IPOPT (no solve), then evaluate
 states. The vendor section (last) runs only when CHASSISSIM_DIR names the ChassisSim install folder. It
 builds the GP3 2013 car on Eastern Creek, reads its rear map and writes nothing into the vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_diff.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_diff.py
+    python tests/test_cs_diff.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_diff.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

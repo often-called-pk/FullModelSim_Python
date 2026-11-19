@@ -7,8 +7,8 @@ a 4EM result), the ladder seeds (seed_m23, quasi_static_states 'car'), limit_pri
 MLTP_screen (_qss stem). The GP3 2013 car on Eastern Creek runs when CHASSISSIM_DIR names the install (else SKIP).
 Nothing is written into the vendor folders; scratch files go to a temp dir.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_wiring.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_wiring.py
+    python tests/test_cs_wiring.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_wiring.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

@@ -6,7 +6,7 @@ guard, and the NLP rows: the Xi_tol start box and the periodic rows appended las
 Sections 1-5 build no NLP. Sections 6-7 build the real NLP through a fake solver (no IPOPT)
 and need casadi + Data/DATA_AA.mat (SKIP, exit 0 otherwise). Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_start_state.py
+    python tests/test_start_state.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

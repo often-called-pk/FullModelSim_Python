@@ -3,7 +3,7 @@ item E3; plan docs/superpowers/plans/2026-10-20-finish-partials.md, Task 2).
 
 Plain script, no pytest. Each check prints PASS or FAIL, and the first FAIL stops the file. Run from the repo root:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_aero_scale.py
+    python tests/test_aero_scale.py
 
   1. defaults (float 1.0), vp_overrides plumbing, registry rows (primary, META, group), placeholder labels
   2. the Cd and Cl placeholders: with DATA_AA.mat an override changes no 23-state graph and no QSS lap;

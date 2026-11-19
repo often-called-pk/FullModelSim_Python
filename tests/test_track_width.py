@@ -11,7 +11,7 @@ envelope reads ctx.aero) and prints SKIP without it. Sections 5-9, 11-14 (and 13
 Data/DATA_AA.mat (SKIP, exit 0 otherwise). Sections 5-8, 12 and 14 build the real NLP through a fake
 solver, section 13b runs MLTP through stand-ins, and no section runs IPOPT. Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_track_width.py
+    python tests/test_track_width.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import atexit

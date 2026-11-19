@@ -10,7 +10,7 @@ Test 6 runs the QSS screen (MLTP_screen, no NLP solve). Test 7 checks quasi_stat
 Derivatives are symbolic (casadi) at the state, on a straight line (kappa = 0), coast input.
 Needs casadi and Data/DATA_AA.mat (prints SKIP and exits 0 otherwise). Run from the repo root:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_physics_mass_frame.py
+    python tests/test_physics_mass_frame.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import os

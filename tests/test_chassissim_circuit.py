@@ -3,8 +3,8 @@ the result stems, the plot folder and the init file name. Synthetic install fold
 IPOPT (no solve). The last section reads a real ChassisSim install only when CHASSISSIM_DIR is set, else
 it prints SKIP.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_chassissim_circuit.py
-    CHASSISSIM_DIR="<ChassisSim install folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_chassissim_circuit.py
+    python tests/test_chassissim_circuit.py
+    CHASSISSIM_DIR="<ChassisSim install folder>" python tests/test_chassissim_circuit.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

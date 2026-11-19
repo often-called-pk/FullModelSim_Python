@@ -7,8 +7,8 @@ refusals, the static point, left-right symmetry on a straight, the front bar law
 default NLP snapshot (subprocess), and the GP3 2013 car on Eastern Creek when CHASSISSIM_DIR names the install
 (else SKIP). Nothing is written into the vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_vehmodel_cs.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_vehmodel_cs.py
+    python tests/test_vehmodel_cs.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_vehmodel_cs.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

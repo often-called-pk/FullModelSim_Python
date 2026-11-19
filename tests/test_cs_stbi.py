@@ -492,7 +492,7 @@ def vendor(cs_dir):
     ok(f"GP3 2013 builds with the channel, {v3.size} finite values", bool(np.all(np.isfinite(v3))))
 
     seed_dir = os.environ.get("CS_STBI_SEED_DIR")
-    seeds = glob.glob(os.path.join(seed_dir, "*car_def_GP3*nbCustom*.mat")) if seed_dir else []
+    seeds = glob.glob(os.path.join(seed_dir, "*car_def*nbCustom*.mat")) if seed_dir else []
     if not seeds:
         print("  SKIP: CS_STBI_SEED_DIR not set, or no stored GP3 fixed-line result in it")
         return

@@ -5,7 +5,7 @@ docs/superpowers/plans/2026-10-20-finish-partials.md, Task 1 (C6)).
 Plain script, no pytest. Each check prints PASS or FAIL, and the first FAIL stops the file. Run from the
 repo root:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_mf_scaling.py
+    python tests/test_mf_scaling.py
 
   1. defaults (MF205 and CopyB give 1.0 for all five), vp_overrides plumbing, unknown key raises
   2. full model, both physics, camber on (no solve):

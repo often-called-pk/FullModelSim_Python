@@ -13,8 +13,8 @@ Each 4EM build asserts preconditions first: the balance spans more than 1e-2, an
 only when CHASSISSIM_DIR names the install folder and prints SKIP and exits 0 otherwise.
 Sections 1-5 need casadi and Data/DATA_AA.mat (SKIP without it). Scratch files: none.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_axle_balance.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_axle_balance.py
+    python tests/test_axle_balance.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_axle_balance.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

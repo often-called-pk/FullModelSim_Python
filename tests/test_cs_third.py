@@ -9,8 +9,8 @@ MLTP and a fake IPOPT (no solve). The vendor section (last) runs only when CHASS
 folder. It reads the F2 (rear third rubber) and the GP3 2013 car and checks relations only. It writes nothing into the
 vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_third.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_third.py
+    python tests/test_cs_third.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_third.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

@@ -21,7 +21,7 @@ Plain script, no pytest. Each check prints PASS or FAIL. The first FAIL stops th
 Sections 1 to 5 need no casadi. Sections 6 to 9 need casadi and Data/DATA_AA.mat. Without them the
 file prints SKIP and exits 0. No IPOPT runs here. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_between_knots.py
+    python tests/test_between_knots.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

@@ -8,8 +8,8 @@ under the car brake force (cid 107), ay_max and the downforce, the lap (finite, 
 higher with more drag), and the 4EM default QSS lap of Sturn. The GP3 2013 car on Eastern Creek runs when
 CHASSISSIM_DIR names the install (else SKIP). Nothing is written into the vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_qss.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_qss.py
+    python tests/test_cs_qss.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_qss.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

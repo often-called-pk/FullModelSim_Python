@@ -5,7 +5,7 @@ userOpts._load_track, the rebuilt Jarama and BCN sector files, the removal of
 BCNAssetto, the QSS lap pins and the GPS track builder. No NLP solve. Sections 11 and 14 need
 Data/DATA_AA.mat and print SKIP without it. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_track_qa.py
+    python tests/test_track_qa.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

@@ -5,7 +5,7 @@ the file prints SKIP and exits 0 after section 1b. Section 5 (lift_fit equilibri
 stage) and the V9 check of section 7 also need casadi. The logs are synthetic: QSS laps and straight
 runs of a car with known LMUX, LMUY and Cd_scale. No IPOPT and no solve. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_correlate.py
+    python tests/test_correlate.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

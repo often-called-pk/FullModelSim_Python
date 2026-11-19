@@ -6,7 +6,7 @@ they never overwrite the default ones. MLTP_screen forwards physics to userOpts 
 it in data.physics (the screen runs with save off, so no file is written).
 Needs casadi and Data/DATA_AA.mat (prints SKIP and exits 0 otherwise). Run from the repo root:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_physics_flag.py
+    python tests/test_physics_flag.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import os

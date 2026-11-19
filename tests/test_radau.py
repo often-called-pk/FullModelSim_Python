@@ -7,7 +7,7 @@ NLP keeps its Legendre size. Sections 1 to 6b need CasADi and no model. Sections
 Data/DATA_AA.mat and Results/Sturn_Static_ATDOn_EM4Off.mat. Without them the file prints SKIP
 and exits 0. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_radau.py
+    python tests/test_radau.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

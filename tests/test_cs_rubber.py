@@ -8,8 +8,8 @@ corner, with no node in the NLP. A negative effective gap is valid. Third spring
 CHASSISSIM_DIR names the ChassisSim install folder. It reads the GP3 2013, F2, GT3 and F3 car files and writes
 nothing into the vendor folders. Scratch files go to a temp dir.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_rubber.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_rubber.py
+    python tests/test_cs_rubber.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_rubber.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
@@ -462,7 +462,7 @@ def loop_curve(lo_idx, hi_idx):
     return HYST_X, HYST_LOAD, HYST_LOAD * fac
 
 
-LOOP = loop_curve(4, 8)            # loop from 4 to 8 mm: thresholds by hand 4 mm and 9 mm (meet at 9 mm)
+LOOP = loop_curve(4, 8)            # loop from 4 to 8 mm (the forces meet again at 9 mm)
 SCALE = np.r_[[2.0, 0.3, 0.1, 0.5, 0.02], [3.0] * 4, [0.02, 0.2, 0.002, 0.02, 0.002, 0.02], [0.002] * 8]
 
 
@@ -510,18 +510,6 @@ def hyst_hand(cs, c, w, curve):
     Lh = float(PchipInterpolator(x, lo)(comp))
     return (comp, mr * Lh, mr * (Lh - float(PchipInterpolator(x, np.maximum(lo - up, 0.0))(comp))), mr)
 
-
-# 8.1 thresholds: lower = first x with |load - unload| > 5 % of max load; upper = where they meet, at most the midpoint
-car_loop = load_car(hyst_car("hyst_thr_loop.car", {"fl": LOOP}, {"fl": 1}))
-thr = car_loop.susp.hyst_thr_fl or (np.nan, np.nan)
-ok(f"thresholds of the loop 4 to 8 mm: lower {thr[0]*1e3:.2f} mm, upper {thr[1]*1e3:.2f} mm (by hand 4.00, 9.00)",
-   abs(thr[0] - 0.004) < 1e-12 and abs(thr[1] - 0.009) < 1e-12)
-car_cap = load_car(hyst_car("hyst_thr_cap.car", {"fl": loop_curve(4, 16)}, {"fl": 1}))
-thr_c = car_cap.susp.hyst_thr_fl or (np.nan, np.nan)
-ok(f"loop 4 to 16 mm: upper capped at the midpoint, 10.00 mm (got {thr_c[1]*1e3:.2f} mm), lower 4.00 mm",
-   abs(thr_c[0] - 0.004) < 1e-12 and abs(thr_c[1] - 0.010) < 1e-12)
-ok("corners without flag 1 have no thresholds",
-   car_loop.susp.hyst_thr_fr is None and car_loop.susp.hyst_thr_rl is None and car_loop.susp.hyst_thr_rr is None)
 
 # 8.2 model force inside the loop, with the sign of xsdot
 PATH_H1 = hyst_car("hyst_loop.car", {"fl": LOOP}, {"fl": 1})
@@ -625,7 +613,7 @@ for i, (what, curve) in enumerate(BAD.items()):
     ok(f"flag 1 with a curve that is {what}: load_car raises naming corner rr and cid 663",
        hit and "corner rr (cid 663)" in msg and "cannot use" in msg)
 ok("the same curves with flag 0 load",
-   all(load_car(hyst_car(f"hyst_bad0_{i}.car", {"rr": c}, {})).susp.hyst_thr_rr is None for i, c in enumerate(BAD.values())))
+   all(load_car(hyst_car(f"hyst_bad0_{i}.car", {"rr": c}, {})).susp.hyst_rr is not None for i, c in enumerate(BAD.values())))
 hit, msg = refusal(load_car, hyst_car("hyst_flag2.car", {"fr": LOOP}, {"fr": 2}))
 ok(f"flag 2 raises ValueError naming corner fr and cid 657: {msg[-70:]!r}",
    hit and "corner fr (cid 657) other than 0 or 1" in msg)

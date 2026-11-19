@@ -7,7 +7,7 @@ Data/DATA_AA.mat. They run MLTP on the stored Sturn point with IPOPT faked (no s
 wiring of data.vehicle_full and data.t_full, then an EM4 On and a physics='corrected' stub, then a
 .mat round trip. Without DATA_AA they print SKIP and the run still exits 0. Run from any directory:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_telemetry.py
+    python tests/test_telemetry.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

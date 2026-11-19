@@ -5,8 +5,8 @@ scipy (the reader module imports them) and run no solve. The vendor section runs
 the ChassisSim install folder. It reads every .ld log under the Models folder next to it, checks the GP3 lap
 against its .ldx Fastest Time, and checks ay against the curvature of Eastern Creek. It writes nothing into the repo.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_read_ld.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_read_ld.py
+    python tests/test_read_ld.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_read_ld.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import os

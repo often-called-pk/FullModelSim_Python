@@ -19,7 +19,7 @@ Sections 2 to 8 need casadi and Data/DATA_AA.mat. Without the file, the test pri
 Section 8 also needs Results/Sturn_Static_ATDOn_EM4Off.mat. No section runs IPOPT.
 Run from anywhere:
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_arb.py
+    python tests/test_arb.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

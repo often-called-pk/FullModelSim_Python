@@ -9,8 +9,8 @@ vehParams totals (matlab and corrected physics). The vendor section runs only wh
 ChassisSim install folder. It reads the GP3 2013 Eastern Creek car file and checks relations only, no copied
 values. It writes nothing into the vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_car.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_car.py
+    python tests/test_cs_car.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_car.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import hashlib
@@ -241,9 +241,9 @@ ok("engine efficiency 100, torque split 111 (0), diff types 112 and 113 as store
 ok("roll-centre heights 55, 59, 63, 67 (fr, fl, rr, rl) read in m as stored",
    abs(car.geom.rc_height_fr - 0.050) < 1e-12 and abs(car.geom.rc_height_fl - 0.052) < 1e-12
    and abs(car.geom.rc_height_rr - 0.061) < 1e-12 and abs(car.geom.rc_height_rl - 0.063) < 1e-12)
-ok("first values 54, 58, 62, 66 (fr, fl, rr, rl) read in m as stored (meaning not decoded)",
-   abs(car.geom.rc_first_fr - 0.045) < 1e-12 and abs(car.geom.rc_first_fl - 0.047) < 1e-12
-   and abs(car.geom.rc_first_rr - 0.058) < 1e-12 and abs(car.geom.rc_first_rl - 0.060) < 1e-12)
+ok("RC heights at the hardpoint datum 54, 58, 62, 66 (fr, fl, rr, rl) read in m as stored",
+   abs(car.geom.rc_datum0_fr - 0.045) < 1e-12 and abs(car.geom.rc_datum0_fl - 0.047) < 1e-12
+   and abs(car.geom.rc_datum0_rr - 0.058) < 1e-12 and abs(car.geom.rc_datum0_rl - 0.060) < 1e-12)
 
 # groups: one decoded value per group
 print("  -- groups")

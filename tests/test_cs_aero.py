@@ -9,8 +9,8 @@ without the cids; the QSS envelope reads the speed and sideslip corrections at z
 The synthetic cars are built with MLTP and a fake IPOPT (no solve). The vendor section (last) runs only when
 CHASSISSIM_DIR names the ChassisSim install folder.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_aero.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_aero.py
+    python tests/test_cs_aero.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_aero.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib

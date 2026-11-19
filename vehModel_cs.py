@@ -223,6 +223,16 @@ def gear_envelope_numeric(cs, R, v):
     return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
 
 
+def _static_defl(su, vp, c, what):
+    """Return (d, mr0): the static compression d of the spring of corner c at the damper [m], F0 / (mr0 k) - preload,
+    and the motion ratio mr0 at static. what names the gap in the error message."""
+    sp = getattr(su, f"spring_{c}")
+    if not sp["rate"]:
+        raise ValueError(f"The spring of corner {c} has no rate. The static deflection for the {what} needs one.")
+    mr0 = float(np.atleast_1d(getattr(su, f"mr_{c}"))[0])
+    return getattr(vp, f"m_c_{c}") * vp.g / (mr0 * sp["rate"]) - sp["preload"], mr0
+
+
 def rubber_gap(cs, c, vp=None):
     """Return the effective bump rubber gap of corner c at the damper [m], or None when the corner has no rubber.
     Flag 1: the stored gap. Flag 0: the stored gap minus the static spring compression at the damper,
@@ -234,11 +244,7 @@ def rubber_gap(cs, c, vp=None):
     if getattr(cs.susp, f"gap_flag_{c}") == 0:
         if vp is None:
             raise ValueError(f"The rubber gap of corner {c} needs the vehicle parameters (gap flag 0).")
-        mr0 = float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0])
-        sp = getattr(cs.susp, f"spring_{c}")
-        if not sp["rate"]:
-            raise ValueError(f"The spring of corner {c} has no rate. The static deflection for the rubber gap needs one.")
-        gap -= getattr(vp, f"m_c_{c}") * vp.g / (mr0 * sp["rate"]) - sp["preload"]
+        gap -= _static_defl(cs.susp, vp, c, "rubber gap")[0]
     return gap
 
 
@@ -248,6 +254,11 @@ def _rubber_law(rub):
     x, y = np.r_[0.0, rub["x"]], np.r_[0.0, rub["y"]]
     dx = x[-1] - x[-2]
     return _curve(np.r_[x, x[-1] + dx], np.r_[y, y[-1] + (y[-1] - y[-2])], ext=1.0)
+
+
+def _rubber_force(rub):
+    """Return F(compression) of a rubber record: the table for flag 1, else the linear rate."""
+    return _rubber_law(rub) if rub["flag"] == 1 else (lambda comp: rub["rate"] * comp)
 
 
 def _rubber(cs, c, vp=None):
@@ -265,6 +276,7 @@ def _rubber(cs, c, vp=None):
     Without xsdot (the QSS) the loading curve holds.
     ponytail: ChassisSim switches at position thresholds, with one state per corner. Past an upper threshold (at most
     the curve midpoint) it sits on the unloading curve at rest. This law sits on the loading curve, as the QSS does.
+    The loader does not derive the thresholds. Add them back when a report needs them.
     The curve x is the compression past the rubber air gap [m], like the table."""
     gap = rubber_gap(cs, c, vp)
     if gap is None:
@@ -288,9 +300,7 @@ def _rubber(cs, c, vp=None):
                 return m * (law(cx) - d * d / ca.sqrt(d * d + e * e) * 0.5 * (1 - ca.tanh((m * xsdot + V0_HYST) / V_HYST)))
             return hyst
     else:
-        rub = getattr(cs.susp, f"rubber_{c}")
-        law = (_rubber_law(rub) if rub["flag"] == 1
-               else (lambda comp: rub["rate"] * comp))
+        law = _rubber_force(getattr(cs.susp, f"rubber_{c}"))
     return lambda xs, xsdot=None: mr(xs) * law(comp(xs))
 
 
@@ -315,7 +325,7 @@ def third_element(cs, a, vp=None):
     The rubber gap follows the rule of rubber_gap. Flag 1 is the gap from static.
     Flag 0 is the gap minus the static heave (the static wheel travel of the corner springs).
     A gap of 0 or at least 0.5 m means no rubber. An axle without spring rate, rubber and damper table gives None."""
-    su = cs.susp
+    su, who = cs.susp, "front" if a == "f" else "rear"
     rate = float((getattr(su, f"spring_third_{a}") or {}).get("rate", 0.0))
     gap, rub = float(getattr(su, f"gap_third_{a}") or 0.0), getattr(su, f"rubber_third_{a}")
     live_r = (0 < gap < 0.5 and rub is not None and (table_live(rub) if rub["flag"] == 1 else bool(rub["rate"])))
@@ -331,21 +341,14 @@ def third_element(cs, a, vp=None):
             raise ValueError(f"The car file {cs.path} holds a third bump rubber gap flag (cid 208 or 209) other than 0 or 1.")
         if flag == 0:
             if vp is None:
-                raise ValueError(f"The rubber gap of the third element {a} needs the vehicle parameters (gap flag 0).")
-            d0 = []
-            for c in (a + "l", a + "r"):
-                k = getattr(su, f"spring_{c}")
-                if not k["rate"]:
-                    raise ValueError(f"The spring of corner {c} has no rate. The static deflection for the third rubber gap needs one.")
-                m0 = float(np.atleast_1d(getattr(su, f"mr_{c}"))[0])
-                d0.append((getattr(vp, f"m_c_{c}") * vp.g / (m0 * k["rate"]) - k["preload"]) / m0)    # wheel travel
+                raise ValueError(f"The rubber gap of the {who} third element needs the vehicle parameters (gap flag 0).")
+            d0 = [d / m0 for d, m0 in (_static_defl(su, vp, a + s, "third rubber gap") for s in "lr")]    # wheel travel
             gap -= sm(0.5 * (d0[0] + d0[1]))
-        base = (_rubber_law(rub) if rub["flag"] == 1
-                else (lambda comp: rub["rate"] * comp))
+        base = _rubber_force(rub)
         law = lambda h: base(W_RUBBER * _sp((h - gap) / W_RUBBER))
     # ponytail: the third spring acts on the heave from static. Its preload and x / y table are unused, and the corners keep F0.
     spring = lambda h: rate * h + (law(h) if law else 0.0)
-    return sm, mr, spring, (_damper_curve(dm, "the " + ("front" if a == "f" else "rear") + " third element") if live_d else None)
+    return sm, mr, spring, (_damper_curve(dm, f"the {who} third element") if live_d else None)
 
 
 def poly_sx(p, x, lo, hi):
@@ -369,7 +372,6 @@ def vehModel_cs(ctx):
     t_f, t_r = cs.geom.track_front, cs.geom.track_rear
     kt = {c: ty[c]["kz"] for c in C4}           # tyre rate per corner
     kt_ref = vp.kt                              # the zt states hold the tyre load / kt_ref
-    deg2rad = np.pi / 180.0
     curves = suspension_curves(cs)
     eng = cs.engine
     vmax = eng.rpm_limit * Rw["r"] / float(np.min(eng.gears))

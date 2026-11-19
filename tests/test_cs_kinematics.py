@@ -8,8 +8,8 @@ The vendor section (last) runs only when CHASSISSIM_DIR names the ChassisSim ins
 GP3 2013 car and its log, then the GT3 car (found by glob), and prints SKIP otherwise. Nothing is written into
 the vendor folders.
 
-    /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_kinematics.py
-    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" /home/pk/.venvs/fullmodelsim/bin/python tests/test_cs_kinematics.py
+    python tests/test_cs_kinematics.py
+    CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_kinematics.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
@@ -188,18 +188,35 @@ def raised_text(fn):
     return ""
 
 
-RC0 = rc_height(HP_LEFT, TRACK, 0.0)           # geometric RC above the ground at zg = 0 (hardpoints in the ground frame)
-ok(f"rule (a): geometric RC above the ground at zg = 0 is {RC0 * 1e3:.2f} mm", 0.02 < RC0 < 0.03)
-ATD0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_first=RC0, radius=0.30, name="front")
-ok(f"rule (a): first value = geometric RC gives zg = 0 (|zg| {abs(ATD0.zg):.1e} m)", abs(ATD0.zg) < 1e-12)
-ok(f"rule (a): rc_h(0) = the geometric RC (|err| {abs(ATD0.rc_h(0.0) - RC0):.1e} m)",
-   abs(ATD0.rc_h(0.0) - RC0) < 1e-9)
-NEAR0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_first=RC0 + 0.5e-3, radius=0.30, name="front")
-ok("rule (a): a first value 0.5 mm off still gives zg = 0 (within 1 mm)", abs(NEAR0.zg) < 1e-12)
-FAR0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_first=RC0 + 5e-3, radius=0.30, name="front")
+# The back-out from the stored height (rule b) comes first. zg = 0 is only the fallback: the back-out datum is not
+# plausible, and the stored RC height at the hardpoint datum equals the geometric one within 1 mm.
+RC0 = rc_height(HP_LEFT, TRACK, 0.0)           # geometric RC height at the hardpoint datum (zg = 0)
+ok(f"geometric RC height at zg = 0 is {RC0 * 1e3:.2f} mm", 0.02 < RC0 < 0.03)
 BACK = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, name="front")
-ok(f"rule (b): a first value 5 mm off gives the back-out datum zg {FAR0.zg * 1e3:.3f} mm",
+FAR0 = axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_datum0=RC0, radius=0.30, name="front")
+ok(f"rule (b) first: a plausible back-out datum holds with an exact rc_datum0 (zg {FAR0.zg * 1e3:.3f} mm, not 0)",
    abs(FAR0.zg - BACK.zg) < 1e-12 and abs(FAR0.zg) > 1e-3)
+ok("rule (b) first: rc_datum0 does not change a plausible datum (5 mm off, None)",
+   all(axle_kinematics(HP_LEFT, TRACK, RC_STATIC, rc_datum0=v, radius=0.30, name="front").zg == BACK.zg
+       for v in (RC0 + 5e-3, None)))
+RC_BAD = RC0 + (rc_height(HP_LEFT, TRACK, 1.0) - RC0) * (HP_LEFT[2, 2] + 0.05)    # back-out datum 50 mm above the ball joint
+ATD0 = axle_kinematics(HP_LEFT, TRACK, RC_BAD, rc_datum0=RC0, radius=0.30, name="front")
+ok(f"fallback: a back-out datum that is not plausible, with an exact rc_datum0, gives zg = 0 (|zg| {abs(ATD0.zg):.1e} m)",
+   ATD0.zg == 0.0)
+ok(f"fallback: rc_h(0) = the geometric RC (|err| {abs(ATD0.rc_h(0.0) - RC0):.1e} m)",
+   abs(ATD0.rc_h(0.0) - RC0) < 1e-9)
+NEAR0 = axle_kinematics(HP_LEFT, TRACK, RC_BAD, rc_datum0=RC0 + 0.5e-3, radius=0.30, name="front")
+ok("fallback: an rc_datum0 0.5 mm off still gives zg = 0 (within 1 mm)", NEAR0.zg == 0.0)
+ok("no fallback: an rc_datum0 5 mm off or absent raises ValueError (datum not plausible)",
+   all("not plausible" in raised_text(lambda v=v: axle_kinematics(HP_LEFT, TRACK, RC_BAD, rc_datum0=v, radius=0.30, name="front"))
+       for v in (RC0 + 5e-3, None)))
+ok("a stored height of 0.0 is not set: an exact rc_datum0 gives zg = 0, with and without a radius",
+   all(axle_kinematics(HP_LEFT, TRACK, 0.0, rc_datum0=RC0, radius=r, name="front").zg == 0.0 for r in (0.30, None)))
+ok("a stored height of 0.0 with an rc_datum0 5 mm off or absent raises ValueError (datum not plausible)",
+   all("not plausible" in raised_text(lambda v=v: axle_kinematics(HP_LEFT, TRACK, 0.0, rc_datum0=v, radius=0.30, name="front"))
+       for v in (RC0 + 5e-3, None)))
+ok("without a radius there is no plausibility check: the back-out datum holds",
+   abs(axle_kinematics(HP_LEFT, TRACK, RC_BAD, rc_datum0=RC0, name="front").zg - (HP_LEFT[2, 2] + 0.05)) < 1e-9)
 A0 = rc_height(HP_LEFT, TRACK, 0.0)
 ZG_LIN = (RC_STATIC - A0) / (rc_height(HP_LEFT, TRACK, 1.0) - A0)     # solve the linear RC(zg) = stored value for zg
 ok(f"rule (b): the back-out datum equals the linear solve {ZG_LIN * 1e3:.3f} mm (|err| {abs(FAR0.zg - ZG_LIN):.1e} m)",
@@ -729,8 +746,8 @@ ok(f"GP3 above-ground static RC: front {vc.f.rc_h(0.0) * 1e3:.2f} mm (18.05), re
    abs(vc.f.rc_h(0.0) * 1e3 - 18.05) < 0.1 and abs(vc.r.rc_h(0.0) * 1e3 - 41.41) < 0.1)
 ok(f"GP3 datum: front zg {vc.f.zg * 1e3:.2f} mm (54.6), rear {vc.r.zg * 1e3:.2f} mm (62.9), 0.1 mm",
    abs(vc.f.zg * 1e3 - 54.6) < 0.1 and abs(vc.r.zg * 1e3 - 62.9) < 0.1)
-GP3_FIRST_F = 0.5 * (gc.rc_first_fl + gc.rc_first_fr)
-ok(f"GP3 first values ({GP3_FIRST_F * 1e3:.1f} mm) differ from the geometric RC at zg 0 by more than 1 mm (rule (b))",
+GP3_FIRST_F = 0.5 * (gc.rc_datum0_fl + gc.rc_datum0_fr)
+ok(f"GP3 rc_datum0 ({GP3_FIRST_F * 1e3:.1f} mm) differs from the geometric RC at zg 0 by more than 1 mm (2-D projection)",
    abs(rc_height(np.asarray(car.hardpoints.front_l, float), gc.track_front, 0.0) - GP3_FIRST_F) > 1e-3)
 
 LOG_MAP = {
@@ -776,7 +793,7 @@ ok(f"GP3 front steer camber K1 {vc.k1:.4f} within 1e-3 of 0.1517", abs(vc.k1 - 0
 ok("GP3 rear tyres have castor 0, so the rear K1 is 0 (tan 0 = 0)",
    abs(car.tyre.rl["castor"]) < 1e-12 and abs(car.tyre.rr["castor"]) < 1e-12 and np.tan(car.tyre.rl["castor"]) == 0.0)
 
-print("[cs_kinematics] vendor GT3 (datum from the first stored values, rule (a))")
+print("[cs_kinematics] vendor GT3 (datum 0 through the fallback: the back-out datum is not plausible)")
 gt3_cars = glob.glob(os.path.join(glob.escape(MODELS), "GT3", "*", "*.car"))
 ok("one GT3 car file by glob GT3/*/*.car", len(gt3_cars) == 1)
 gt3_logs = glob.glob(os.path.join(glob.escape(os.path.dirname(gt3_cars[0])), "*.ld"))
@@ -785,11 +802,16 @@ gt3 = load_car(gt3_cars[0])
 gv = suspension_curves(gt3)
 gg = gt3.geom
 ok("GT3 ground datum zg = 0 on both axles", abs(gv.f.zg) < 1e-12 and abs(gv.r.zg) < 1e-12)
-ok(f"GT3 first values equal the geometric RC within 1 mm (front {(gg.rc_first_fl - gv.f.rc_h(0.0)) * 1e3:+.3f} / "
-   f"{(gg.rc_first_fr - gv.f.rc_h(0.0)) * 1e3:+.3f}, rear {(gg.rc_first_rl - gv.r.rc_h(0.0)) * 1e3:+.3f} / "
-   f"{(gg.rc_first_rr - gv.r.rc_h(0.0)) * 1e3:+.3f} mm)",
-   all(abs(v - r) <= 1e-3 for v, r in ((gg.rc_first_fl, gv.f.rc_h(0.0)), (gg.rc_first_fr, gv.f.rc_h(0.0)),
-                                        (gg.rc_first_rl, gv.r.rc_h(0.0)), (gg.rc_first_rr, gv.r.rc_h(0.0)))))
+ok("GT3 without rc_datum0: the back-out datum is not plausible on both axles (ValueError)",
+   all("not plausible" in raised_text(lambda a=a: axle_kinematics(
+       np.asarray(getattr(gt3.hardpoints, f"{a}_l"), float), getattr(gg, f"track_{a}"),
+       0.5 * (getattr(gg, f"rc_height_{a[0]}l") + getattr(gg, f"rc_height_{a[0]}r")),
+       radius=getattr(gt3.tyre, f"{a[0]}l")["radius"], name=a)) for a in ("front", "rear")))
+ok(f"GT3 rc_datum0 equals the geometric RC within 1 mm (front {(gg.rc_datum0_fl - gv.f.rc_h(0.0)) * 1e3:+.3f} / "
+   f"{(gg.rc_datum0_fr - gv.f.rc_h(0.0)) * 1e3:+.3f}, rear {(gg.rc_datum0_rl - gv.r.rc_h(0.0)) * 1e3:+.3f} / "
+   f"{(gg.rc_datum0_rr - gv.r.rc_h(0.0)) * 1e3:+.3f} mm)",
+   all(abs(v - r) <= 1e-3 for v, r in ((gg.rc_datum0_fl, gv.f.rc_h(0.0)), (gg.rc_datum0_fr, gv.f.rc_h(0.0)),
+                                        (gg.rc_datum0_rl, gv.r.rc_h(0.0)), (gg.rc_datum0_rr, gv.r.rc_h(0.0)))))
 ok(f"GT3 static RC above ground: front {gv.f.rc_h(0.0) * 1e3:.2f} mm (-54.4), rear {gv.r.rc_h(0.0) * 1e3:.2f} mm (+114.8), 0.5 mm",
    abs(gv.f.rc_h(0.0) * 1e3 + 54.4) < 0.5 and abs(gv.r.rc_h(0.0) * 1e3 - 114.8) < 0.5)
 gt3_log = read_ld(gt3_logs[0], channel_map={**LOG_MAP, "roll": (("Roll angle",), "deg", 1.0)})
