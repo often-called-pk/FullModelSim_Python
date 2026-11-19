@@ -12,6 +12,7 @@ default NLP snapshot (subprocess), and the GP3 2013 car on Eastern Creek when CH
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 import contextlib
+import hashlib
 import copy
 import io
 import os
@@ -28,7 +29,7 @@ import time
 from types import SimpleNamespace
 
 import functions.transcription as T
-from functions import carfile
+from functions import carfile, chassissim as C
 from functions.chassissim import suspension_curves
 from MLTP import MLTP
 import vehModel_cs as V
@@ -36,6 +37,11 @@ from scipy.interpolate import PchipInterpolator
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
+# The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
+# (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
+FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
+                           (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
+                           (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
 G = 9.81
 ROWS_VERT = [10, 12, 14, 15, 16, 17, 18]     # zsdot, thetadot, phidot and the wheel rows (vertical states)
 TMP = tempfile.TemporaryDirectory()
@@ -192,7 +198,7 @@ def tyre_record(i, corner, toe=None):
 def mirror_car(R, toe=0.0):
     """Copy each left record onto its right partner and set every toe [deg] to toe: a left-right symmetric car."""
     idx = {c: i for i, (_, c, _) in enumerate(R)}
-    for left, right in MIRROR:
+    for right, left in MIRROR:      # file cids: the right wheel is the lower one
         t, _, v = R[idx[left]]
         R[idx[right]] = (t, right, copy.deepcopy(v))
     for i, (t, c, v) in enumerate(R):
@@ -208,6 +214,7 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
     R = []
 
     def add(tag, cid, v):
+        cid = FILE_CID.get(cid, cid)
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
         add(1, cid, 0.0 if mirror and cid in (121, 122) else v)     # no aero: the zero maps take zero scalars
@@ -355,12 +362,79 @@ BAR0 = write_car("bar0.car", arb_front=0.0)
 ctx_bar0 = build(BAR0)
 S_k, S_0 = roll_stiffness(ctx), roll_stiffness(ctx_bar0)
 k = ctx.cs.susp.arb_f["rate"]
-mr0 = float(np.atleast_1d(ctx.cs.susp.mr_arb_f)[0])
+mr0 = float(np.atleast_1d(ctx.cs.susp.mr_arb_fr)[0])
 t_f = ctx.cs.geom.track_front
 expect = 0.5 * k * mr0 ** 2 * t_f ** 2          # bar = k mr0^2 / 2 per wheel, roll arm t_f (the model's law)
 dS = S_k - S_0
 ok(f"front bar adds k mr0^2 t_f^2 / 2 to the roll stiffness within 2 %: dS {dS:.4e}, "
    f"expected {expect:.4e} N m/rad", abs(dS - expect) < 0.02 * abs(expect))
+
+print("[vehmodel_cs] corner order: the lowest cid of a group is the front right record")
+
+
+def corner_forces(c_, x):
+    """Strut forces fzs and strut travels xs of the four corners (fl, fr, rl, rr) at the physical state x."""
+    mm = c_.m23
+    out = [getattr(mm, f"{n}_{c}") for n in ("fzs", "xs") for c in CORNERS]
+    v = np.array([float(e) for e in ca.Function("Z", [mm.x, mm.u, mm.pv], out).call([x / mm.x_s, np.zeros(mm.nu), 0.0])])
+    return dict(zip(CORNERS, v[:4])), dict(zip(CORNERS, v[4:]))
+
+
+def car_plus(name, extra, **kw):
+    """Write the synthetic car with more records (tag, cid, value) before the end record."""
+    R = build_records(**kw)
+    path = os.path.join(TMP.name, name)
+    carfile.write(R[:-1] + list(extra) + R[-1:], path)
+    return path
+
+
+k_fr, pre_fr = SPRING[2]                                # the front right values (written on file cid 1)
+ctx_stiff = build(write_car("stiff_fr.car", over={1: (1, pre_fr, 2 * k_fr, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
+ok("a spring of twice the rate on cid 1 lands on the front right corner of the car record",
+   ctx_stiff.cs.susp.spring_fr["rate"] == 2 * k_fr and ctx_stiff.cs.susp.spring_fl["rate"] == SPRING[1][0])
+x_h = static_x(ctx)
+x_h[9] = -0.005                                         # the body 5 mm down: every strut 5 mm in, no roll, so no bar force
+(f_a, xs_a), (f_b, _) = corner_forces(ctx, x_h), corner_forces(ctx_stiff, x_h)
+sm_fr, mr_fr = V._mr(ctx.cs.susp.mr_fr)
+exp_fr = k_fr * sm_fr(xs_a["fr"]) * mr_fr(xs_a["fr"])   # the added rate through the motion-ratio law
+ok(f"model: the strut force rises on the front right only: fr {f_b['fr'] - f_a['fr']:.3f} N (hand {exp_fr:.3f} N), "
+   f"others {max(abs(f_b[c] - f_a[c]) for c in ('fl', 'rl', 'rr')):.1e} N",
+   abs(f_b["fr"] - f_a["fr"] - exp_fr) < 1e-6 * exp_fr and all(abs(f_b[c] - f_a[c]) < 1e-9 for c in ("fl", "rl", "rr")))
+ctx_gap = build(write_car("gap_fr.car", over={7: 0.03}))
+ok("a rubber gap of 30 mm on cid 7 lands on the front right corner (model gap fr 30 mm, fl as stored)",
+   V.rubber_gap(ctx_gap.cs, "fr", ctx_gap.vp) == 0.03 and V.rubber_gap(ctx_gap.cs, "fl", ctx_gap.vp) == GAP[7])
+
+print("[vehmodel_cs] bar motion ratio per corner (27 FR, 170 FL, 28 RR, 171 RL)")
+
+
+def graph_hash(c_):
+    mm = c_.m23
+    return hashlib.sha256(ca.Function("d", [mm.x, mm.u, mm.pv], [mm.dx, mm.sf]).serialize().encode()).hexdigest()
+
+
+mr_27 = np.asarray(ctx.cs.susp.mr_arb_fr, float)
+ok("a car without the left bar records (170, 171) reads the right ratio on both sides",
+   C.bar_ratios(ctx.cs, "f") == (mr_27[0], mr_27[0]) and np.array_equal(ctx.cs.susp.mr_arb_fl, mr_27))
+ctx_eq = build(car_plus("bar_eq.car", [(2, 170, mr_27.copy()), (2, 171, np.asarray(ctx.cs.susp.mr_arb_rr, float).copy())]))
+ok("left bar ratio = right bar ratio: the model graph (dx, sf) is that of the car without the left records",
+   graph_hash(ctx_eq) == graph_hash(ctx))
+ctx_zero = build(car_plus("bar_zero.car", [(2, 170, np.zeros(5))]))
+ok("an all-zero left bar ratio takes the right one: the same graph", graph_hash(ctx_zero) == graph_hash(ctx)
+   and C.bar_ratios(ctx_zero.cs, "f") == (mr_27[0], mr_27[0]))
+ML = 0.8
+left = [(2, 170, np.array([ML, 0.0, 0.0, 0.0, 0.0]))]
+ctx_d, ctx_d0 = build(car_plus("bar_diff.car", left)), build(car_plus("bar_diff0.car", left, arb_front=0.0))
+ok(f"different bar ratios decode per corner (left {ML}, right {mr_27[0]:.4f}) and change the graph",
+   C.bar_ratios(ctx_d.cs, "f") == (ML, mr_27[0]) and graph_hash(ctx_d) != graph_hash(ctx))
+x_r = static_x(ctx_d)
+x_r[13] = 0.004                                         # roll: the right side down
+(f_k, xs_k), (f_0, _) = corner_forces(ctx_d, x_r), corner_forces(ctx_d0, x_r)
+F_bar = 0.5 * ctx_d.cs.susp.arb_f["rate"] * (ML * xs_k["fl"] - mr_27[0] * xs_k["fr"])     # twist through each ratio
+d_fl, d_fr = f_k["fl"] - f_0["fl"], f_k["fr"] - f_0["fr"]
+ok(f"per-corner bar law: fl gets +m_l F ({d_fl:.4f} vs {ML * F_bar:.4f} N), fr gets -m_r F ({d_fr:.4f} vs "
+   f"{-mr_27[0] * F_bar:.4f} N), the rear is unchanged",
+   abs(F_bar) > 1.0 and abs(d_fl - ML * F_bar) < 1e-9 * abs(F_bar) + 1e-9 and abs(d_fr + mr_27[0] * F_bar) < 1e-9 * abs(F_bar) + 1e-9
+   and abs(f_k["rl"] - f_0["rl"]) < 1e-9 and abs(f_k["rr"] - f_0["rr"]) < 1e-9)
 
 print("[vehmodel_cs] 4EM default snapshot")
 SNAP = os.path.join(_bootstrap.ROOT, ".superpowers", "sdd", "chassissim", "map", "nlp_snapshot.py")
@@ -570,7 +644,7 @@ ok(f"rubber frame: {f_off:.4f} N 10 onset widths before the gap; {f_on:.2f} N at
 # 1. non-constant motion ratio: sm(x) = 0.9 x + 0.25 x^2, mr(x) = 0.9 + 0.5 x on the front left.
 #    The spring force is (F0 / mr0 + k sm(x)) mr(x); the rubber force is mr(x) table(sm(x) - gap), both within 1 %.
 mr_poly = np.array([0.9, 0.5, 0.0, 0.0, 0.0])
-ctx_mr = build(write_car("mr_poly.car", over={23: mr_poly}))
+ctx_mr = build(write_car("mr_poly.car", over={24: mr_poly}))     # file cid 24 = the front left motion ratio
 mm_r, vp_r, cs_r = ctx_mr.m23, ctx_mr.vp, ctx_mr.cs
 fzs_fl_fun = ca.Function("Z", [mm_r.x, mm_r.u, mm_r.pv], [mm_r.fzs_fl])
 

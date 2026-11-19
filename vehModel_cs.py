@@ -19,7 +19,7 @@ from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq
 
 from vehModel import _chassis_corrected
-from functions.chassissim import suspension_curves, table_live, bump_steer
+from functions.chassissim import suspension_curves, table_live, bump_steer, bar_ratios
 
 C4 = ("fl", "fr", "rl", "rr")
 V_HYST = 0.01       # m/s, width of the loading / unloading switch of a hysteresis rubber (tanh of the damper speed)
@@ -464,8 +464,12 @@ def vehModel_cs(ctx):
     # wheel gets k/2 (xs_l - xs_r). The GP3 roll in the ChassisSim log (front damper difference 1.9 mm at 2.5 g)
     # fits this form. The C3 form k (xs_l - xs_r) of the 4EM car gives half that roll.
     for ax_, (a, b) in (("f", ("fl", "fr")), ("r", ("rl", "rr"))):
-        bar = 0.5 * getattr(cs.susp, f"arb_{ax_}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{ax_}"))[0]) ** 2
-        if bar:
+        k_bar, (m_l, m_r) = getattr(cs.susp, f"arb_{ax_}")["rate"], bar_ratios(cs, ax_)
+        bar = 0.5 * k_bar * m_r ** 2
+        if m_l != m_r and k_bar:    # one ratio per wheel: the bar twist is m_l xs_l - m_r xs_r, and each wheel
+            F_bar = 0.5 * k_bar * (m_l * xs[a] - m_r * xs[b])       # gets the bar force through its own ratio
+            fzs[a], fzs[b] = fzs[a] + m_l * F_bar, fzs[b] - m_r * F_bar
+        elif bar:
             fzs[a], fzs[b] = fzs[a] + bar * (xs[a] - xs[b]), fzs[b] - bar * (xs[a] - xs[b])
     fz = {c: zt[c] * kt_ref for c in C4}
 

@@ -35,6 +35,11 @@ from MLTP_screen import MLTP_screen
 PASS = 0
 G = 9.81
 CORNERS = ("fl", "fr", "rl", "rr")
+# The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
+# (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
+FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
+                           (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
+                           (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
 TMP = tempfile.TemporaryDirectory()
 CIRC = "Synth Ring"
 
@@ -366,6 +371,7 @@ def build_records(camber_deg=0.0, hp_left=HP_LEFT):
     R = []
 
     def add(tag, cid, v):
+        cid = FILE_CID.get(cid, cid)
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
         add(1, cid, v)

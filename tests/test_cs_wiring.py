@@ -43,6 +43,11 @@ from scipy.interpolate import PchipInterpolator
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
+# The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
+# (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
+FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
+                           (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
+                           (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
 G = 9.81
 ROWS_VERT = [10, 12, 14, 15, 16, 17, 18]     # zsdot, thetadot, phidot and the wheel rows (vertical states)
 TMP = tempfile.TemporaryDirectory()
@@ -196,7 +201,7 @@ def tyre_record(i, corner, toe=None):
 def mirror_car(R, toe=0.0):
     """Copy each left record onto its right partner and set every toe [deg] to toe: a left-right symmetric car."""
     idx = {c: i for i, (_, c, _) in enumerate(R)}
-    for left, right in MIRROR:
+    for right, left in MIRROR:      # file cids: the right wheel is the lower one
         t, _, v = R[idx[left]]
         R[idx[right]] = (t, right, copy.deepcopy(v))
     for i, (t, c, v) in enumerate(R):
@@ -212,6 +217,7 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
     R = []
 
     def add(tag, cid, v):
+        cid = FILE_CID.get(cid, cid)
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
         add(1, cid, v)
@@ -461,9 +467,9 @@ ok(f"car with homotopy=True raises ValueError before any solve (solver calls {le
    hit and "homotopy" in msg and not solver_calls)
 
 # (4) a car file without fields the model reads: one ValueError listing every missing field
-hit, msg = refusal(build, car_without("no_brake_rear_damper.car", (107, 33)))
-ok(f"car without the brake force and the rear left damper: one ValueError listing both: {msg[:70]!r}",
-   hit and "brake.force" in msg and "susp.damper_rl" in msg and msg.count("lacks the fields") == 1)
+hit, msg = refusal(build, car_without("no_brake_rear_damper.car", (107, 33)))   # cid 33 = RR (a missing left record takes the right one)
+ok(f"car without the brake force and the rear right damper: one ValueError listing both: {msg[:70]!r}",
+   hit and "brake.force" in msg and "susp.damper_rr" in msg and msg.count("lacks the fields") == 1)
 
 # (5) a car has one QSS load model: load_model other than 'vehModel' is refused (screen and envelope)
 hit, msg = refusal(MLTP_screen, circuit=CHASSIS, car=CAR, chassissim_dir=INSTALL, physics="corrected",

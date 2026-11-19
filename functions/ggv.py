@@ -579,7 +579,7 @@ def build_envelope_cs(ctx, v_grid=None):
     from scipy.interpolate import PchipInterpolator
     from vehModel_cs import C4, DELTA_MAX, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf, _clean, third_element
     import casadi as ca
-    from functions.chassissim import suspension_curves
+    from functions.chassissim import suspension_curves, bar_ratios
     vp, cs = ctx.vp, ctx.cs
     grip = getattr(ctx, "grip", 1.0)
     curves = suspension_curves(cs)
@@ -689,7 +689,9 @@ def build_envelope_cs(ctx, v_grid=None):
 
     def roll_k(a, t):        # axle roll stiffness [N m/rad]: wheel rates t^2/4, bar rate/2 x MR^2 x t^2, tyre in series
         l, r = ("fl", "fr") if a == "f" else ("rl", "rr")
-        bar = 0.5 * getattr(cs.susp, f"arb_{a}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{a}"))[0]) ** 2
+        # ponytail: the mean of the two bar ratios. It is exact in roll. With two different ratios a roll also gives
+        # a small heave force, which the QSS does not have. Add it when a car with different ratios needs the QSS.
+        bar = 0.5 * getattr(cs.susp, f"arb_{a}")["rate"] * (0.5 * sum(bar_ratios(cs, a))) ** 2
         k_s = ks[a] = (kw[l] + kw[r]) * t * t / 4.0 + bar * t * t
         k_t = (ty[l]["kz"] + ty[r]["kz"]) * t * t / 4.0
         return k_s * k_t / (k_s + k_t)

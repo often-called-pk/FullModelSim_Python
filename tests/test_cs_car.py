@@ -3,7 +3,8 @@
 The synthetic checks write a car file with carfile.encode from arbitrary values. The cids and their record tags
 are written here as literal numbers, not taken from CAR_FIELDS, so a wrong cid in CAR_FIELDS fails. The checks
 cover the SI conversions, the None rule, the tyre decode (tables 4 and 5 included), the hardpoint order, the
-bump steer tables and their guard in suspension_curves, the strict car_vp and its
+corner order of the file (FR, FL, RR, RL, with a distinct value on each corner), the left-takes-right copy rule,
+the bump steer tables and their guard in suspension_curves, the strict car_vp and its
 vehParams totals (matlab and corrected physics). The vendor section runs only when CHASSISSIM_DIR names the
 ChassisSim install folder. It reads the GP3 2013 Eastern Creek car file and checks relations only, no copied
 values. It writes nothing into the vendor folders.
@@ -32,6 +33,7 @@ LBF_IN = 175.126835      # N/m per lbf/in
 PHYSICS = ("matlab", "corrected")
 TMP = tempfile.TemporaryDirectory()
 CORNERS = ("fl", "fr", "rl", "rr")
+FILE = ("fr", "fl", "rr", "rl")     # corner order of every four-record group in the file, written here on purpose
 
 
 def ok(name, cond):
@@ -66,12 +68,14 @@ SPRING = {1: (1.23e5, 0.020), 2: (1.31e5, 0.021), 3: (0.97e5, 0.019), 4: (1.02e5
           5: (9.0e4, 0.0), 6: (8.0e4, 0.0)}           # cid -> (rate N/m, preload m)
 RUBBER = {cid: (2.0e5 + 1e3 * cid, 0.001 * (cid - 12)) for cid in range(13, 19)}   # cid -> (rate, preload m)
 ARB = {19: 2.0e4, 21: 1.5e4}                          # cid -> rate N/m
-HARD = (49, 50, 51, 52)                                   # front_l, front_r, rear_l, rear_r
+HARD = (49, 50, 51, 52)                                   # front_r, front_l, rear_r, rear_l
 # left-side hardpoints (car frame: x rearward, y left +, z up), rows: lower inner front, lower inner aft,
 # lower outer, upper inner front, upper inner aft, upper outer. The right side is the mirror in y.
 HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
                     [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
 HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
+GAP_FLAG = {204: 1, 205: 0, 206: 0, 207: 1, 208: 1, 209: 1}    # cid -> rubber ground-gap flag (distinct left and right)
+DAMP = {cid: 1.0 + 0.1 * (cid - 31) for cid in range(31, 37)}   # cid -> factor of the damper bump force (distinct per record)
 BUMP_X = np.linspace(-0.02, 0.02, 11)                     # m, wheel travel grid of the bump steer tables (74-77)
 AERO_X = np.linspace(0.0, 0.4, 5)                         # axis of the task 8 aero tables and maps (zero values)
 CS_TOTAL, CS_UF, CS_UR = 700.0, 25.0, 35.0
@@ -79,12 +83,12 @@ CS_FRONT = 0.44
 EXPLICIT = {  # tag 1 cids with a literal value
     84: CS_TOTAL, 85: CS_UF, 86: CS_UR, 87: 60.0, 88: 280.0, 89: 600.0, 96: CS_FRONT,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
-    117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,            # ride heights, mm
+    117: 17.0, 118: 18.5, 119: 20.0, 120: 21.5,            # ride heights fr, fl, rr, rl, mm
     100: 0.9, 102: 1000.0, 103: 9000.0,                     # efficiency, idle and limit rpm
     107: 14000.0, 108: 0.6, 109: 0.05,                      # brake force N, front bias, delay s
     111: 0.0, 112: 1.0, 113: 0.0,                           # torque split (0: userOpts needs it), diff types
-    55: 0.050, 59: 0.052, 63: 0.061, 67: 0.063,            # roll-centre heights fl, fr, rl, rr, m
-    54: 0.045, 58: 0.047, 62: 0.058, 66: 0.060,            # first values of the same triples, m
+    55: 0.050, 59: 0.052, 63: 0.061, 67: 0.063,            # roll-centre heights fr, fl, rr, rl, m
+    54: 0.045, 58: 0.047, 62: 0.058, 66: 0.060,            # first values of the same blocks, m
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: TRACK_TEMP,
 }
@@ -143,12 +147,12 @@ def build_records(omit=(), over=None):
         add(11, cid, (1, pre, rate, np.array([0.0, 0.02]), np.array([0.0, 800.0])))
     for cid, rate in ARB.items():
         add(11, cid, (1, 0.0, rate, np.array([0.0, 0.1]), np.array([0.0, 300.0])))
-    for cid in range(23, 31):
-        add(2, cid, arb(5, cid))                                          # motion ratio coefficients
+    for cid in (*range(23, 31), 170, 171):
+        add(2, cid, arb(5, cid))                                          # motion ratio coefficients (bars: 27 FR, 170 FL, 28 RR, 171 RL)
     for cid in range(366, 372):
         add(6, cid, 10 + cid - 366)                                       # one byte
     for cid in range(204, 210):
-        add(6, cid, 1)                                                    # rubber ground-gap flags (fl..rr, third f/r), one byte
+        add(6, cid, GAP_FLAG[cid])                                        # rubber ground-gap flags (fr, fl, rr, rl, third f/r), one byte
     for cid in (638, 639, *range(657, 661)):
         add(6, cid, 0)                                                    # hysteresis flags (third f/r, then fr, fl, rr, rl), off as shipped
     for cid in range(661, 665):
@@ -169,11 +173,11 @@ def build_records(omit=(), over=None):
         add(6, cid, 0)
     for cid in (*range(452, 464), 872, 873, 874, 875):
         add(9, cid, (AERO_X, AERO_X, np.zeros(len(AERO_X) ** 2)))
-    for cid in range(31, 37):                                            # dampers fl..rr, third f (35), third r (36)
-        add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP, REB])))
-    for cid, rows in zip(HARD, (HP_LEFT, HP_RIGHT, HP_LEFT, HP_RIGHT)):
+    for cid in range(31, 37):                                            # dampers fr, fl, rr, rl, third f (35), third r (36)
+        add(12, cid, (1, arb(6, cid), np.concatenate([VEL, BUMP * DAMP[cid], REB])))
+    for cid, rows in zip(HARD, (HP_RIGHT, HP_LEFT, HP_RIGHT, HP_LEFT)):
         add(10, cid, (0, np.concatenate([rows[:, 0], rows[:, 1], rows[:, 2]])))   # tag 10: x, y, z columns
-    for i, c in enumerate(CORNERS):
+    for i, c in enumerate(FILE):
         rec, ref[c] = tyre_record(i, c)
         add(*rec[:2], rec[2])
     R.append((carfile.END_TAG, carfile.END_CID, None))
@@ -214,7 +218,7 @@ ok("the synthetic car holds every CAR_FIELDS cid and no other",
 print("  -- literal cids")
 ok("ride heights 117-120 read as m (17, 18.5, 20, 21.5 mm)",
    all(abs(getattr(car.geom, f"ride_height_{c}") - v * 1e-3) < 1e-12
-       for c, v in zip(CORNERS, (17.0, 18.5, 20.0, 21.5))))
+       for c, v in zip(FILE, (17.0, 18.5, 20.0, 21.5))))
 ok("brake force 107 N, bias 108, delay 109 s",
    abs(car.brake.force - 14000.0) < 1e-9 and abs(car.brake.front_bias - 0.6) < 1e-12
    and abs(car.brake.delay - 0.05) < 1e-12)
@@ -234,49 +238,51 @@ ok("track temperature 390 read as stored", abs(car.env.track_temp - TRACK_TEMP) 
 ok("engine efficiency 100, torque split 111 (0), diff types 112 and 113 as stored",
    abs(car.engine.efficiency - 0.9) < 1e-12 and car.engine.torque_split == 0.0
    and car.diff.front_type == 1.0 and car.diff.rear_type == 0.0)
-ok("roll-centre heights 55, 59, 63, 67 (fl, fr, rl, rr) read in m as stored",
-   abs(car.geom.rc_height_fl - 0.050) < 1e-12 and abs(car.geom.rc_height_fr - 0.052) < 1e-12
-   and abs(car.geom.rc_height_rl - 0.061) < 1e-12 and abs(car.geom.rc_height_rr - 0.063) < 1e-12)
-ok("first values 54, 58, 62, 66 (fl, fr, rl, rr) read in m as stored (meaning not decoded)",
-   abs(car.geom.rc_first_fl - 0.045) < 1e-12 and abs(car.geom.rc_first_fr - 0.047) < 1e-12
-   and abs(car.geom.rc_first_rl - 0.058) < 1e-12 and abs(car.geom.rc_first_rr - 0.060) < 1e-12)
+ok("roll-centre heights 55, 59, 63, 67 (fr, fl, rr, rl) read in m as stored",
+   abs(car.geom.rc_height_fr - 0.050) < 1e-12 and abs(car.geom.rc_height_fl - 0.052) < 1e-12
+   and abs(car.geom.rc_height_rr - 0.061) < 1e-12 and abs(car.geom.rc_height_rl - 0.063) < 1e-12)
+ok("first values 54, 58, 62, 66 (fr, fl, rr, rl) read in m as stored (meaning not decoded)",
+   abs(car.geom.rc_first_fr - 0.045) < 1e-12 and abs(car.geom.rc_first_fl - 0.047) < 1e-12
+   and abs(car.geom.rc_first_rr - 0.058) < 1e-12 and abs(car.geom.rc_first_rl - 0.060) < 1e-12)
 
 # groups: one decoded value per group
 print("  -- groups")
-ok("springs: rate in N/m and preload in m, fl..rr and the third springs",
+ok("springs 1-4 (fr, fl, rr, rl): rate in N/m and preload in m, and the third springs",
    all(abs(getattr(car.susp, f"spring_{c}")["rate"] - SPRING[i + 1][0]) < 1e-6
        and abs(getattr(car.susp, f"spring_{c}")["preload"] - SPRING[i + 1][1]) < 1e-12
-       for i, c in enumerate(CORNERS))
+       for i, c in enumerate(FILE))
    and abs(car.susp.spring_third_f["rate"] - SPRING[5][0]) < 1e-6
    and abs(car.susp.spring_third_r["rate"] - SPRING[6][0]) < 1e-6)
-ok("rubbers 13-18: rate, preload, x and y as stored",
+ok("rubbers 13-16 (fr, fl, rr, rl) and 17-18: rate, preload, x and y as stored",
    all(abs(getattr(car.susp, f"rubber_{c}")["rate"] - RUBBER[13 + i][0]) < 1e-6
        and abs(getattr(car.susp, f"rubber_{c}")["preload"] - RUBBER[13 + i][1]) < 1e-12
        and np.allclose(getattr(car.susp, f"rubber_{c}")["x"], [0.0, 0.02])
        and np.allclose(getattr(car.susp, f"rubber_{c}")["y"], [0.0, 800.0])
-       for i, c in enumerate(CORNERS))
+       for i, c in enumerate(FILE))
    and abs(car.susp.rubber_third_f["rate"] - RUBBER[17][0]) < 1e-6
    and abs(car.susp.rubber_third_r["rate"] - RUBBER[18][0]) < 1e-6)
 ok("ARBs 19 and 21 rate in N/m as stored",
    abs(car.susp.arb_f["rate"] - ARB[19]) < 1e-6 and abs(car.susp.arb_r["rate"] - ARB[21]) < 1e-6)
-ok("motion ratio coefficients 23-30 read as stored arrays of 5",
-   all(np.allclose(getattr(car.susp, f"mr_{c}"), arb(5, 23 + i)) for i, c in enumerate(CORNERS))
-   and np.allclose(car.susp.mr_arb_f, arb(5, 27)) and np.allclose(car.susp.mr_arb_r, arb(5, 28))
+ok("motion ratio coefficients 23-26 (fr, fl, rr, rl) and 29-30 read as stored arrays of 5",
+   all(np.allclose(getattr(car.susp, f"mr_{c}"), arb(5, 23 + i)) for i, c in enumerate(FILE))
    and np.allclose(car.susp.mr_third_f, arb(5, 29)) and np.allclose(car.susp.mr_third_r, arb(5, 30)))
+ok("bar motion ratios: 27 FR, 170 FL, 28 RR, 171 RL",
+   all(np.allclose(getattr(car.susp, f"mr_arb_{c}"), arb(5, cid), rtol=0, atol=0)
+       for c, cid in (("fr", 27), ("fl", 170), ("rr", 28), ("rl", 171))))
 ok("gaps 7-12 read as stored",
    all(abs(getattr(car.susp, f"gap_{n}") - EXPLICIT[7 + i]) < 1e-12
-       for i, n in enumerate(("fl", "fr", "rl", "rr", "third_f", "third_r"))))
-ok("rubber ground-gap flags 204-207 (fl, fr, rl, rr) and 208-209 (third f, third r) read as 1",
-   all(getattr(car.susp, f"gap_flag_{c}") == 1 for c in CORNERS + ("third_f", "third_r")))
+       for i, n in enumerate(FILE + ("third_f", "third_r"))))
+ok("rubber ground-gap flags 204-207 (fr, fl, rr, rl) and 208-209 (third f, third r) read as stored",
+   all(getattr(car.susp, f"gap_flag_{c}") == GAP_FLAG[204 + i] for i, c in enumerate(FILE + ("third_f", "third_r"))))
 ok("damper velocity in mm/s read as m/s, bump and rebound in N as stored (rebound positive)",
    all(np.allclose(getattr(car.susp, f"damper_{c}")["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
-       and np.allclose(getattr(car.susp, f"damper_{c}")["bump"], BUMP, rtol=0, atol=0)
+       and np.allclose(getattr(car.susp, f"damper_{c}")["bump"], BUMP * DAMP[31 + i], rtol=0, atol=0)
        and np.allclose(getattr(car.susp, f"damper_{c}")["rebound"], REB, rtol=0, atol=0)
-       for c in CORNERS)
+       for i, c in enumerate(FILE))      # dampers 31-34: fr, fl, rr, rl
    and np.allclose(car.susp.damper_third_f["velocity"], VEL * 1e-3, rtol=0, atol=1e-12)
-   and np.allclose(car.susp.damper_third_r["bump"], BUMP, rtol=0, atol=0)
+   and np.allclose(car.susp.damper_third_r["bump"], BUMP * DAMP[36], rtol=0, atol=0)
    and np.allclose(car.susp.damper_third_r["rebound"], REB, rtol=0, atol=0))
-ok("hardpoint block has shape (6, 3), and row i holds point i (left and right sides, right mirrored in y)",
+ok("hardpoint blocks 49-52 (front_r, front_l, rear_r, rear_l) have shape (6, 3), and row i holds point i",
    all(getattr(car.hardpoints, n).shape == (6, 3) for n in ("front_l", "front_r", "rear_l", "rear_r"))
    and np.allclose(car.hardpoints.front_l, HP_LEFT, rtol=0, atol=0)
    and np.allclose(car.hardpoints.front_r, HP_RIGHT, rtol=0, atol=0)
@@ -348,7 +354,7 @@ ok("a CDA map without its scalar 122 raises ValueError naming the scalar",
    raises_naming(lambda: load_car(cda_no_scalar), "missing scalar 'cda'"))
 
 print("  -- bump steer, tyre table 4, suspension curves")
-ok("bump steer tables 74-77 (fl, fr, rl, rr) hold the travel grid x and a zero y (synthetic car)",
+ok("bump steer tables 74-77 (fr, fl, rr, rl) hold the travel grid x and a zero y (synthetic car)",
    all(np.allclose(getattr(car.susp, f"bump_steer_{c}")["x"], BUMP_X, rtol=0, atol=0)
        and not np.any(getattr(car.susp, f"bump_steer_{c}")["y"]) for c in CORNERS))
 BUMP_Y = {c: (i + 1) * 1e-3 * BUMP_X / 0.02 for i, c in enumerate(CORNERS)}   # a distinct line per corner, 1-4 mm
@@ -356,7 +362,7 @@ BUMP_Y = {c: (i + 1) * 1e-3 * BUMP_X / 0.02 for i, c in enumerate(CORNERS)}   # 
 
 def bump_over(ys):
     """Replacement records of cids 74-77 (FR, FL, RR, RL): the toe change ys[corner], zero for a corner not in ys."""
-    return {cid: (BUMP_X, ys.get(c, np.zeros(len(BUMP_X)))) for cid, c in ((74, "fr"), (75, "fl"), (76, "rr"), (77, "rl"))}
+    return {74 + i: (BUMP_X, ys.get(c, np.zeros(len(BUMP_X)))) for i, c in enumerate(FILE)}
 
 
 bump = load_car(write_car("bump_all.car", over=bump_over(BUMP_Y))[0])
@@ -370,16 +376,42 @@ ok("suspension_curves accepts a live bump steer table (the refusal was removed i
 curves = suspension_curves(load_car(SYN))
 ok("the synthetic car with zero bump steer gives front and rear curves (physical hardpoints)",
    np.isfinite(curves.f.zg) and np.isfinite(curves.r.zg) and curves.f.lo < 0 < curves.f.hi)
-t4_rec = tyre_record(0, "fl")[0]
+t4_rec = tyre_record(1, "fl")[0]            # file cid 81 = the front left tyre
 t4_dims, t4_sc, t4_tabs = t4_rec[2]
 t4_tabs = list(t4_tabs)
 t4_tabs[4] = np.concatenate([[-2.0, 2.0], [1000.0, 3000.0], [0.9, 0.8, 1.1, 1.2]])   # cambers deg, loads N, grid rows = camber
-t4_car = load_car(write_car("tyre_t4.car", over={80: (t4_dims, t4_sc, t4_tabs)})[0])
+t4_car = load_car(write_car("tyre_t4.car", over={81: (t4_dims, t4_sc, t4_tabs)})[0])
 ok("tyre table 4: camber axis read in rad (-2, 2 deg), load axis in N as stored",
    np.allclose(t4_car.tyre.fl["fx_camber_x"], np.deg2rad([-2.0, 2.0]), rtol=0, atol=1e-12)
    and np.allclose(t4_car.tyre.fl["fx_camber_load"], [1000.0, 3000.0], rtol=0, atol=0))
 ok("tyre table 4: grid row = camber, column = load ([[0.9, 0.8], [1.1, 1.2]] as stored)",
    np.allclose(t4_car.tyre.fl["fx_camber"], [[0.9, 0.8], [1.1, 1.2]], rtol=0, atol=0))
+
+# left takes right: a left record that is absent or all zero takes the record of its right sibling
+print("  -- left takes right")
+Z11 = (0, 0.0, 0.0, np.zeros(2), np.zeros(2))                 # an all-zero spring-like record
+Z12 = (0, np.zeros(6), np.zeros(15))                          # an all-zero damper record
+lr = load_car(write_car("left_empty.car", omit=(2, 26, 83, 170),
+                        over={8: 0.0, 14: Z11, 32: Z12, 171: np.zeros(5)})[0])
+ok("an absent left record takes the right one: spring 2 <- 1, motion ratio 26 <- 25, tyre 83 <- 82, bar ratio 170 <- 27",
+   lr.susp.spring_fl["rate"] == car.susp.spring_fr["rate"] and lr.susp.spring_fl["preload"] == car.susp.spring_fr["preload"]
+   and np.array_equal(lr.susp.mr_rl, car.susp.mr_rr) and lr.tyre.rl["radius"] == car.tyre.rr["radius"]
+   and np.array_equal(lr.tyre.rl["fy_peak"], car.tyre.rr["fy_peak"]) and np.array_equal(lr.susp.mr_arb_fl, car.susp.mr_arb_fr))
+ok("an all-zero left record takes the right one: rubber 14 <- 13, damper 32 <- 31, bar ratio 171 <- 28",
+   lr.susp.rubber_fl["rate"] == car.susp.rubber_fr["rate"]
+   and np.array_equal(lr.susp.damper_fl["bump"], car.susp.damper_fr["bump"])
+   and np.array_equal(lr.susp.mr_arb_rl, car.susp.mr_arb_rr))
+ok("a left rubber gap of 0 takes the right gap and its flag (8 <- 7, 205 <- 204)",
+   lr.susp.gap_fl == car.susp.gap_fr and lr.susp.gap_flag_fl == GAP_FLAG[204] != GAP_FLAG[205])
+ok("the records of the other corners stay as stored (spring rr and rl, gap rl, damper rl)",
+   lr.susp.spring_rr["rate"] == SPRING[3][0] and lr.susp.spring_rl["rate"] == SPRING[4][0]
+   and lr.susp.gap_rl == EXPLICIT[10] and lr.susp.gap_flag_rl == GAP_FLAG[207]
+   and np.array_equal(lr.susp.damper_rl["bump"], BUMP * DAMP[34]))
+rl_ = load_car(write_car("right_empty.car", omit=(1, 27), over={7: 0.0, 33: Z12})[0])
+ok("an empty right record takes nothing from the left: spring 1 and bar ratio 27 None, gap 7 zero, damper 33 zero",
+   rl_.susp.spring_fr is None and rl_.susp.mr_arb_fr is None and rl_.susp.gap_fr == 0.0
+   and not np.any(rl_.susp.damper_rr["bump"]) and rl_.susp.spring_fl["rate"] == SPRING[2][0]
+   and rl_.susp.gap_fl == EXPLICIT[8] and np.array_equal(rl_.susp.mr_arb_fl, arb(5, 170)))
 
 # car_vp: strict, one totals set
 print("  -- car_vp")

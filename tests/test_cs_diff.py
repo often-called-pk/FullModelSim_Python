@@ -29,6 +29,11 @@ PASS = 0
 TMP = tempfile.TemporaryDirectory()
 CIRC = "Synth Ring"
 CORNERS = ("fl", "fr", "rl", "rr")
+# The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
+# (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
+FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
+                           (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
+                           (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
 NAMES = ["T_rl", "T_rr", "T_drive", "T_brake", "mu_rl_x", "mu_rr_x", "fz_rl", "fz_rr"]
 ZERO_TOL = 0.05     # N, the one-way and deadband floor: the map clamp width is 0.1 N, so its zero sits within 0.05 N
 
@@ -151,6 +156,7 @@ def build_records(rear_type, omit=()):
     R = []
 
     def add(tag, cid, v):
+        cid = FILE_CID.get(cid, cid)
         if v is not None and cid not in omit:
             R.append((tag, cid, v))
     vals = dict(EXPLICIT)

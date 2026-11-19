@@ -33,6 +33,11 @@ from functions.chassissim import suspension_curves
 
 PASS = 0
 CORNERS = ("fl", "fr", "rl", "rr")
+# The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
+# (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
+FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
+                           (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
+                           (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
 G = 9.81
 TMP = tempfile.TemporaryDirectory()
 CIRC = "Synth Ring"
@@ -190,6 +195,7 @@ def build_records(cda_scalar=0.95, peak_scale=1.0, mr_fl=None, bias=None):
     R = []
 
     def add(tag, cid, v):
+        cid = FILE_CID.get(cid, cid)
         R.append((tag, cid, v))
     for cid, v in EXPLICIT.items():
         add(1, cid, bias if (bias is not None and cid == 108) else cda_scalar if cid == 122 else v)
@@ -281,7 +287,7 @@ def ay_balance(ctx, cap, v0=2.0):
     kw = {c: getattr(cs.susp, f"spring_{c}")["rate"] * float(np.atleast_1d(getattr(cs.susp, f"mr_{c}"))[0]) ** 2
           for c in CORNERS}
     kz = {c: ty[c]["kz"] for c in CORNERS}
-    mr_arb = {a: float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{a}"))[0]) for a in "fr"}
+    mr_arb = {a: float(np.atleast_1d(getattr(cs.susp, f"mr_arb_{a}r"))[0]) for a in "fr"}   # the right record: 27 front, 28 rear
     t_f, t_r = geo.track_front, geo.track_rear
     # roll-centre height above the contact patches at the heave travel of each axle under the aero load at v0
     # (the QSS: the curves of suspension_curves at the travel of the MR law; the test solves that travel by hand)

@@ -134,17 +134,30 @@ def load_circuit(name, cs_dir):
 RPM = 2 * np.pi / 60
 DEG = np.pi / 180
 MM = 1e-3
-_C4 = ("fl", "fr", "rl", "rr")
+# The order of the four corner records of every group in the file: ChassisSim stores the right wheel first.
+_C4 = ("fr", "fl", "rr", "rl")
 _GAPS = (*_C4, "third_f", "third_r")
 
 
-# corner -> (flag cid, curve cid) of the bump rubber hysteresis records
-_HYST_CID = {c: (657 + i, 661 + i) for i, c in enumerate(("fr", "fl", "rr", "rl"))}
+def _corners(group, base, prefix="", f=1.0):
+    """Return the CAR_FIELDS entries of four corner records. base is the cid of the FR record.
+    ChassisSim stores the right wheel first: FR, FL, RR, RL."""
+    return {base + i: (f"{group}.{prefix}{c}", f) for i, c in enumerate(_C4)}
 
 
-def _corners(group, base, prefix=""):
-    """Return the CAR_FIELDS entries of four corner records. base is the cid of the front left one."""
-    return {base + i: (f"{group}.{prefix}{c}", 1.0) for i, c in enumerate(_C4)}
+# (right cid, left cid) of the records that ChassisSim copies from right to left when the left one is empty.
+# The groups: springs, rubber air gaps, rubber tables, corner motion ratios, dampers, tyres, bar motion ratios.
+_SIDES = [(b + i, b + i + 1) for b in (1, 7, 13, 23, 31, 80) for i in (0, 2)] + [(27, 170), (28, 171)]
+
+
+def _raw_live(v):
+    """Return True when a record as decoded from the file holds a value that is not zero."""
+    if isinstance(v, (tuple, list)):
+        return any(_raw_live(e) for e in v)
+    try:
+        return bool(np.any(np.asarray(v, float) != 0))
+    except (TypeError, ValueError):     # a value that is not a number counts as content
+        return True
 
 
 # cid -> (group.name, factor to SI). A tuple factor has one entry per part of the decoded record:
@@ -158,30 +171,30 @@ CAR_FIELDS = {
     87: ("mass.Ix", 1.0), 88: ("mass.Iy", 1.0), 89: ("mass.Iz", 1.0), 96: ("mass.front_share", 1.0),
     90: ("geom.wheelbase", 1.0), 91: ("geom.track_front", 1.0), 92: ("geom.track_rear", 1.0),
     93: ("geom.cg_height", 1.0),
-    # The middle value of each stored geometry triple (cids 54-56, 58-60, 62-64, 66-68) is the roll-centre height.
-    55: ("geom.rc_height_fl", 1.0), 59: ("geom.rc_height_fr", 1.0),
-    63: ("geom.rc_height_rl", 1.0), 67: ("geom.rc_height_rr", 1.0),
-    # The first value of each triple (cids 54, 58, 62, 66). Its meaning is not decoded. It equals the roll-centre
+    # The second value of each stored geometry block (cids 54-57, 58-61, 62-65, 66-69) is the roll-centre height.
+    # ponytail: the corner order of the blocks, the ride heights and the hardpoints is not confirmed in the binary.
+    # They follow the rule of the confirmed records (the lowest cid is FR). Every shipped car has left = right there.
+    **{55 + 4 * i: (f"geom.rc_height_{c}", 1.0) for i, c in enumerate(_C4)},
+    # The first value of each block (cids 54, 58, 62, 66). Its meaning is not decoded. It equals the roll-centre
     # height above the ground when the hardpoints are in the ground frame.
-    54: ("geom.rc_first_fl", 1.0), 58: ("geom.rc_first_fr", 1.0),
-    62: ("geom.rc_first_rl", 1.0), 66: ("geom.rc_first_rr", 1.0),
-    **{117 + i: (f"geom.ride_height_{c}", MM) for i, c in enumerate(_C4)},
+    **{54 + 4 * i: (f"geom.rc_first_{c}", 1.0) for i, c in enumerate(_C4)},
+    **_corners("geom", 117, "ride_height_", MM),
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
     **{7 + i: (f"susp.gap_{n}", 1.0) for i, n in enumerate(_GAPS)},
     **{204 + i: (f"susp.gap_flag_{n}", 1.0) for i, n in enumerate(_GAPS)},   # 1 = the gap is measured on the ground
-    # tag 7: wheel travel [m], toe change [rad]. The cids run FR, FL, RR, RL.
-    **{74 + i: (f"susp.bump_steer_{c}", 1.0) for i, c in enumerate(("fr", "fl", "rr", "rl"))},
+    **_corners("susp", 74, "bump_steer_"),      # tag 7: wheel travel [m], toe change [rad]
     **_corners("susp", 13, "rubber_"), 17: ("susp.rubber_third_f", 1.0), 18: ("susp.rubber_third_r", 1.0),
     19: ("susp.arb_f", 1.0), 21: ("susp.arb_r", 1.0),
-    **_corners("susp", 23, "mr_"), 27: ("susp.mr_arb_f", 1.0), 28: ("susp.mr_arb_r", 1.0),
+    # The bar motion ratio is one record per corner: 27 FR, 170 FL, 28 RR, 171 RL.
+    **_corners("susp", 23, "mr_"), 27: ("susp.mr_arb_fr", 1.0), 170: ("susp.mr_arb_fl", 1.0),
+    28: ("susp.mr_arb_rr", 1.0), 171: ("susp.mr_arb_rl", 1.0),
     29: ("susp.mr_third_f", 1.0), 30: ("susp.mr_third_r", 1.0),
     **_corners("susp", 31, "damper_"), 35: ("susp.damper_third_f", 1.0), 36: ("susp.damper_third_r", 1.0),
-    **{49 + i: (f"hardpoints.{n}", 1.0) for i, n in enumerate(("front_l", "front_r", "rear_l", "rear_r"))},
+    **{49 + i: (f"hardpoints.{n}", 1.0) for i, n in enumerate(("front_r", "front_l", "rear_r", "rear_l"))},
     **_corners("tyre", 80),
     # Bump rubber hysteresis per corner: the enable flag (tag 6) and the curve (tag 4: x, loading force, unloading force).
-    # x is the compression past the rubber air gap [m]. The cids run FR, FL, RR, RL, as bump steer does.
-    **{c: (f"susp.hyst_flag_{n}", 1.0) for n, (c, _) in _HYST_CID.items()},
-    **{c: (f"susp.hyst_{n}", 1.0) for n, (_, c) in _HYST_CID.items()},
+    # x is the compression past the rubber air gap [m].
+    **_corners("susp", 657, "hyst_flag_"), **_corners("susp", 661, "hyst_"),
     # Third-spring hysteresis flags (tag 6), front and rear. load_car refuses a value other than 0.
     # ponytail: the cids are confirmed. The third spring needs the same law on the heave, with the curves of
     # cids 640 / 641 (not read). Add it when a car sets a flag.
@@ -326,10 +339,19 @@ def load_car(path):
     susp.hyst_<c> is the bump rubber hysteresis curve of corner c: a dict with x in m and the load and unload
     forces in N. susp.hyst_thr_<c> holds its (lower, upper) thresholds in m, or None when the flag
     susp.hyst_flag_<c> is not 1. A flag-1 curve that cannot give a rubber law raises ValueError.
+    The file stores the right wheel first: the lowest cid of four corner records is FR, then FL, RR, RL.
+    As ChassisSim does, a left record that is absent or all zero takes the record of its right sibling, when
+    that record holds a value. This applies to the springs, the rubber air gaps (the gap flag goes with the gap),
+    the rubber tables, the corner and bar motion ratios, the dampers and the tyres.
     """
     path = os.path.abspath(path)
     sha8 = file_sha8(path)
     recs = {c: (t, v) for t, c, v in carfile.decode(path)}
+    for r, l in _SIDES:
+        if r in recs and _raw_live(recs[r][1]) and not (l in recs and _raw_live(recs[l][1])):
+            recs[l] = recs[r]
+            if 7 <= r <= 10 and r + 197 in recs:        # the flag of a copied rubber gap (cids 204 to 207)
+                recs[l + 197] = recs[r + 197]
     groups = {}
     for name, _ in CAR_FIELDS.values():
         g, a = name.split(".")
@@ -348,7 +370,8 @@ def load_car(path):
         if getattr(su, f"hyst_flag_third_{a}") not in (None, 0):
             raise ValueError(f"The car file {path} sets a third-spring hysteresis flag (cid {cid}). "
                              f"The car model has no third-spring hysteresis.")
-    for c, (cid_flag, cid_curve) in _HYST_CID.items():     # hysteresis on: check the curve, then derive the thresholds
+    for cid_flag, c in zip(range(657, 661), _C4):          # hysteresis on: check the curve, then derive the thresholds
+        cid_curve = cid_flag + 4
         flag, h = getattr(su, f"hyst_flag_{c}"), getattr(su, f"hyst_{c}")
         if flag not in (None, 0, 1):
             raise ValueError(f"The car file {path} holds a bump rubber hysteresis flag of corner {c} "
@@ -418,7 +441,7 @@ def check_car(cs):
                                *(f"ride_height_{c}" for c in C))),
             ("hardpoints", cs.hardpoints, ("front_l", "rear_l")),
             ("susp", cs.susp, (*(f"{p}_{c}" for p in ("spring", "mr", "gap", "damper") for c in C),
-                               "arb_f", "arb_r", "mr_arb_f", "mr_arb_r", "spring_third_f", "spring_third_r")),
+                               "arb_f", "arb_r", "mr_arb_fr", "mr_arb_rr", "spring_third_f", "spring_third_r")),
             ("aero", cs.aero, ("cla", "cda", "cla_map", "cda_map", "balance_map")),
             ("engine", cs.engine, ("efficiency", "torque_curve", "rpm_idle", "rpm_limit", "gears")),
             ("diff", cs.diff, ("rear_type",)),
@@ -619,6 +642,14 @@ def suspension_curves(car):
     return car._curves
 
 
+def bar_ratios(car, a):
+    """Return (left, right): the bar motion ratios of the two wheels of axle a ("f" or "r").
+    Each is the first coefficient of its record. A car without the left record uses the right one for both."""
+    r = float(np.atleast_1d(getattr(car.susp, f"mr_arb_{a}r"))[0])
+    l = getattr(car.susp, f"mr_arb_{a}l")
+    return (r if l is None else float(np.atleast_1d(l)[0])), r
+
+
 def bump_steer(car, c):
     """Return the bump steer table {x: travel [m], y: toe [rad]} of corner c, or None when it is zero.
     If one side of the axle is zero and the other is not, the table of the other side serves both sides.
@@ -629,7 +660,7 @@ def bump_steer(car, c):
             continue
         x, y = np.asarray(t["x"], float), np.asarray(t["y"], float)
         if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y)) and np.all(np.diff(x) >= 0) and x[-1] > x[0]):
-            cid = {"fr": 74, "fl": 75, "rr": 76, "rl": 77}[k]
+            cid = 74 + _C4.index(k)
             raise ValueError(f"The bump steer table of corner {k} (cid {cid}) is not valid. It needs finite values "
                              f"and an increasing wheel travel with at least 2 distinct points.")
         return t

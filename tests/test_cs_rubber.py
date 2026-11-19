@@ -36,6 +36,11 @@ PASS = 0
 TMP = tempfile.TemporaryDirectory()
 CIRC = "Synth Ring"
 CORNERS = ("fl", "fr", "rl", "rr")
+# The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
+# (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
+FILE_CID = {a: b for p in ((1, 2), (3, 4), (7, 8), (9, 10), (13, 14), (15, 16), (23, 24), (25, 26), (31, 32), (33, 34),
+                           (49, 50), (51, 52), (54, 58), (55, 59), (62, 66), (63, 67), (80, 81), (82, 83),
+                           (117, 118), (119, 120), (204, 205), (206, 207)) for a, b in (p, p[::-1])}
 G = 9.81
 REFUSE_FLAG = "The car file holds a bump rubber gap flag (cids 204 to 207) other than 0 or 1."
 
@@ -155,6 +160,7 @@ def build_records(over=None, omit=()):
     R = []
 
     def add(tag, cid, v):
+        cid = FILE_CID.get(cid, cid)
         if v is not None:
             R.append((tag, cid, v))
     vals = dict(EXPLICIT)
@@ -310,8 +316,9 @@ ok(f"flag 1: rubber_gap equals the stored gap at all corners "
 # ==== 2. flag 0: effective gap = stored gap - (F0 / (mr0 k) - preload) ======================================
 print("[cs_rubber] 2. flag 0: effective gap from the static compression")
 # front left: preload 0, so the static compression (about 12 mm) sits above the 1 mm stored gap (negative effective gap)
-OVER_FLAG0 = {204: 0, 205: 0, 206: 0, 207: 0, 7: 0.001, 8: 0.05, 9: 0.05, 10: 0.05,
-             1: (1, 0.0, 1.23e5, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}
+# file cids: the front left gap is cid 8 and the front left spring is cid 2
+OVER_FLAG0 = {204: 0, 205: 0, 206: 0, 207: 0, 8: 0.001, 7: 0.05, 9: 0.05, 10: 0.05,
+             2: (1, 0.0, 1.23e5, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}
 CAR_FLAG0 = write_car("flag0.car", OVER_FLAG0)
 CTX_FLAG0 = build(CAR_FLAG0)
 cs0, vp0 = CTX_FLAG0.cs, CTX_FLAG0.vp
@@ -324,13 +331,13 @@ for c in CORNERS:
        model is not None and hand is not None and abs(model - hand) < 1e-12 and abs(model - getattr(cs0.susp, f"gap_{c}")) > 1e-4)
 
 # Independent of the code's formula: a hard-coded number from the fixture values, by hand.
-# Front left of the flag 0 fixture: stored gap 1.0 mm (cid 7), preload 0 (cid 1 override), k = 1.23e5 N/m (cid 1).
+# Front left of the flag 0 fixture: stored gap 1.0 mm (cid 8), preload 0 (cid 2 override), k = 1.23e5 N/m (cid 2).
 # Mass: total 700 kg (cid 84), unsprung front 25 kg (cid 85), rear 35 kg (cid 86), front share 0.44 (cid 96).
 #   sprung mass mb = 700 - 25 - 35 = 640 kg
 #   front share wB = (0.44 x 700 - 25) / 640 = 0.4421875
 #   sprung corner mass m_c = 640 x 0.4421875 / 2 = 141.5 kg
 #   F0 = m_c x g = 141.5 x 9.81 = 1388.115 N
-#   mr0 = 1 + 0.05 sin(23) = 0.9576890 (cid 23, zero travel)
+#   mr0 = 1 + 0.05 sin(23) = 0.9576890 (the front left record, file cid 24, zero travel)
 #   static deflection F0 / (mr0 k) = 1388.115 / (0.9576890 x 1.23e5) = 0.0117841 m
 #   effective gap = 0.001 - 0.0117841 = -0.0107841 m
 FLAG0_FL_EFF_HAND = -0.010784084
@@ -356,18 +363,21 @@ for c in CORNERS:
 # ==== 3. stored gap 0: no rubber, no node ====================================================================
 print("[cs_rubber] 3. stored gap 0: no rubber term and no node")
 CTX_GAP0 = build(write_car("gap0.car", {7: 0.0}))
-CTX_GAP0_NOTAB = build(write_car("gap0_notab.car", {7: 0.0}, omit=(13,)))   # the front left rubber table left out
-ok("stored gap 0 (fl): rubber_gap is None", V.rubber_gap(CTX_GAP0.cs, "fl", CTX_GAP0.vp) is None)
-rub_zero = V._rubber(CTX_GAP0.cs, "fl", CTX_GAP0.vp)
+CTX_GAP0_NOTAB = build(write_car("gap0_notab.car", {7: 0.0}, omit=(13,)))   # the front right rubber table left out
+# The corner is a right one: a left gap of 0 takes the gap of its right sibling (load_car), so it keeps its rubber.
+ok("stored gap 0 (fr): rubber_gap is None", V.rubber_gap(CTX_GAP0.cs, "fr", CTX_GAP0.vp) is None)
+ok("stored gap 0 (fr): the front left corner keeps its own gap and rubber",
+   V.rubber_gap(CTX_GAP0.cs, "fl", CTX_GAP0.vp) == 0.008)
+rub_zero = V._rubber(CTX_GAP0.cs, "fr", CTX_GAP0.vp)
 travels = [-0.05, -0.01, 0.0, 0.003, 0.02, 0.08, 0.15]
-ok("stored gap 0 (fl): the rubber force is exactly 0.0 at 7 travels from -50 to +150 mm",
+ok("stored gap 0 (fr): the rubber force is exactly 0.0 at 7 travels from -50 to +150 mm",
    all(isinstance(rub_zero(t), float) and rub_zero(t) == 0.0 for t in travels))
 x_g = static_x(CTX_GAP0, 30.0)
 x_g[9] = -0.01
 d_with = dx_at(CTX_GAP0, x_g)
 d_without = dx_at(CTX_GAP0_NOTAB, x_g)
 diff_dx = float(np.max(np.abs(d_with - d_without)))
-ok(f"stored gap 0 (fl): dx equals a car without the rubber table (max diff {diff_dx:.2e})",
+ok(f"stored gap 0 (fr): dx equals a car without the rubber table (max diff {diff_dx:.2e})",
    diff_dx <= 1e-12 * max(1.0, float(np.max(np.abs(d_without)))))
 
 # ==== 4. negative effective gap: the rubber is loaded at zero travel =========================================
@@ -434,7 +444,7 @@ ok(f"F2-like: rear third rubber, flag 0, gap 27 mm (cid 12), builds (nx {CTX_T6.
    CTX_T6.m23.nx == 23 and V.third_element(CTX_T6.cs, "r", CTX_T6.vp) is not None
    and CTX_T6.cs.susp.gap_flag_third_r == 0 and abs(CTX_T6.cs.susp.gap_third_r - 0.027) < 1e-12)
 hit, msg = refusal(build, write_car("flag0_rate0.car", {204: 0, 205: 0, 206: 0, 207: 0,
-                                                       1: (1, 0.02, 0.0, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
+                                                       2: (1, 0.02, 0.0, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
 ok(f"flag 0 with a zero spring rate (fl) raises ValueError naming the rate: {msg!r}",
    hit and "has no rate" in msg and "corner fl" in msg)
 
