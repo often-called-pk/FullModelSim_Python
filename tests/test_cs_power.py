@@ -261,12 +261,16 @@ INST = build_install(os.path.join(TMP.name, "ChassisSim_v3_41"))   # a plain ins
 
 print("[cs_power] refusals by cid")
 # flags: on (1 and 2) raise naming the cid, off (0) loads
-for cid in (571, 598, 649, 520, 419, 423, 426, 428, 177, 535, 573):
+for cid in (571, 598, 649, 520, 419, 423, 426, 428):
     for v in (1, 2):
         msg = power_msg(write_car([(6, cid, v)]), INST)
         ok(f"cid {cid} = {v} raises ValueError naming the cid", msg != "silent" and raises_cid(msg, cid))
     ok(f"cid {cid} = 0 loads", power_msg(write_car([(6, cid, 0)]), INST) == "silent")
 ok("the flags absent load", power_msg(write_car(), INST) == "silent")
+HYB_VALID = [(6, 177, 1), (6, 535, 1), (6, 590, 1), (1, 179, 60000.0), (1, 180, 60000.0), (1, 181, 400000.0),
+             (1, 182, 1.0), (1, 183, 1.0), (1, 836, 0.0)]
+ok("a car with 177 = 1 and valid hybrid values loads (cids 177, 535, 573 are no refusal)",
+   power_msg(write_car(HYB_VALID), INST) == "silent")
 
 print("[cs_power] text and engine-brake table")
 for cid in (897, 906):

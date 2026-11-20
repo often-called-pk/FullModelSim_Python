@@ -83,18 +83,19 @@ def warm_start_ipopt_opts(mu_init=1e-6, push=1e-10):
     }
 
 
-def nlp_structure(nx, nu, ny, N, OPT_d, nh, n_param=0, n_periodic=0, n_pathcol=0):
+def nlp_structure(nx, nu, ny, N, OPT_d, nh, n_param=0, n_periodic=0, n_pathcol=0, n_lap=0):
     """Sizes of the NLP that build_and_solve_nlp assembles:
     w = [Xk; Uk; (Yk); Xkj (; P)],
     g = [x0 bounds; xN bounds; (OPT_d+1)*nx defects per interval; nh path
          constraints per knot; nu input-rate constraints per interval
-         (; n_periodic rows closing the lap) (; n_pathcol rows at the collocation points)]."""
-    nx, nu, ny, N, d, nh, n_param, n_periodic, n_pathcol = (
-        int(v) for v in (nx, nu, ny, N, OPT_d, nh, n_param, n_periodic, n_pathcol))
+         (; n_periodic rows closing the lap) (; n_pathcol rows at the collocation points) (; n_lap lap integral rows)].
+    The key n_lap is in the result only when it is above 0 (the lap rows of a hybrid car)."""
+    nx, nu, ny, N, d, nh, n_param, n_periodic, n_pathcol, n_lap = (
+        int(v) for v in (nx, nu, ny, N, OPT_d, nh, n_param, n_periodic, n_pathcol, n_lap))
     n_w = (nx + nu + ny) * (N + 1) + nx * N * d + n_param
-    n_g = 2 * nx + (d + 1) * N * nx + nh * (N + 1) + nu * N + n_periodic + n_pathcol
+    n_g = 2 * nx + (d + 1) * N * nx + nh * (N + 1) + nu * N + n_periodic + n_pathcol + n_lap
     return dict(nx=nx, nu=nu, ny=ny, N=N, OPT_d=d, n_w=n_w, n_g=n_g, n_param=n_param,
-                n_periodic=n_periodic, n_pathcol=n_pathcol)
+                n_periodic=n_periodic, n_pathcol=n_pathcol, **({"n_lap": n_lap} if n_lap else {}))
 
 
 def get_field(obj, key, default=None):
@@ -146,8 +147,8 @@ def scaling_changed(saved, expected, rtol=1e-12):
 def structure_mismatch(saved, expected, s_atol=1e-6):
     """Reasons why `saved` cannot seed `expected` with its exact w / lam vectors.
 
-    Both are dicts with the STRUCT_KEYS integers (a missing n_param / n_periodic /
-    n_pathcol counts as 0) and optionally `input_keys`, `hnames` and `s_full` (the collocation grid:
+    Both are dicts with the STRUCT_KEYS integers and n_lap (a missing n_param / n_periodic /
+    n_pathcol / n_lap counts as 0) and optionally `input_keys`, `hnames` and `s_full` (the collocation grid:
     same N on another mesh puts the same w entries at other track positions);
     these are compared only when present in both. `hnames` are the names of the path rows, in order:
     PureSlip with ATD On and CombinedSlip with atd_tbr > 1 both have 8 rows, but the rows are different.
@@ -157,8 +158,8 @@ def structure_mismatch(saved, expected, s_atol=1e-6):
     if not saved:
         return ["no saved NLP structure"]
     reasons = []
-    for k in STRUCT_KEYS:
-        dflt = 0 if k in ("n_param", "n_periodic", "n_pathcol") else None
+    for k in STRUCT_KEYS + ("n_lap",):
+        dflt = 0 if k in ("n_param", "n_periodic", "n_pathcol", "n_lap") else None
         a, b = get_field(saved, k, dflt), get_field(expected, k, dflt)
         try:
             same = a is not None and b is not None and int(a) == int(b)
@@ -415,7 +416,8 @@ def nlp_record(res, stats=None, x_s=None, u_s=None, warm_start="cold"):
         "w_opt": vec(res["w_opt"]),
         "lam_g": vec(res["lam_g"]),
         "lam_x": vec(res["lam_x"]),
-        "structure": {k: int(res["structure"][k]) for k in STRUCT_KEYS},
+        # n_lap (the lap rows of a hybrid car) only when the solve has it: the other records do not change
+        "structure": {k: int(res["structure"][k]) for k in STRUCT_KEYS + ("n_lap",) if k in res["structure"]},
         "sym_type": str(res.get("sym_type") or "SX"),
         "linear_solver": str(res.get("linear_solver") or "unknown"),
         "ipopt_iters": int(stats.get("iter_count", -1)),

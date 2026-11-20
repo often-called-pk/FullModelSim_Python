@@ -2,6 +2,7 @@
 
 The model has the 23 states and the channel names of vehModel. It has three inputs:
 T_drive (total drive force [N], rear axle or split between the axles), T_brake (total brake force [N], <= 0) and delta.
+A car with the hybrid layer on (cid 177) adds the deploy force F_dep and, with paddle regen, the force F_pad [N].
 The chassis equations come from vehModel._chassis_corrected. The car record ctx.cs
 (functions.chassissim.load_car) gives the tyre, aero, suspension and powertrain data.
 Every table becomes a C2 curve once, in numpy. The NLP sees only smooth expressions:
@@ -19,7 +20,7 @@ from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq
 
 from vehModel import _chassis_corrected
-from functions.chassissim import suspension_curves, table_live, bump_steer, bar_ratios
+from functions.chassissim import suspension_curves, table_live, bump_steer, bar_ratios, hybrid_inputs, hybrid_gates, flag_on
 
 C4 = ("fl", "fr", "rl", "rr")
 V_HYST = 0.01       # m/s, width of the loading / unloading switch of a hysteresis rubber (tanh of the damper speed)
@@ -51,6 +52,13 @@ def _smax(a, b, e):
 
 def _smin(a, b, e):
     return 0.5 * (a + b - ca.sqrt((a - b) ** 2 + e * e))
+
+
+def _spos(x, e):
+    """Smooth positive part of x: x for x far above e, 0 for x far below -e, and exactly 0 at x = 0.
+    It is _smax(x, 0, e) less a term that removes the offset e / 2 at x = 0. Below 0 it is at most 0.15 e negative."""
+    r = ca.sqrt(x * x + e * e)
+    return 0.5 * (x + r) - 0.5 * e * e / r
 
 
 def _clamp(v, lo, hi, e):
@@ -189,6 +197,38 @@ def drive_scale(cs, R):
     w = np.linspace(e.rpm_idle, e.rpm_limit, 400)
     te = PchipInterpolator(e.torque_curve["x"], e.torque_curve["y"])(w)
     return float(_eff(e) * te.max() * np.max(e.gears) / R)
+
+
+E_S = 1e5           # J, scale of the energy rows of the hybrid layer
+
+
+def deploy_map(cs):
+    """Return f(om) = the deploy map factor at full throttle over the engine speed om [rad/s], or None for the factor 1.
+    The maps are cid 467 (front) and 468 (rear), enabled by cid 466. The factor is the stored value, so a map of
+    zeros gives no deploy. Cid 464 = 0 (or absent) gives the rear map only. Else the factor is
+    (1 - s) rear + s front, s = cid 465. Each curve stays inside the range of its data.
+    ponytail: a map that the file does not hold counts as 1 (ChassisSim behaviour unknown)."""
+    h = cs.hybrid
+    blend = flag_on(h.blend_on)
+    if not flag_on(h.map_on) or (h.map_rear is None and (not blend or h.map_front is None)):
+        return None
+
+    def full(tab):
+        if tab is None:
+            return lambda om: 1.0
+        z, d = np.asarray(tab["z"], float), np.asarray(tab["data"], float)
+        y = np.array([np.interp(1.0, z, row) for row in d])        # throttle / 100 = 1
+        lo, hi = float(y.min()), float(y.max())
+        if hi == lo:
+            return lambda om: lo
+        f = _curve(tab["x"], y)
+        return lambda om: _clamp(f(om), lo, hi, 1e-3 * (hi - lo))   # the B-spline may ring at a step of the map
+
+    rear = full(h.map_rear)
+    if not blend:
+        return rear
+    front, sb = full(h.map_front), float(h.blend or 0.0)
+    return lambda om: (1 - sb) * rear(om) + sb * front(om)
 
 
 def _mr(c):
@@ -467,9 +507,13 @@ def vehModel_cs(ctx):
     F_brk = cs.brake.force
     T_drive_n, T_brake_n, delta_n = SX.sym("T_drive_n"), SX.sym("T_brake_n"), SX.sym("delta_n")
     T_drive, T_brake, delta = F_ref * T_drive_n, F_brk * T_brake_n, DELTA_MAX * delta_n
-    u = ca.vertcat(T_drive_n, T_brake_n, delta_n)
-    u_s = np.array([F_ref, F_brk, np.pi / 8])
-    u_lim = np.array([[0.0, 1.0], [-1.0, 0.0], [-1.0, 1.0]])
+    # Hybrid layer (cid 177): the forces F_dep and F_pad are inputs after delta (the first three stay where they are, so
+    # the seeds and the path rows keep their index). They use the scale F_ref of T_drive.
+    hyb = hybrid_inputs(cs)
+    hsym = [SX.sym(k + "_n") for k in hyb]
+    u = ca.vertcat(T_drive_n, T_brake_n, delta_n, *hsym)
+    u_s = np.array([F_ref, F_brk, np.pi / 8] + [F_ref] * len(hyb))
+    u_lim = np.array([[0.0, 1.0], [-1.0, 0.0], [-1.0, 1.0]] + [[0.0, 1.0]] * len(hyb))
     u_min, u_max = u_lim[:, 0], u_lim[:, 1]
     nu = u.shape[0]
     duk_ub = np.asarray(ctx.duk_ub, float).reshape(-1) / u_s
@@ -670,7 +714,18 @@ def vehModel_cs(ctx):
         return (P / 2 - T_x) * R, (P / 2 + T_x) * R
 
     split = cs.engine.torque_split or 0.0
-    if split > 0:
+    if hyb:
+        # Deploy and paddle forces join the drive pool. The paddle force is a deceleration on the driven axles (engine
+        # split). The deploy force follows the engine split, or the blend s (cid 465) when cid 464 is set.
+        h = cs.hybrid
+        F_dep = F_ref * hsym[0]
+        F_pad = F_ref * hsym[1] if len(hsym) > 1 else 0.0
+        s_dep = float(h.blend or 0.0) if flag_on(h.blend_on) else split
+        P_f = split * (T_drive - F_pad) + s_dep * F_dep
+        P_r = (1 - split) * (T_drive - F_pad) + (1 - s_dep) * F_dep
+        T_fl, T_fr = axle_drive(P_f, "f") if (split > 0 or s_dep > 0) else (0.0, 0.0)
+        T_rl, T_rr = axle_drive(P_r, "r")
+    elif split > 0:
         T_fl, T_fr = axle_drive(split * T_drive, "f")
         T_rl, T_rr = axle_drive((1 - split) * T_drive, "r")
     else:
@@ -686,6 +741,57 @@ def vehModel_cs(ctx):
         bands = build_envelope_cs(ctx).info["shift_bands"]
     F_env, om_eng = _gear_envelope(cs, Rw["r"], v_r, bands)
 
+    # ===================== hybrid layer (cids 177 to 183, 535, 573, 589, 590, 836, 870, 871) ==========
+    # All in mechanical W at the wheels. Deploy: P_dep = F_dep v <= S map k_dep. Brake regen: the automatic blend leaves
+    # the axle forces as they are and harvests the largest force that the regen axles can hold. Paddle regen: F_pad v shares
+    # the clamp with the brake regen. The lap rows are integrals of power over time (the integrand has the factor sf).
+    # Speeds: v_r = R_r (Om_rl + Om_rr) / 2 and v_f = R_f (Om_fl + Om_fr) / 2 are the axle speeds at the wheels. Each
+    # power is the machine power T x omega, so it uses the axle speeds, weighted by the front share of its force.
+    # The ChassisSim law is F V at the car speed. It differs by the wheel slip (stored GP3 result: +3.2 % median
+    # under drive, -1.7 % under braking).
+    # ponytail: cid 178 (deploy mode) and the early stop of cid 836 in (0, 1) are driver rules of ChassisSim. The
+    # NLP deploys optimally, so its lap is a lower bound for a car with an early stop. The QSS of P5 uses cid 178.
+    # ponytail: F_dep_n <= 1 caps F_dep at F_ref. That bound is active below v = S k_dep / F_ref (7 m/s for the GP3
+    # copy). Raise the input bound when a car needs more deploy force at low speed.
+    hyb_rows, lap_terms, P_dep, P_harv = [], [], None, None
+    if hyb:
+        h = cs.hybrid
+        _, brk_on, pad_on = hybrid_gates(cs)        # ChassisSim gates: 535 and 590 (brake), 573 and 589 (paddle)
+        kd = 1.0 if h.k_deploy is None else float(h.k_deploy)
+        kr = 1.0 if h.k_regen is None else float(h.k_regen)
+        S = float(h.scale_deploy)
+        mapf = deploy_map(cs)
+        v_f = 0.5 * (Om_fl + Om_fr) * Rw["f"]
+        v_mix = lambda fs: v_r if fs == 0 else (1 - fs) * v_r + fs * v_f      # fs = front share of the force
+        P_dep = F_dep * v_mix(s_dep)
+        cap = S * kd * (1.0 if mapf is None else mapf(om_eng))
+        hyb_rows.append(("deploy_pw", (cap - P_dep) / S, 0.0, np.inf))
+        hyb_rows.append(("deploy_brk", hsym[0] * T_brake_n / 1e-3, -1.0, 1.0))      # no deploy while braking
+        # The exclusion rows have a slack of 1e-3, so a small drive force can act with the brake or the paddle.
+        # The harvest takes only the net retarding force, else that drive force is free energy. The smooth positive
+        # part is exactly 0 at a net force of 0, so a car that coasts harvests nothing.
+        # ponytail: D is the total drive force, not the force of each axle. It is exact when drive and brake do
+        # not act together. Use the axle forces when a car drives and harvests on different axles.
+        D, w_net = T_drive + F_dep, 1e-3 * F_ref
+        P_hb0 = P_hb = P_hp = 0.0
+        if brk_on or pad_on:
+            clamp = float(h.clamp_regen)
+        if brk_on:
+            f = 0.55 if h.regen_front_share is None else float(h.regen_front_share)
+            front = flag_on(h.regen_front_on)
+            k_axle = min(bias / f if f > 0 else np.inf, (1 - bias) / (1 - f) if f < 1 else np.inf) if front else (1 - bias)
+            F_net = _spos(-T_brake - D, w_net)
+            P_hb0 = _smin(clamp, k_axle * F_net * v_mix(f if front else 0.0), 1e-3 * clamp)       # before the regen scale
+            P_hb = P_hb0 * kr
+        if pad_on:
+            v_pad = v_mix(split)
+            P_hp = kr * v_pad * _spos(F_pad - D, w_net)
+            hyb_rows.append(("paddle_pw", (clamp - P_hb0 - F_pad * v_pad) / clamp, 0.0, np.inf))
+            hyb_rows.append(("paddle_drv", hsym[1] * (T_drive_n + hsym[0]) / 1e-3, -1.0, 1.0))   # no drive under the paddle
+        P_harv = P_hb + P_hp
+        e_free = 0.0 if h.e_free is None else float(h.e_free)
+        lap_terms = [(P_dep - P_harv, -np.inf, e_free / E_S), (P_dep, -np.inf, (float(h.e_cap) + e_free) / E_S)]
+
     # ===================== chassis ==========================================
     cc = lambda d: tuple(d[c] for c in C4)
     sf, d = _chassis_corrected(
@@ -696,6 +802,7 @@ def vehModel_cs(ctx):
     for i, c in enumerate(C4):      # zt holds F/kt_ref, so its rate is the deflection rate x kt/kt_ref
         d[19 + i] = -wu[c] * sf * kt[c] / kt_ref
     Lon_acc, Lat_acc = d[0] / sf, d[1] / sf
+    lap_rows = [(e * sf / E_S, lo, hi) for e, lo, hi in lap_terms]     # J / E_S: integrals over dt = sf ds
     ax, ay = Lon_acc - vy*r, Lat_acc + vx*r
     dx = ca.vertcat(*d) / ca.DM(x_s)
 
@@ -726,6 +833,9 @@ def vehModel_cs(ctx):
     Ca = {a: sum((fy_pm[a + s][0] - fy_pm[a + s][1]) / (2 * D_ALPHA) for s in "lr") for a in "fr"}
     stbi = stbi_index(vp.l_f, vp.l_r, Ca["f"], Ca["r"], vx, 2e-2 * vp.m * vp.g)
     m.veh_extra = [("om_gear", om_eng), ("throttle", ca.fmin(ca.fmax(T_drive / F_env, 0.0), 1.0)), ("F_env", F_env), ("stbi", stbi)]
+    if hyb:
+        m.veh_extra += [("P_dep", P_dep), ("P_harv", P_harv)]       # W at the wheels
+        m.hyb_rows, m.lap_rows = hyb_rows, lap_rows
     ctx.m23 = m
     return ctx
 
@@ -735,15 +845,20 @@ def cs_path_constraints(ca, m, ctx):
     BrTh_1: no drive and brake together (as vehModel)."""
     hnames = ["drive_env", "BrTh_1"]
     h = ca.vertcat((m.F_env - m.T_drive) / m.u_s[0], (m.T_drive_n * m.T_brake_n) / 1e-3)
-    return hnames, h, np.array([0.0, -1.0]), np.array([np.inf, 1.0])
+    lb, ub = [0.0, -1.0], [np.inf, 1.0]
+    for name, e, lo, hi in getattr(m, "hyb_rows", []):      # hybrid layer: power and exclusion rows, after the two above
+        hnames, h, lb, ub = hnames + [name], ca.vertcat(h, e), lb + [lo], ub + [hi]
+    return hnames, h, np.array(lb), np.array(ub)
 
 
 def cs_seed_inputs(ctx, m, prof, s):
-    """Scaled seed of the three inputs at the stations s [m] from the QSS profile: the tyre force that holds the
-    profile acceleration (mass and resistance of the car envelope prof['env']) goes to T_drive or T_brake. delta is 0."""
+    """Scaled seed of the inputs at the stations s [m] from the QSS profile: the tyre force that holds the
+    profile acceleration (mass and resistance of the car envelope prof['env']) goes to T_drive or T_brake. delta and
+    the hybrid forces are 0."""
     env = prof["env"]
     s = np.asarray(s, float).reshape(-1)
     v, ax = np.interp(s, prof["s"], prof["v"]), np.interp(s, prof["s"], prof["ax"])
     F = env.M * ax + env.F_res(v)
-    u = np.vstack([np.maximum(F, 0.0), np.minimum(F, 0.0), np.zeros_like(v)]) / np.asarray(m.u_s, float)[:, None]
+    z = np.zeros_like(v)     # delta and the hybrid forces (after delta) start at 0
+    u = np.vstack([np.maximum(F, 0.0), np.minimum(F, 0.0)] + [z] * (m.nu - 2)) / np.asarray(m.u_s, float)[:, None]
     return np.clip(u, np.asarray(m.u_min)[:, None], np.asarray(m.u_max)[:, None])

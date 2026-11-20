@@ -425,14 +425,14 @@ def _build_c():
     return c
 
 
-def _input_keys(EM4, ATD, ActAero, car=False):
+def _input_keys(EM4, ATD, ActAero, car=False, extra=()):
     """Ordered list of input channels for a given configuration.
 
     Reproduces exactly the explicit if/elseif ladder in userOpts.m that builds
     duk_ub/duk_lb/ru/rdu/rdu2. Order: motor(s) -> brake -> [ATD x4] -> aero -> delta.
     """
-    if car:             # a ChassisSim car: drive force, brake force, steer
-        return ["T_drive", "T_brake", "delta"]
+    if car:             # a ChassisSim car: drive force, brake force, steer, then the hybrid forces (after delta)
+        return ["T_drive", "T_brake", "delta", *extra]
     keys = (["T_motor_fl", "T_motor_fr", "T_motor_rl", "T_motor_rr"]
             if EM4 == 1 else ["T_motor"])
     keys = keys + ["T_brake"]
@@ -768,7 +768,13 @@ def userOpts(ctx,
         rate = c.ub.T_motor / pt.Tmax * drive_scale(ctx.cs, vp.Rw_r)
         c.ub.T_drive, c.lb.T_drive = rate, -rate
         c.ru.T_drive = c.rdu.T_drive = c.rdu2.T_drive = 0.0
-    keys = _input_keys(pt.EM4, pt.ATD, vp.ActAero, car=ctx.cs is not None)
+        hyb = chassissim.hybrid_inputs(ctx.cs)      # the hybrid forces share the scale and the rate of T_drive
+        for k in hyb:
+            setattr(c.ub, k, rate)
+            setattr(c.lb, k, -rate)
+            for reg in (c.ru, c.rdu, c.rdu2):
+                setattr(reg, k, 0.0)
+    keys = _input_keys(pt.EM4, pt.ATD, vp.ActAero, car=ctx.cs is not None, extra=hyb if ctx.cs is not None else ())
     ctx.input_keys = keys
     ctx.duk_ub = _col(c.ub, keys)
     ctx.duk_lb = _col(c.lb, keys)

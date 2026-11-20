@@ -883,7 +883,9 @@ def vertical_eigs(ctx, m, f_dyn, vx, h=1e-6):
     X[0], X[5:7], X[7:9] = vx, vx / vp.Rw_f, vx / vp.Rw_r
     X[19:23] = [vp.xti_fl, vp.xti_fr, vp.xti_rl, vp.xti_rr]
     U = np.array([0.25 if str(k).strip() == "ATD" else 0.0 for k in ctx.input_keys])
-    U[-1] = 1e-6                                    # steering is last. Not 0: Ackermann divides by tan(delta)
+    keys = [str(k).strip() for k in ctx.input_keys]
+    # Steering by its name, else the last input. Not 0: Ackermann divides by tan(delta)
+    U[keys.index("delta") if "delta" in keys else -1] = 1e-6
     rows = np.arange(9, 23)
     n = 1 + 2 * rows.size                           # the base point, then a +h and a -h column per row
     Xn = np.tile((X / xs)[:, None], (1, n))

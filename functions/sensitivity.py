@@ -36,21 +36,22 @@ def nlp_index(structure):
     The layout copies the packing in build_and_solve_nlp. Change the two together.
     The rows of w are X (nx, N+1), U (nu, N+1), Y (ny, N+1), XC (nx, N*d) and P (n_param,).
     The rows of g are start (nx,), end (nx,), defect (nx, N*d), cont (nx, N), h (nh, N+1),
-    rate (nu, N), periodic (n_periodic,) and pathcol (n_pathcol,).
+    rate (nu, N), periodic (n_periodic,), pathcol (n_pathcol,) and lap (n_lap,).
+    The lap rows are the lap integrals of m.lap_rows (the energy rows of a hybrid car), last in g.
     The pathcol rows are the B3 path rows at the collocation points, point by point.
     On a Radau grid they skip the last point of each interval, so they cover OPT_d - 1 points per interval.
     Column c = d*k + j of XC and defect is collocation point j of interval k.
     The dict also holds the ints n_w, n_g and nh.
-    A missing n_param, n_periodic or n_pathcol counts as 0.
+    A missing n_param, n_periodic, n_pathcol or n_lap counts as 0.
     Raise ValueError if the sizes do not fit the packing.
     """
     nx, nu, ny, N, d, n_w, n_g = (int(get_field(structure, k)) for k in
                                   ("nx", "nu", "ny", "N", "OPT_d", "n_w", "n_g"))
-    n_param, n_per, n_pc = (int(get_field(structure, k, 0)) for k in ("n_param", "n_periodic", "n_pathcol"))
-    nh, rest = divmod(n_g - 2 * nx - (d + 1) * N * nx - nu * N - n_per - n_pc, N + 1)
+    n_param, n_per, n_pc, n_lap = (int(get_field(structure, k, 0)) for k in ("n_param", "n_periodic", "n_pathcol", "n_lap"))
+    nh, rest = divmod(n_g - 2 * nx - (d + 1) * N * nx - nu * N - n_per - n_pc - n_lap, N + 1)
     if rest or nh < 0 or n_w != (nx + nu + ny) * (N + 1) + nx * N * d + n_param:
         raise ValueError(f"The NLP sizes do not fit the packing: n_w {n_w}, n_g {n_g}, nx {nx}, "
-                         f"nu {nu}, ny {ny}, N {N}, d {d}, n_param {n_param}, n_periodic {n_per}, n_pathcol {n_pc}.")
+                         f"nu {nu}, ny {ny}, N {N}, d {d}, n_param {n_param}, n_periodic {n_per}, n_pathcol {n_pc}, n_lap {n_lap}.")
     i, j = np.arange(nx)[:, None], np.arange(nu)[:, None]
     k, c = np.arange(N + 1), np.arange(N * d)
     off_h = 2 * nx + (d + 1) * nx * N
@@ -68,6 +69,7 @@ def nlp_index(structure):
         rate=off_r + j + nu * k[:N],
         periodic=off_r + nu * N + np.arange(n_per),
         pathcol=off_r + nu * N + n_per + np.arange(n_pc),
+        lap=n_g - n_lap + np.arange(n_lap),
         n_w=n_w, n_g=n_g, nh=nh)
 
 

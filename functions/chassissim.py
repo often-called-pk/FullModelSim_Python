@@ -221,12 +221,13 @@ CAR_FIELDS = {
     104: ("engine.cut_delay", 1.0), 105: ("engine.cut_min", 1.0), 106: ("engine.cut_ramp", 1.0),
     161: ("engine.brake_table", (RPM, 1.0)),
     # Hybrid layer (P4). 177 master, 178 deploy mode, 179 regen clamp [W], 180 deploy scale [W], 181 energy cap [J],
-    # 182 regen scale, 183 deploy scale after the map, 836 free energy offset, 590 brake regen gate.
+    # 182 regen scale, 183 deploy scale after the map, 836 free energy offset, 590 brake regen gate, 589 paddle gate.
     # 870 = 1 sends the regen front share 871 to the front axle (0: rear axle only).
     # Deploy maps 467 (front) and 468 (rear): x engine speed, z throttle / 100, data = fraction of cid 180.
     **{c: (f"hybrid.{n}", 1.0) for c, n in ((177, "on"), (178, "mode"), (179, "clamp_regen"), (180, "scale_deploy"),
                                              (181, "e_cap"), (182, "k_regen"), (183, "k_deploy"), (836, "e_free"),
                                              (590, "gate_brake"), (535, "use_brake_maps"), (573, "use_paddle"),
+                                             (589, "gate_paddle"),
                                              (464, "blend_on"), (465, "blend"), (466, "map_on"),
                                              (870, "regen_front_on"), (871, "regen_front_share"))},
     467: ("hybrid.map_front", (RPM, 1.0, 1.0)), 468: ("hybrid.map_rear", (RPM, 1.0, 1.0)),
@@ -479,16 +480,56 @@ def _text_live(v):
     return bool(bytes(b).replace(b"\x00", b"").strip())
 
 
+def flag_on(v):
+    """Return True when a flag record is on: present and not 0."""
+    return v not in (None, 0)
+
+
+def hybrid_gates(cs):
+    """Return (deploy, brake regen, paddle regen) of the hybrid layer, as ChassisSim gates them.
+    Deploy needs cid 177. Brake regen needs 177, 535 and 590. Paddle regen needs 177, 573 and 589."""
+    h = cs.hybrid
+    dep = flag_on(h.on)
+    return (dep, dep and flag_on(h.use_brake_maps) and flag_on(h.gate_brake),
+            dep and flag_on(h.use_paddle) and flag_on(h.gate_paddle))
+
+
+def hybrid_inputs(cs):
+    """Return the names of the extra inputs of the hybrid layer: [] (cid 177 off), ['F_dep'] or ['F_dep', 'F_pad'].
+    F_dep is the deploy force and F_pad the paddle regen force (cids 573 and 589), both in N at the wheels."""
+    dep, _, pad = hybrid_gates(cs)
+    return (["F_dep"] + (["F_pad"] if pad else [])) if dep else []
+
+
 def power_refusals(cs):
     """Raise ValueError for a powertrain feature of the car that the model does not build."""
     r, e, h = cs.refused, cs.engine, cs.hybrid
     s = e.torque_split
     if s is not None and not 0 <= s <= 1:       # NaN fails the comparison too
         raise ValueError(f"The car file {cs.path} holds a torque split (cid 111) of {s}. The split must be from 0 to 1.")
-    on = lambda v: v not in (None, 0)       # the 'on' test of every flag
-    for c, v in ((177, h.on), (535, h.use_brake_maps), (573, h.use_paddle)):
-        if on(v):       # temporary: P4 builds the hybrid layer and removes this refusal
-            raise ValueError(f"The hybrid layer (cid {c}) is not built yet. The car file {cs.path} sets this cid.")
+    on = flag_on
+    dep, brk, pad = hybrid_gates(cs)
+    if dep:             # the hybrid layer (cid 177 is the master): its scales must be given
+        for c, v, low in ((180, h.scale_deploy, False), (181, h.e_cap, True), (179, h.clamp_regen if brk or pad else 1.0, False)):
+            if v is None or not np.isfinite(v) or v < 0 or (v == 0 and not low):
+                raise ValueError(f"The car file {cs.path} sets the hybrid layer (cid 177). "
+                                 + (f"The file does not hold cid {c}. " if v is None else f"Cid {c} is {v}. ")
+                                 + f"The value must be {'0 or more' if low else 'above 0'}.")
+        for c, v in ((182, h.k_regen), (183, h.k_deploy), (836, h.e_free)):     # None keeps 1, 1 and 0
+            if v is not None and not (np.isfinite(v) and v >= 0):
+                raise ValueError(f"The car file {cs.path} holds {v} in cid {c}. The value must be 0 or more.")
+        if h.k_regen is not None and h.k_regen > 1:     # the blend keeps the axle forces, so a scale above 1 makes energy
+            raise ValueError(f"The car file {cs.path} holds a regen scale (cid 182) of {h.k_regen}. "
+                             "The model harvests the brake force that the car applies. A scale above 1 makes energy.")
+        for c, v in ((465, h.blend), (871, h.regen_front_share)):
+            if v is not None and not 0 <= v <= 1:
+                raise ValueError(f"The car file {cs.path} holds {v} in cid {c}. The share must be from 0 to 1.")
+        for c, tab in ((467, h.map_front), (468, h.map_rear)):
+            if on(h.map_on) and tab is not None:
+                d = np.asarray(tab["data"], float)
+                if not (np.all(np.isfinite(d)) and np.all(d >= 0)):
+                    raise ValueError(f"The car file {cs.path} holds a deploy map (cid {c}) with a value that is "
+                                     "not a number or is below 0. Each map value must be 0 or more.")
     for what, c, hit in (
             ("the brake ramp", 571, on(r.c571)),
             ("the per-step torque split recompute", 598, on(r.c598)),

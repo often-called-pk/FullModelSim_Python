@@ -262,7 +262,8 @@ def warmstart_full(ctx, m, src, disc, nh, use_duals=True, strict=False, n_col=0,
     seeds the primal only."""
     n_per = (m.nx + m.nu) if ctx.periodic else 0
     expected = dict(nlp_structure(m.nx, m.nu, m.ny, disc["N"], ctx.OPT_d, nh, n_periodic=n_per,
-                                  n_pathcol=n_col * disc["N"] * pathcol_points(disc["tau"])),
+                                  n_pathcol=n_col * disc["N"] * pathcol_points(disc["tau"]),
+                                  n_lap=len(getattr(m, "lap_rows", None) or [])),
                     input_keys=list(ctx.input_keys), s_full=disc["s_full"],
                     x_s=m.x_s, u_s=m.u_s, tyre_set=getattr(ctx, "tyre_set", "MF205"),
                     start_state=ctx.start_state, between_knots=ctx.between_knots, collocation=ctx.collocation,
@@ -759,7 +760,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
 
     if res["structure"] != nlp_structure(m.nx, m.nu, m.ny, N, ctx.OPT_d, len(hnames),
                                          n_periodic=(m.nx + m.nu) if ctx.periodic else 0,
-                                         n_pathcol=n_col * N * pathcol_points(disc["tau"])):
+                                         n_pathcol=n_col * N * pathcol_points(disc["tau"]),
+                                         n_lap=len(getattr(m, "lap_rows", None) or [])):
         warnings.warn("functions.warmstart.nlp_structure is out of sync with the "
                       f"transcription ({res['structure']}): dual re-injection is unreliable")
 
@@ -851,6 +853,22 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
             E[i + 1] = E[i] + 0.5 * (P[i] + P[i + 1]) * (t_opt[i + 1] - t_opt[i]) * 2.7778e-4 / pt.eff
         vehicle["E_motor"] = E
 
+    # hybrid layer: the lap energies [J], the same quadrature as the lap rows (power x sf at the collocation points)
+    hybrid = None
+    if ctx.cs is not None and "P_dep" in vehicle_full:
+        col = np.setdiff1d(np.arange(vehicle_full["sf"].size), np.arange(N + 1) * (ctx.OPT_d + 1))
+        def _lap_int(P):            # sum over intervals of dsk * B . (P sf) at the points of the interval
+            q = (np.asarray(P) * vehicle_full["sf"])[col].reshape(N, ctx.OPT_d)
+            return float(np.sum(disc["dsk"] * (q @ np.asarray(disc["B"]).reshape(-1))))
+        h_ = ctx.cs.hybrid
+        hybrid = {"E_dep": _lap_int(vehicle_full["P_dep"]), "E_harv": _lap_int(vehicle_full["P_harv"]),
+                  **{f"cid{c}": float(v) for c, v in ((177, h_.on), (178, h_.mode), (179, h_.clamp_regen), (180, h_.scale_deploy),
+                                                      (181, h_.e_cap), (182, h_.k_regen), (183, h_.k_deploy), (836, h_.e_free),
+                                                      (535, h_.use_brake_maps), (590, h_.gate_brake),
+                                                      (573, h_.use_paddle), (589, h_.gate_paddle),
+                                                      (464, h_.blend_on), (465, h_.blend), (466, h_.map_on),
+                                                      (870, h_.regen_front_on), (871, h_.regen_front_share)) if v is not None}}
+
     # constraint values along the lap
     hval = np.array(h_eq(x_opt / m.x_s[:, None], u_opt / m.u_s[:, None], disc["pv_knot"]).full())
     constraints = {hnames[i]: hval[i, :] for i in range(len(hnames))}
@@ -879,6 +897,8 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         # from it (MLTP(warm_start=<this .mat or ctx>)); w_opt is scaled
         "nlp": nlp_record(res, ctx.solve_stats, m.x_s, m.u_s, ws_mode),
     }
+    if hybrid is not None:              # a car with the hybrid layer on (cid 177): lap energies and the cids used
+        data["hybrid"] = hybrid
     if ctx.n_tag:                       # userOpts(n_bounds=...): the stem tag of this band
         data["n_tag"] = ctx.n_tag
     for key, default in WARM_KNOBS[1:]:  # B3, B4, B7: a result without the field has the default of WARM_KNOBS

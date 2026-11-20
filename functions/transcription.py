@@ -278,6 +278,8 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     MLTP_initial.m / MLTP.m exactly.
 
     m       : model namespace (nx,nu,ny, x_min/max,u_min/max,y_min/max, x_s,u_s,y_s)
+              Optional m.lap_rows = [(integrand, lb, ub)] over (m.x, m.u, m.pv): one g row each, the integral of the
+              integrand over the lap (the quadrature of the objective), last in g.
     f_dyn   : casadi Function (x,u[,y],pv[,P]) -> (dx, L)
     f_sf    : casadi Function (x,kappa) -> sf
     h_eq    : casadi Function (x,u[,y],pv[,P]) -> h
@@ -335,9 +337,10 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
               warm_info, linear_solver) -- t_build = NLP construction wall
               time [s] (entry -> just before the IPOPT call, incl. nlpsol
               creation); w_opt/lam_g/lam_x = numpy primal/dual solution;
-              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic, n_pathcol}
+              structure = {nx, nu, ny, N, OPT_d, n_w, n_g, n_param, n_periodic, n_pathcol (, n_lap)}
               (what a later solve must match to re-inject them). n_periodic is
               nx + nu with periodic=True, else 0. n_pathcol is the h_col_rows count * N * pathcol_points(tau), else 0.
+              n_lap is the count of m.lap_rows. The key is present only when the model has lap rows.
               warm_info = which warm-start parts were used (x0, lam_g0, lam_x0, ipopt, duals);
               linear_solver = the one actually used (after any HSL fallback).
               With env MLTP_KEEP_NLP=1 also nlp_fg (Function w -> (J, g)) and
@@ -431,6 +434,14 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
         dyn_args.append(ca.repmat(P, 1, nd))            # shared by every point
     # MX: a single call node; SX: inlined per point (same as the legacy call)
     dX_all, L_all = f_dyn.map(nd)(*dyn_args)
+    # Lap rows: m.lap_rows = [(integrand, lb, ub)] over (m.x, m.u, m.pv). One g row each: the collocation quadrature of
+    # the objective (sum over intervals of dsk * B-weighted values). Absent: no row, no node.
+    lap_rows = list(getattr(m, "lap_rows", None) or [])
+    if lap_rows:
+        if has_aux or has_param:
+            raise ValueError("m.lap_rows needs a model without aux variables and a build without design parameters.")
+        f_lap = ca.Function("f_lap", [m.x, m.u, m.pv], [ca.vertcat(*[e for e, _, _ in lap_rows])])
+        Q_lap = f_lap.map(nd)(dyn_args[0], dyn_args[1], pv_col)
 
     # collocation constraints + objective (per-interval linear assembly)
     gck = []
@@ -513,18 +524,25 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
         lbpc = [np.tile(np.asarray(h_lb, float).reshape(-1)[rows_c].reshape(-1, 1), (len(pts), 1))]
         ubpc = [np.tile(np.asarray(h_ub, float).reshape(-1)[rows_c].reshape(-1, 1), (len(pts), 1))]
 
+    # lap rows: the integral over the lap, last in g
+    glap, lblap, ublap = [], [], []
+    if lap_rows:
+        glap = [sum(ca.mtimes(Q_lap[:, OPT_d * k:OPT_d * k + OPT_d], B) * dsk[k] for k in range(N))]
+        lblap = [np.array([[lo] for _, lo, _ in lap_rows], float)]
+        ublap = [np.array([[hi] for _, _, hi in lap_rows], float)]
+
     # assemble g and bounds
-    g = ca.vertcat(*gb, *gck, ghk, gduk, *gper, *gpc)
+    g = ca.vertcat(*gb, *gck, ghk, gduk, *gper, *gpc, *glap)
     lbg = np.vstack(lbg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_lb).reshape(-1, 1), (N + 1, 1))]
                     + [np.tile(np.asarray(duk_lb).reshape(-1, 1), (N, 1))]
-                    + zper + lbpc)
+                    + zper + lbpc + lblap)
     ubg = np.vstack(ubg
                     + [np.zeros(((OPT_d + 1) * N * nx, 1))]
                     + [np.tile(np.asarray(h_ub).reshape(-1, 1), (N + 1, 1))]
                     + [np.tile(np.asarray(duk_ub).reshape(-1, 1), (N, 1))]
-                    + zper + ubpc)
+                    + zper + ubpc + ublap)
 
     # per-point lateral band (userOpts n_bounds; n is state row 3 in both models): it replaces the
     # model's +-4 m at the knots, at the collocation points and in the start / end box of n.
@@ -554,7 +572,8 @@ def build_and_solve_nlp(ca, m, f_dyn, f_sf, h_eq, h_lb, h_ub,
     structure = dict(nx=int(nx), nu=int(nu), ny=int(ny), N=int(N), OPT_d=int(OPT_d),
                      n_w=n_w, n_g=n_g, n_param=int(P.numel()) if has_param else 0,
                      n_periodic=int(nx + nu) if periodic else 0,
-                     n_pathcol=len(rows_c) * N * pathcol_points(tau))
+                     n_pathcol=len(rows_c) * N * pathcol_points(tau),
+                     **({"n_lap": len(lap_rows)} if lap_rows else {}))
     solve_kw = {}
     warm_info = dict(x0=False, lam_g0=False, lam_x0=False, ipopt=False, duals=False)
     if warm:
