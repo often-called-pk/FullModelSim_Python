@@ -1,20 +1,19 @@
 # FullModelSim_Python
 
-A Python port of a MATLAB **Minimum-Lap-Time-Problem (MLTP)** framework for a
-4-motor electric race car (`FullModel_4EM_Suspension_FullTyre`). It poses the
-racing line as an optimal-control problem in the **space (track arc-length)
-domain**, transcribes it with **direct Legendre collocation**, and solves the
-resulting NLP with **IPOPT** (shipped inside the CasADi wheel).
+FullModelSim_Python is a Python port of a MATLAB **Minimum-Lap-Time-Problem (MLTP)** framework for a
+4-motor electric race car (`FullModel_4EM_Suspension_FullTyre`). It poses the racing line as an
+optimal-control problem in the **space (track arc-length) domain**. It transcribes the problem with
+**direct Legendre collocation** and solves the NLP with **IPOPT**, which ships inside the CasADi wheel.
 
-There are two ways to use it:
+You can use it in two ways:
 
-1. **Python scripts**, `MLTP.py`, `MLTP_initial.py`, and the co-optimisation
-   wrappers; deliverables are `.mat` result files and Plotly HTML figures.
-2. **FullModelSim desktop app**, a PySide6 GUI that PyInstaller freezes into a standalone
-   app for Windows and Linux. The app runs on a machine with **no Python installed**.
+1. **Python scripts**: `MLTP.py`, `MLTP_initial.py`, `MLTP_screen.py` and the co-optimisation
+   wrappers. They write `.mat` result files and Plotly HTML figures.
+2. **The FullModelSim desktop app**: a PySide6 GUI. PyInstaller freezes it into a standalone app for
+   Windows and Linux. The app runs on a machine with **no Python installed**.
 
-> Deep architecture/internals live in [`CLAUDE.md`](CLAUDE.md). This README is
-> the quick-start and current-status overview.
+> [`CLAUDE.md`](CLAUDE.md) describes the architecture and the internals. This README gives the quick
+> start and the current status.
 
 ---
 
@@ -37,57 +36,94 @@ Python, casadi or HSL) is still the final acceptance check, see [`build/README.m
 
 ---
 
+## Quick start
+
+Do these steps to get a first lap:
+
+1. Install Git.
+2. Clone the repository.
+3. Open a terminal in the repo root.
+4. On Linux, run `./start.sh`. On Windows, run `.\start.bat`.
+5. If the script asks to install uv, type `y`.
+6. Wait until the GUI opens.
+7. In the GUI, click Run.
+
+The result and the plots go to the folder `FullModelSim` in your Documents folder.
+
+---
+
 ## Setup
 
-Run every command from the repo root. All paths are relative (`Circuits/`, `Data/`,
-`Results/`, `Plots/`).
+### Requirements
 
-Developer route. You need Git and one of Python 3.10 or newer or
-[uv](https://docs.astral.sh/uv/). The platforms are Windows x64 and Linux x64 with glibc
-2.34 or newer (Ubuntu 22.04 or newer). One command does the whole setup:
+- Git.
+- Python 3.10 or later, or [uv](https://docs.astral.sh/uv/).
+- Windows x64, or Linux x64 with glibc 2.34 or later (Ubuntu 22.04 or later).
+
+The repo holds `Data/DATA_AA.mat` (aerodynamic coefficients). A real solve needs this file.
+
+Run every command from the repo root. All paths are relative (`Circuits/`, `Data/`, `Results/`,
+`Plots/`).
+
+### One-command setup
+
+Run the setup script:
 
 ```
-./start.sh          # Linux. The command "sh start.sh" works too.
-.\start.bat         # Windows, in PowerShell and in cmd
+./start.sh          # Linux. The command "sh start.sh" also works.
+.\start.bat         # Windows, in PowerShell or in cmd
 ```
 
 The script does these steps:
 
-1. It installs uv if uv is missing. It asks first.
-2. It creates `.venv` from `uv.lock`. uv downloads Python 3.13 if the machine does not have it.
+1. If uv is missing, it asks to install uv. Then it installs uv.
+2. It creates `.venv` from `uv.lock`. If the machine does not have Python 3.13, uv downloads it.
 3. It checks the Qt system libraries (Linux) and `Data/DATA_AA.mat`.
 4. It reports the optional parts: Coin-HSL, the ChassisSim folder (`CHASSISSIM_DIR`) and a C
-   compiler. A missing part never stops the setup.
+   compiler. A missing optional part does not stop the setup.
 5. It builds the model and computes one QSS lap.
 6. It runs the quick tests.
 7. It opens the GUI.
 
-The flags are `--yes` (no questions), `--no-gui` and `--no-tests`.
+The script has these flags:
 
-Manual steps:
+- `--yes`: the script does not ask questions.
+- `--no-gui`: the script does not open the GUI.
+- `--no-tests`: the script does not run the quick tests.
+
+### Manual setup
+
+Run these commands:
 
 ```
-uv sync                 # create .venv from uv.lock
-uv run fullmodelsim     # start the GUI
-uv run python tests/run_tests.py --quick
+uv sync                                     # create .venv from uv.lock
+uv run fullmodelsim                         # start the GUI
+uv run python tests/run_tests.py --quick    # run the quick tests
 ```
 
-A `.venv` from before the switch to PySide6-Essentials can lose Qt files on `uv sync`.
-In that case, run `uv sync --reinstall-package pyside6-essentials`, or delete `.venv` and
-run the setup again.
+If your `.venv` is from before the switch to PySide6-Essentials, `uv sync` can delete Qt files.
+Then run `uv sync --reinstall-package pyside6-essentials`. Or delete `.venv` and run the setup
+again.
 
-`requirements.txt` is generated from `uv.lock` for pip users. Do not edit it. To change
-a dependency, edit `pyproject.toml`. Then run `uv lock` and
-`uv export --no-dev --no-hashes --no-emit-project -o requirements.txt`.
+`requirements.txt` is for pip users. uv makes it from `uv.lock`. Do not edit it. To change a
+dependency, do these steps:
 
-Download route. The release workflow attaches `FullModelSim-<tag>-windows.zip` and
-`FullModelSim-<tag>-linux.tar.gz` to the GitHub Release of each `v*` tag. Extract the
-archive and start `FullModelSim.exe` (Windows) or `FullModelSim` (Linux). The Linux app
-needs glibc 2.35 or later and the system libraries libGL, libEGL and libxcb. The downloads
-use MUMPS and hold no vendor data. The release steps are in
-[`build/README.md`](build/README.md).
+1. Edit `pyproject.toml`.
+2. Run `uv lock`.
+3. Run `uv export --no-dev --no-hashes --no-emit-project -o requirements.txt`.
 
-`Data/DATA_AA.mat` (aerodynamic coefficients) is **required for a real solve**.
+### Download the app
+
+The release workflow attaches `FullModelSim-<tag>-windows.zip` and
+`FullModelSim-<tag>-linux.tar.gz` to the GitHub Release of each `v*` tag. To use a download, do
+these steps:
+
+1. Extract the archive.
+2. On Windows, start `FullModelSim.exe`. On Linux, start `FullModelSim`.
+
+The Linux app needs glibc 2.35 or later and the system libraries libGL, libEGL and libxcb. The
+downloads use MUMPS and hold no vendor data. [`build/README.md`](build/README.md) gives the
+release steps.
 
 ---
 
@@ -95,82 +131,130 @@ use MUMPS and hold no vendor data. The release steps are in
 
 ### A) Run a solve from Python
 
-The scripts have **no argparse/CLI**, their `__main__` block calls the function
-with hardcoded args. Either edit the `__main__` call or import and call with
-kwargs:
+The scripts have **no command-line arguments**. Their `__main__` block calls the function with
+fixed arguments (`circuit='Sturn'`, `vi=60.0`). To change the circuit or the configuration, edit
+that call. Or import the function and give keyword arguments.
 
-```powershell
-uv run python MLTP_initial.py                         # 7-state warm-start solve
-uv run python MLTP.py                                 # full 23-state solve (Sturn by default)
+Run a script:
 
-# pick circuit/config via kwargs:
-uv run python -c "from MLTP import MLTP; MLTP(circuit='BCN', AeroConfig='Static', ATD='On', Electric_4Motors='Off', TyreModel='CombinedSlip')"
-
-# co-optimise design parameters jointly with the racing line:
-uv run python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit='Sturn')"
-
-# one setup change, started from the stored default result (B5):
-uv run python -c "from MLTP import MLTP; MLTP(circuit='Sturn', continue_from='auto', vp_overrides={'LMUY': 0.95})"
+```
+uv run python MLTP_initial.py     # 7-state warm-start solve
+uv run python MLTP.py             # full 23-state solve
+uv run python MLTP_screen.py      # QSS lap estimate (no NLP)
 ```
 
-The two-stage solve: `MLTP()` first builds a reduced 7-state warm start
-(`MLTP_initial`) and interpolates it onto the full 23-state grid, then solves the
-real problem. The result goes to `Results/<stem>.mat`, and the Plotly HTML figures go to
-`Plots/<circuit>/<stem without the circuit>/`. The section "Result files" gives the stem.
+Give keyword arguments:
 
-`continue_from='auto'` starts a setup change from the stored default result of the same
-circuit and configuration, with its primal and dual values. It raises `ValueError` before
-the solve if that result is missing, holds setup knobs, did not converge or does not fit
-the new NLP. Solve the default setup first. A cold solve of an off-default setup can end
-on a slower local optimum. On Sturn, a 3% mass step continued from the default in 15
-iterations. Its cold solve took 500 iterations, and its lap was 1.007 s slower.
+```
+# another circuit and configuration
+uv run python -c "from MLTP import MLTP; MLTP(circuit='BCN', AeroConfig='Static', ATD='On', Electric_4Motors='Off', TyreModel='CombinedSlip')"
 
-**Circuits.** The real tracks are `.mat` files in `Circuits/`: `BCN`
-(`Barcelona_circuit.mat`), the sector splits `BCN_S1`, `BCN_S2` and `BCN_S3`,
-`Jarama`, `Spa` and `NBR` (Nurburgring GP). Each real track goes through a QA
-check when it loads. An error in the check stops the load with a `ValueError`,
-and a smaller issue gives one warning. BCN gives a warning but stays as it is,
-because the MATLAB parity tests use it. Any other name (`Straight`, `Hairpin`,
-`Sturn`, `Circle`, `ZigZag`, `ZigZagMirror`, `VirtualTrack`) is **synthetic**.
-A formula gives its curvature, so it needs no `.mat` file.
+# design parameters, optimised together with the racing line
+uv run python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit='Sturn')"
 
-### B) Run the desktop GUI (development)
+# one setup change, started from the stored default result (B5)
+uv run python -c "from MLTP import MLTP; MLTP(circuit='Sturn', continue_from='auto', vp_overrides={'LMUY': 0.95})"
+
+# QSS lap estimate of a setup change
+uv run python -c "from MLTP_screen import MLTP_screen; MLTP_screen(circuit='BCN', vp_overrides={'LMUY': 0.95})"
+```
+
+`MLTP()` solves in two stages. First it builds a reduced 7-state warm start (`MLTP_initial`) and
+interpolates it onto the full 23-state grid. Then it solves the full problem. The result goes to
+`Results/<stem>.mat`, and the Plotly HTML figures go to `Plots/<circuit>/<stem without the
+circuit>/`. The section "Result files" gives the stem.
+
+`MLTP_screen()` gives a quasi-steady lap estimate in about 1 s, with no IPOPT. The estimate is
+not an optimum: it follows the centreline and has no transients. Use it to rank setups. It writes
+`Results/<stem>_qss.mat`.
+
+`continue_from='auto'` starts a setup change from the stored default result of the same circuit
+and configuration. It uses the primal and dual values of that result. It raises `ValueError`
+before the solve in these cases:
+
+- The default result is missing.
+- The default result holds setup knobs.
+- The default result did not converge.
+- The default result does not fit the new NLP.
+
+Solve the default setup first. A cold solve of an off-default setup can end on a slower local
+optimum. On Sturn, a 3% mass step continued from the default in 15 iterations. Its cold solve took
+500 iterations, and its lap was 1.007 s slower.
+
+**Circuits.** The real tracks are `.mat` files in `Circuits/`: `BCN` (`Barcelona_circuit.mat`), the
+sector splits `BCN_S1`, `BCN_S2` and `BCN_S3`, `Jarama`, `Spa` and `NBR` (Nurburgring GP). Each real
+track goes through a QA check when it loads. An error in the check stops the load with a
+`ValueError`, and a smaller issue gives one warning. BCN gives a warning but stays as it is, because
+the MATLAB parity tests use it. Any other name (`Straight`, `Hairpin`, `Sturn`, `Circle`, `ZigZag`,
+`ZigZagMirror`, `VirtualTrack`) is **synthetic**. A formula gives its curvature, so it needs no
+`.mat` file.
+
+### B) Run a ChassisSim car or circuit
+
+The repo holds no ChassisSim files. To use them, do these steps:
+
+1. Set `CHASSISSIM_DIR` to the ChassisSim install folder. Or give the keyword `chassissim_dir`.
+2. For a ChassisSim circuit, give `circuit='chassissim:<name>'`. The name is the `Circuit name`
+   in `Circ_prop.ini`.
+3. For a ChassisSim car, give `car='chassissim:<path of the .car file>'` and `physics='corrected'`.
+
+For example:
+
+```
+uv run python -c "from MLTP import MLTP; MLTP(circuit='chassissim:<name>', car='chassissim:<path>.car', physics='corrected', n_bounds=(-0.05, 0.05))"
+```
+
+`n_bounds=(-0.05, 0.05)` holds the car within 5 cm of the centreline, which is the line of the
+ChassisSim lap. Without it, the NLP finds its own racing line. A car refuses the options that it
+cannot use, for example `start_state='rolling'`. [`CLAUDE.md`](CLAUDE.md) lists these options. The
+same keywords work for `MLTP_screen()`.
+
+### C) Run the desktop GUI (development)
+
+Run this command:
 
 ```
 uv run fullmodelsim
 ```
 
-The GUI writes a JSON config, spawns the solve as a subprocess, streams the IPOPT
-log into the log pane, and lists the resulting plots. GUI runs write results and plots to
-the output folder of the Output tab. The default is the folder `FullModelSim` in the
-Documents folder of the user, on Windows and on Linux. When you click Run, the GUI saves the
-folder for the next start. The Advanced tab has a Coin-HSL folder field (see Linear solver).
+The GUI writes a JSON config and starts the solve as a subprocess. It shows the IPOPT log in the
+log pane and lists the plots. To run a solve in the GUI, do these steps:
+
+1. On the Main tab, select the circuit and the configuration.
+2. Click Run.
+3. When the solve ends, read the lap time in the summary. The Output tab lists the plots.
+
+GUI runs write the results and the plots to the output folder of the Output tab. The default is the
+folder `FullModelSim` in the Documents folder of the user, on Windows and on Linux. When you click
+Run, the GUI saves the folder for the next start. The Advanced tab has a Coin-HSL folder field (see
+"Linear solver").
 
 The Advanced tab has the group "Run, model and start":
 
-- Run: `nlp` (the solve) or `qss` (a QSS lap estimate in about 1 s, with no IPOPT
-  and no plots). The QSS lap is not an optimum.
+- Run: `nlp` (the solve) or `qss` (a QSS lap estimate in about 1 s, with no IPOPT and no plots).
+  The QSS lap is not an optimum.
 - Physics: `matlab` (default) or `corrected`.
 - Start state: `matlab` (default), `rolling` or `periodic`.
-- Homotopy: three solves with the tyre friction scaled by 1.2, 1.1 and 1.0. When you
-  choose 4 Motors, the GUI ticks this box.
-- More options (JSON): a JSON object with the keys `n_bounds`, `ladder`,
-  `ipopt_overrides`, `Steering`, `CamberGain`, `pt_overrides`, `between_knots`,
-  `collocation`, `state_scaling`, `atd_tbr` and `continue_from`.
+- Homotopy: three solves with the tyre friction scaled by 1.2, 1.1 and 1.0. When you select 4
+  Motors, the GUI ticks this box.
+- More options (JSON): a JSON object with the keys `n_bounds`, `ladder`, `ipopt_overrides`,
+  `Steering`, `CamberGain`, `pt_overrides`, `between_knots`, `collocation`, `state_scaling`,
+  `atd_tbr` and `continue_from`.
 
 The Output tab finds the result file with the same name rule as the solve.
 
-### C) Build the standalone app (Windows and Linux)
+### D) Build the standalone app (Windows and Linux)
 
-```
-uv run pyinstaller build/app.spec    # set COINHSL_DIR first to bundle Coin-HSL for MA57/MA97
-```
+To build the app, do these steps:
 
-Output: `dist\FullModelSim\FullModelSim.exe` on Windows and `dist/FullModelSim/FullModelSim`
-on Linux (onedir). The program starts the GUI. Run `FullModelSim --headless cfg.json` to
-solve and exit (the Run button starts this command). The Windows build has no console
-window. Set `FMS_CONSOLE=1` at build time for a debug build with a console. The build
-notes and the release steps are in [`build/README.md`](build/README.md).
+1. If you want MA57 or MA97 in the app, set `COINHSL_DIR` to the Coin-HSL folder.
+2. Run `uv run pyinstaller build/app.spec`.
+
+The output is `dist\FullModelSim\FullModelSim.exe` on Windows and `dist/FullModelSim/FullModelSim` on
+Linux (onedir). The program starts the GUI. To solve and exit with no GUI, run
+`FullModelSim --headless cfg.json`. The Run button of the GUI starts this command. The Windows build
+has no console window. For a debug build with a console, set `FMS_CONSOLE=1` at build time.
+[`build/README.md`](build/README.md) gives the build notes and the release steps.
 
 ---
 
@@ -266,24 +350,26 @@ Each item has the trigger that makes it worth adding.
 
 ## Linear solver (HSL / MUMPS)
 
-IPOPT ships **inside** the CasADi wheel. The solve **defaults to HSL `ma57`**
-(run with `ma57_automatic_scaling` so it converges on the stiff 23-state
-problem). HSL solvers need a **Coin-HSL** shared library (the MinGW/`libgfortran5`
-`CoinHSL_jll` build matches the casadi wheel's ABI). On Windows, use the `bin/` folder of the
-MinGW build (`libhsl.dll`). On Linux, use the `lib/` folder of the
-`x86_64-linux-gnu-libgfortran5` build (`libhsl.so`). The solve uses the first folder of
-this list that exists:
+IPOPT ships **inside** the CasADi wheel. The solve **uses HSL `ma57` by default**, with
+`ma57_automatic_scaling`, so that it converges on the stiff 23-state problem. HSL solvers need a
+**Coin-HSL** shared library. The MinGW/`libgfortran5` build of `CoinHSL_jll` matches the ABI of the
+casadi wheel:
+
+- On Windows, use the `bin/` folder of the MinGW build (`libhsl.dll`).
+- On Linux, use the `lib/` folder of the `x86_64-linux-gnu-libgfortran5` build (`libhsl.so`).
+
+The solve uses the first folder of this list that exists:
 
 1. The `COINHSL_DIR` environment variable.
 2. The Coin-HSL folder of the GUI (Advanced tab), or the `hsl_dir` keyword.
 3. In a frozen app, the `hsl` folder of the bundle.
 
-If no working Coin-HSL library is found, the solve **transparently falls back to
-MUMPS** (bundled, needs no external library), a solve never crashes on a missing
-DLL. Choose the solver per call (`MLTP(circuit='BCN', linear_solver='ma97')` or
-`'mumps'`), and benchmark them with:
+If no Coin-HSL library works, the solve **uses MUMPS** (bundled, no external library) and gives a
+warning. A missing DLL never stops a solve. To select the solver for one call, give
+`linear_solver`, for example `MLTP(circuit='BCN', linear_solver='ma97')` or `'mumps'`. To compare
+the solvers, run:
 
-```powershell
+```
 uv run python bench_linear_solver.py
 ```
 
@@ -291,24 +377,28 @@ uv run python bench_linear_solver.py
 
 ## Tests
 
-There is no pytest. The files `tests/test_*.py` are plain scripts, and their asserts run
-at module top level. The smallest unit that you can select is a whole file. Every test
-starts with `import _bootstrap` (`tests/_bootstrap.py`). That module puts the repo root on
-`sys.path` and makes it the working directory. Thus a test runs from any directory, and it
-writes its scratch files to a temp directory.
+There is no pytest. The files `tests/test_*.py` are plain scripts. Their asserts run at module top
+level, so the smallest unit that you can run is a whole file. Every test starts with
+`import _bootstrap` (`tests/_bootstrap.py`). That module puts the repo root first on `sys.path` and
+makes it the working directory. So a test runs from any directory, and it writes its scratch files
+to a temp directory.
+
+Run the tests:
 
 ```
 uv run python tests/test_foundation.py        # one file
-uv run python tests/run_tests.py --quick      # all files but the four that iterate IPOPT on a vehicle NLP
+uv run python tests/run_tests.py --quick      # every file but the four that iterate IPOPT on a vehicle NLP
 uv run python tests/run_tests.py --all        # every file
 ```
 
-These cover the numerical/config core (collocation, mesh, warm start, QSS screener),
-plus the app's config/serialisation/results layer. `CLAUDE.md` lists each file and what
-it needs (casadi, `Data/DATA_AA.mat`, PySide6). Only `test_setup_sweep.py` (about a
-minute), `test_paramoptim_warmstart.py` and `test_ladder.py` (both capped at 5 iterations)
-solve the real 23-state NLP with IPOPT. `test_refine.py` runs one small real solve. The
-`--quick` run skips these four files. Smoke-test the symbolic model with:
+The tests cover the numerical and configuration core (collocation, mesh, warm start, QSS screen)
+and the configuration, serialisation and results layer of the app. `CLAUDE.md` lists each file and
+what it needs (casadi, `Data/DATA_AA.mat`, PySide6). Only `test_setup_sweep.py` (about a minute),
+`test_paramoptim_warmstart.py` and `test_ladder.py` (both capped at 5 iterations) solve the real
+23-state NLP with IPOPT. `test_refine.py` runs one small real solve. The `--quick` run skips these
+four files.
+
+To check the symbolic model, run:
 
 ```
 uv run python -c "from functions.context import Ctx; from Powertrain import Powertrain; from vehParams import vehParams; from userOpts import userOpts; from vehModel import vehModel; ctx=Ctx(); Powertrain(ctx); vehParams(ctx); userOpts(ctx); vehModel(ctx); print(ctx.m23.nx, ctx.m23.nu)"
