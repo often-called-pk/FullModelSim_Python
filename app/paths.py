@@ -51,3 +51,8 @@ def user_presets_dir():
     """Writable directory for user-saved setup presets (created on demand by
     the caller). The bundled app/presets/ is read-only when frozen."""
     return os.path.join(default_output_dir(), "presets")
+
+
+def user_cars_dir():
+    """Writable directory for the .car files that the GUI writes (edited cars and saved cars)."""
+    return os.path.join(user_presets_dir(), "cars")

@@ -1,5 +1,5 @@
 """app/widgets.py — small reusable Qt widgets for the parameter editor."""
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QLocale, Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QWidget, QToolButton, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
@@ -19,6 +19,7 @@ class ScientificField(QWidget):
         self._edit = QLineEdit(self)
         validator = QDoubleValidator(self)
         validator.setNotation(QDoubleValidator.ScientificNotation)
+        validator.setLocale(QLocale.c())     # value() reads the text with float(), so the decimal mark is a point
         self._edit.setValidator(validator)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -43,6 +44,15 @@ class ScientificField(QWidget):
     def setToolTip(self, text):
         super().setToolTip(text)
         self._edit.setToolTip(text)
+
+
+class ExactField(ScientificField):
+    """A ScientificField that shows the shortest text that reads back to the same float.
+    It emits valueChanged on setValue, as a spin box does. The car editor needs exact values."""
+
+    def setValue(self, x):
+        self._edit.setText(repr(float(x)))
+        self.valueChanged.emit(float(x))
 
 
 class CollapsibleSection(QWidget):

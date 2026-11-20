@@ -405,6 +405,19 @@ def _atmos(chassissim_dir=None):
     return float(np.sqrt(te / tc) * (pc - wc) / (pe - we))
 
 
+def left_copies(recs):
+    """Return {left cid: right cid} of the records that ChassisSim reads from the right sibling.
+    recs maps a cid to (tag, value). A left record that is absent or all zero takes a right record that holds a value.
+    The flag of a copied rubber gap (cids 204 to 207) goes with the gap."""
+    out = {}
+    for r, l in _SIDES:
+        if r in recs and table_live(recs[r][1]) and not (l in recs and table_live(recs[l][1])):
+            out[l] = r
+            if 7 <= r <= 10 and r + 197 in recs:
+                out[l + 197] = r + 197
+    return out
+
+
 def load_car(path, chassissim_dir=None):
     """Read a ChassisSim car file and return its consumed fields in SI.
 
@@ -436,11 +449,8 @@ def load_car(path, chassissim_dir=None):
     path = os.path.abspath(path)
     sha8 = file_sha8(path)
     recs = {c: (t, v) for t, c, v in carfile.decode(path)}
-    for r, l in _SIDES:
-        if r in recs and table_live(recs[r][1]) and not (l in recs and table_live(recs[l][1])):
-            recs[l] = recs[r]
-            if 7 <= r <= 10 and r + 197 in recs:        # the flag of a copied rubber gap (cids 204 to 207)
-                recs[l + 197] = recs[r + 197]
+    for l, r in left_copies(recs).items():
+        recs[l] = recs[r]
     groups = {}
     for name, _ in CAR_FIELDS.values():
         g, a = name.split(".")

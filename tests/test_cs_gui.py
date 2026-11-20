@@ -65,7 +65,7 @@ from app import paths, results
 import headless_solve
 from functions.chassissim import PREFIX, list_cars, list_circuits, load_circuit
 
-mw.user_presets_dir = lambda: PRESETS               # the window reads presets/cars from here
+paths.user_presets_dir = lambda: PRESETS            # the window reads presets/cars from here (app.paths.user_cars_dir)
 APP = QApplication.instance() or QApplication([])
 ok("Documents and the presets folder sit in the temp home", paths.default_output_dir().startswith(TMP.name)
    and paths.user_presets_dir().startswith(TMP.name))

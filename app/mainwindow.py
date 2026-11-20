@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (
 
 from app.runconfig import RunConfig
 from app.solve_runner import SolveRunner
-from app import results, paths
+from app import results, paths, car_edit
 from app.vp_params import PARAM_GROUPS, meta_for, all_vp_defaults
-from app.widgets import CollapsibleSection, ScientificField
-from app.paths import user_presets_dir, settings
+from app.widgets import CollapsibleSection, ExactField, ScientificField
+from app.paths import settings
 from functions import chassissim
 
 CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
@@ -209,6 +209,10 @@ class MainWindow(QMainWindow):
         self.vp_spins = {}            # key -> QDoubleSpinBox | ScientificField
         self.vp_labels = {}           # key -> QLabel (row caption)
         self._sections = {}           # title -> CollapsibleSection
+        self._car_edit = None         # car_edit.CarEdit of the selected car, None for the 4EM car
+        self._car_path = None         # the car that the car sections show
+        self._car_fields = {}         # (cid, slot) -> widget of the car sections
+        self._car_secs = {}           # group title -> CollapsibleSection of the car
         self._section_keys = {}       # title -> [keys]
         defaults = self._vp_defaults()
         self._seeded_tyre_set = self._tyre_set()    # tyre set the table defaults were last seeded for
@@ -243,6 +247,9 @@ class MainWindow(QMainWindow):
             sec.reset_requested.connect(lambda t=title: self._reset_section(t))
             vlay.addWidget(sec)
 
+        self._car_box = QWidget()      # the car sections: shown instead of the 4EM sections with a car
+        QVBoxLayout(self._car_box).setContentsMargins(0, 0, 0, 0)
+        vlay.addWidget(self._car_box)
         vlay.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -326,6 +333,8 @@ class MainWindow(QMainWindow):
 
     # ---- reset / preset ---------------------------------------------------
     def _reset_all_params(self):
+        if self.car.currentData():
+            return self._reset_car()
         defaults = self._vp_defaults()
         for k, field in self.vp_spins.items():
             field.setValue(float(defaults[k]))
@@ -338,9 +347,11 @@ class MainWindow(QMainWindow):
         self._refresh_all_changed()
 
     def _save_preset(self):
-        os.makedirs(user_presets_dir(), exist_ok=True)
+        if self.car.currentData():
+            return self._save_car()
+        os.makedirs(paths.user_presets_dir(), exist_ok=True)
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save preset", os.path.join(user_presets_dir(), "setup.json"),
+            self, "Save preset", os.path.join(paths.user_presets_dir(), "setup.json"),
             "JSON (*.json)")
         if not path:
             return
@@ -354,11 +365,15 @@ class MainWindow(QMainWindow):
 
     def _load_preset(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load preset", user_presets_dir(), "Presets (*.json *.car)")
+            self, "Load preset", paths.user_presets_dir(), "Presets (*.json *.car)")
         if not path:
             return
         if path.lower().endswith(".car"):
-            self._select_car(path)
+            if os.path.abspath(path) == self.car.currentData():     # the selected car: read the file again
+                self._car_path = None
+                self._show_car_setup()
+            else:
+                self._select_car(path)
             self._append_log(f"[car selected] {path}\n")
             return
         try:
@@ -575,6 +590,11 @@ class MainWindow(QMainWindow):
     def _on_run(self):
         try:
             rc = self.collect_runconfig()           # a bad "More options" box raises here: log it, start nothing
+            if self._car_edit and self._car_edit.edits:      # the run uses a new file that holds the edits
+                err = self._car_edit.validate(rc.chassissim_dir)
+                if err:
+                    raise ValueError(err)
+                rc.car = chassissim.PREFIX + self._car_edit.materialize(paths.user_cars_dir())
             rc.output_dir = os.path.abspath(rc.output_dir.strip() or paths.default_output_dir())
             self.output_dir.setText(rc.output_dir)  # an empty field shows the default folder that the run uses
             res_dir = os.path.join(rc.output_dir, "Results")
@@ -584,14 +604,14 @@ class MainWindow(QMainWindow):
             self._save("output_dir", rc.output_dir)
             self._save("hsl_dir", rc.hsl_dir or "")
             self._save("chassissim_dir", rc.chassissim_dir or "")
-            self._save("car", (rc.car or "")[len(chassissim.PREFIX):])
+            self._save("car", self.car.currentData() or "")
             fd, cfg_path = tempfile.mkstemp(prefix="fms_solve_cfg_", suffix=".json")
             os.close(fd)
             self._cfg_path = cfg_path
             rc.write_cfg(cfg_path)
         except Exception as exc:
             self._remove_cfg()
-            self._append_log(f"[error] {exc}\n")
+            self._log_error(exc)
             return
         self._active_rc = rc
         self.log.clear()
@@ -643,6 +663,10 @@ class MainWindow(QMainWindow):
             self.plot_list.addItem(it)
 
     # ---- helpers ----------------------------------------------------------
+    def _log_error(self, exc):
+        for line in str(exc).splitlines() or [""]:
+            self._append_log(f"[error] {line}\n")
+
     def _append_log(self, text):
         # Fix: brief had self.log.textCursor().End which is an instance with no .End attr.
         # QTextCursor.End is a class-level enum; use it directly.
@@ -676,7 +700,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"[error] The circuits of the ChassisSim folder '{cs}' do not list: "
                              f"{str(exc).splitlines()[0]}\n")
         try:        # apart from the circuits: a bad Circ_prop.ini does not hide the cars
-            cars = chassissim.list_cars(cs, os.path.join(user_presets_dir(), "cars"))
+            cars = chassissim.list_cars(cs, paths.user_cars_dir())
         except Exception as exc:
             self._append_log(f"[error] The cars of the ChassisSim folder '{cs}' do not list: "
                              f"{str(exc).splitlines()[0]}\n")
@@ -766,8 +790,95 @@ class MainWindow(QMainWindow):
                 start.setCurrentText("rolling")
         for sec in self._sections.values():     # the 4EM values stay in the table for the 4EM car
             sec.setEnabled(not car)
+            sec.setVisible(not car)
             sec.setToolTip(CAR_SETUP_TIP if car else "")
         self._update_inert_params()
+        self._show_car_setup()
+
+    # ---- the car sections of the Setup tab --------------------------------
+    def _show_car_setup(self):
+        """Build the car sections for the selected car. A new car drops the edits of the old one."""
+        path = self.car.currentData()
+        if path == self._car_path:
+            return
+        if self._car_edit and self._car_edit.edits:
+            self._append_log(f"[car] The setup edits of the car {self._car_edit.base} are dropped.\n")
+        self._car_edit, self._car_path, self._car_fields, self._car_secs = None, path, {}, {}
+        lay = self._car_box.layout()
+        while lay.count():
+            lay.takeAt(0).widget().deleteLater()
+        if not path:
+            return
+        try:
+            ce = car_edit.CarEdit(path)
+        except Exception as exc:
+            self._append_log(f"[error] {os.path.basename(path)}: {exc}\n")
+            lay.addWidget(QLabel("This car file cannot be edited. The run uses the file as it is."))
+            return
+        self._car_edit = ce
+        rows = ce.rows()
+        for title in car_edit.GROUPS:
+            keys = [k for k, f, _ in rows if f.group == title]
+            if not keys:
+                continue
+            sec = CollapsibleSection(title)
+            for key, f, val in (r for r in rows if r[1].group == title):
+                if f.kind == "i":
+                    w = QSpinBox()
+                    w.setRange(int(f.lo), int(f.hi))
+                    w.setValue(int(val))
+                else:
+                    w = ExactField()
+                    w.setValue(val)
+                w.setToolTip(f"{f.label} [{f.unit}], cid {key[0]}" + ("\n" + ce.tip(key) if ce.tip(key) else ""))
+                w.valueChanged.connect(lambda _v=None, k=key: self._on_car_param_changed(k))
+                self._car_fields[key] = w
+                sec.addRow(QLabel(f"{f.label} [{f.unit}]"), w)
+            sec.set_expanded(title == car_edit.GROUPS[0])
+            sec.reset_requested.connect(lambda t=title: self._reset_car(t))
+            self._car_secs[title] = (sec, keys)
+            lay.addWidget(sec)
+
+    def _on_car_param_changed(self, key):
+        w = self._car_fields[key]
+        try:
+            self._car_edit.set(key, w.value())
+        except ValueError:          # half-typed text
+            return
+        self._set_field_changed_style(w, key in self._car_edit.edits)
+        sec, keys = self._car_secs[car_edit.FIELDS[key].group]
+        sec.set_changed_count(sum(k in self._car_edit.edits for k in keys))
+
+    def _reset_car(self, title=None):
+        """Put the car fields of one group, or of all groups, back to the file values."""
+        for t, (_, keys) in self._car_secs.items():
+            if title in (None, t):
+                for k in keys:
+                    self._car_fields[k].setValue(self._car_edit.file_value(k))
+
+    def _save_car(self):
+        """Save the edited car as a new .car file. A file that exists is never overwritten."""
+        ce = self._car_edit
+        if ce is None:
+            return self._append_log("[error] The car file cannot be edited, so it cannot be saved.\n")
+        folder = paths.user_cars_dir()
+        os.makedirs(folder, exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save car", os.path.join(folder, ce.base + "_edit.car"), "ChassisSim car (*.car)",
+            options=QFileDialog.DontConfirmOverwrite)
+        if not path:
+            return
+        path = os.path.abspath(path if path.lower().endswith(".car") else path + ".car")
+        if os.path.exists(path):
+            return self._append_log(f"[error] The file {path} exists. Choose a new name.\n")
+        if any(car_edit.in_chassissim(path, cs) for cs in (self._cs_dir(), os.environ.get("CHASSISSIM_DIR"))):
+            return self._append_log("[error] Do not save into the ChassisSim folders. Choose another folder.\n")
+        try:
+            ce.save(path, self._cs_dir())
+        except Exception as exc:
+            return self._log_error(exc)
+        self._append_log(f"[car saved] {path}\n")
+        self._refresh_chassissim()
 
     def _pick_hsl(self):
         d = QFileDialog.getExistingDirectory(self, "Coin-HSL folder", self.hsl_dir.text())
