@@ -577,7 +577,7 @@ def build_envelope_cs(ctx, v_grid=None):
     A car with the stability index flag (cid 655 = 1) and a live map (cid 656) gets env.apex_factor (_apex_factor).
     """
     from scipy.interpolate import PchipInterpolator
-    from vehModel_cs import C4, DELTA_MAX, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, _mr, _rubber, _surf, _clean, third_element
+    from vehModel_cs import C4, DELTA_MAX, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, shift_bumps, _mr, _rubber, _surf, _clean, third_element
     import casadi as ca
     from functions.chassissim import suspension_curves, bar_ratios
     vp, cs = ctx.vp, ctx.cs
@@ -748,15 +748,16 @@ def build_envelope_cs(ctx, v_grid=None):
     Fx_trac = _bisect_fixed_point(trac_capacity, np.zeros_like(v), hi_x)
     Fx_brk = _bisect_fixed_point(brk_capacity, np.zeros_like(v), hi_x)
 
-    # ---- drive force: the gear envelope of vehModel_cs (the NLP function, evaluated) ------------
-    F_ref = drive_scale(cs, Rr)
-    F_drive = gear_envelope_numeric(cs, Rr, v)
-
     # ---- resistance: drag + rolling drag, fitted as c0 + c2 v^2 on the grid ------------------------
     f_roll = sum(ty[c]["rolling_drag"] for c in C4) / 4.0
     res = F_drag + f_roll * (Fz_f + Fz_r)
     c0, c2 = np.linalg.lstsq(np.c_[np.ones_like(v), v * v], res, rcond=None)[0]
     M_eff = M + 4.0 * vp.Jw / Rr ** 2
+
+    # ---- drive force: the gear envelope of vehModel_cs (the NLP function, evaluated) ------------
+    F_ref = drive_scale(cs, Rr)
+    bands = shift_bumps(cs, Rr, M_eff, (float(c0), float(c2)))      # the shift cut, also read by vehModel_cs
+    F_drive = gear_envelope_numeric(cs, Rr, v, bands)
 
     env = Envelope(v_grid=v, ay_max=ay_max, Fx_trac=Fx_trac, Fx_brk=Fx_brk,
                    ax_acc=np.zeros_like(v), ax_brk=np.zeros_like(v), M=M, M_eff=float(M_eff),
@@ -766,7 +767,7 @@ def build_envelope_cs(ctx, v_grid=None):
     r_fit = env.F_res(v)
     env.ax_acc = np.minimum((Fx_trac - r_fit) / M, (env.F_mot(v) - r_fit) / M_eff)
     env.ax_brk = np.minimum((Fx_brk + r_fit) / M, (env.F_brk(v) + r_fit) / M_eff)
-    env.info = dict(car=True, drive="rear" if not split else "split", brake="front bias", rh_f=rh_f, rh_r=rh_r, F_res_exact=res,
+    env.info = dict(car=True, shift_bands=bands, drive="rear" if not split else "split", brake="front bias", rh_f=rh_f, rh_r=rh_r, F_res_exact=res,
                     res_fit_err=float(np.max(np.abs(r_fit - res))), phi_f=float(phi_f), hRC=(hrc_f, hrc_r), h_x=h_x)
     return env
 

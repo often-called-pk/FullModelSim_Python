@@ -198,8 +198,8 @@ def _mr(c):
             lambda x: sum(v * x ** i for i, v in enumerate(c) if v != 0.0))
 
 
-def _gear_envelope(cs, R, v):
-    """Return (F_env, om_engine) for the wheel speed v [m/s] (SX or float).
+def _env_raw(cs, R, v):
+    """Return (F_env, om_engine) of the gears, without the shift cut. v [m/s] is SX or float.
     F_env is the smooth maximum over the gears of the drive force: efficiency x torque(engine speed) x ratio / R.
     Below idle the clutch holds the engine at idle. Above the limit a tanh window (2% of the limit) fades the torque.
     The log-sum-exp overestimates the true maximum. The error is at most F_ref ln(n) / B_GEAR, where n gears give
@@ -220,11 +220,63 @@ def _gear_envelope(cs, R, v):
     return F_env, om
 
 
-def gear_envelope_numeric(cs, R, v):
-    """Return F_env [N] at the wheel speeds v [m/s] (numpy array).
+W_MIN = 3.0     # [m/s] ponytail: smallest band that a 30 m NLP mesh resolves. Lower it when the mesh gets finer.
+
+
+def shift_bumps(cs, R, m_eff, res):
+    """Return [(v_g, W, c)] of the upshift cut (cids 104 to 106), one band per upshift (empty without a cut).
+    m_eff = mass + 4 Jw / R^2 [kg]. res = (c0, c2): the QSS resistance c0 + c2 v^2 [N].
+    v_g = rpm_limit R / ratio is the speed where gear g meets the rev limit. F = the raw envelope at v_g.
+    R_g = the resistance at v_g. t = delay + ramp / 2. The cut at constant F and R_g costs the time
+    tau = (1 - minF) F t / (F - R_g). The band has the width W = max((1 - minF) F t / m_eff, W_MIN).
+    The depth c gives the same time loss tau when the car crosses the band at full drive (a 1-D root).
+    A gear with F <= R_g gets no band. ValueError for a minF outside [0, 1]."""
+    e = cs.engine
+    if not (e.cut_delay or 0.0) > 0.0:
+        return []
+    if not 0.0 <= e.cut_min <= 1.0:
+        raise ValueError(f"The torque factor of the shift cut (cid 105) is {e.cut_min:g}. It must be from 0 to 1.")
+    x = ca.SX.sym("v")
+    Fn = ca.Function("F", [x], [_env_raw(cs, R, x)[0]])
+    t = e.cut_delay + 0.5 * e.cut_ramp
+    out = []
+    for g in np.sort(np.asarray(e.gears, float))[::-1][:-1]:      # every gear but the top, lowest gear first
+        vg = e.rpm_limit * R / g
+        F, Rg = float(Fn(vg)), res[0] + res[1] * vg * vg
+        lost = (1.0 - e.cut_min) * F * t                          # impulse that the cut takes [N s]
+        if lost <= 0.0 or F <= Rg:
+            continue
+        W = max(lost / m_eff, W_MIN)
+        v = np.linspace(vg - W, vg + 2.0 * W, 6001)
+        w = _bump(np, v, vg, W)
+        loss = lambda c: m_eff * np.trapezoid(1.0 / (F * (1.0 - c * w) - Rg) - 1.0 / (F - Rg), v) - lost / (F - Rg)
+        out.append((vg, W, brentq(loss, 0.0, (1.0 - Rg / F) / w.max() * (1.0 - 1e-12), rtol=1e-10)))
+    return out
+
+
+def _bump(xp, v, vg, W):
+    """Return the bump w(v) of one band: about 1 on [vg, vg + W], with tanh edges of the width W / 10. xp = np or ca."""
+    return 0.25 * (1 + xp.tanh((v - vg) / (0.1 * W))) * (1 - xp.tanh((v - vg - W) / (0.1 * W)))
+
+
+def _gear_envelope(cs, R, v, bands):
+    """Return (F_env, om_engine) for the wheel speed v [m/s] (SX or float): _env_raw with the upshift cut.
+    bands = shift_bumps(...), built one time in the QSS envelope (functions.ggv.build_envelope_cs).
+    Each band (v_g, W, c) multiplies F_env by 1 - c w(v), where w is the bump of _bump.
+    The dip costs the time that the cut costs. A car without a cut has no band, no factor and no node.
+    ponytail: a gear whose drive force is below the resistance gets no band. A car that holds a band speed
+    feels the dip without a shift. Upgrade: a gear state."""
+    F_env, om = _env_raw(cs, R, v)
+    if bands:
+        F_env = F_env * (1 - sum(c * _bump(ca, v, vg, W) for vg, W, c in bands))
+    return F_env, om
+
+
+def gear_envelope_numeric(cs, R, v, bands):
+    """Return F_env [N] at the wheel speeds v [m/s] (numpy array). bands = shift_bumps(cs, R, m_eff, res).
     It evaluates the function of the NLP, so the QSS and the NLP share one source."""
     x = ca.SX.sym("v")
-    fn = ca.Function("F_env", [x], [_gear_envelope(cs, R, x)[0]]).map(int(np.size(v)))
+    fn = ca.Function("F_env", [x], [_gear_envelope(cs, R, x, bands)[0]]).map(int(np.size(v)))
     return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
 
 
@@ -628,7 +680,11 @@ def vehModel_cs(ctx):
            "rl": T_rl + T_brake * (1 - bias) / 2 * Rw["r"],
            "rr": T_rr + T_brake * (1 - bias) / 2 * Rw["r"]}
     v_r = 0.5 * (Om_rl + Om_rr) * Rw["r"]
-    F_env, om_eng = _gear_envelope(cs, Rw["r"], v_r)
+    bands = []
+    if (cs.engine.cut_delay or 0.0) > 0.0:      # the shift cut: the bands of the QSS envelope (one source)
+        from functions.ggv import build_envelope_cs
+        bands = build_envelope_cs(ctx).info["shift_bands"]
+    F_env, om_eng = _gear_envelope(cs, Rw["r"], v_r, bands)
 
     # ===================== chassis ==========================================
     cc = lambda d: tuple(d[c] for c in C4)
@@ -669,7 +725,7 @@ def vehModel_cs(ctx):
     # Stability index [%] of ChassisSim. C = cornering stiffness of an axle, the central difference of its two tyres.
     Ca = {a: sum((fy_pm[a + s][0] - fy_pm[a + s][1]) / (2 * D_ALPHA) for s in "lr") for a in "fr"}
     stbi = stbi_index(vp.l_f, vp.l_r, Ca["f"], Ca["r"], vx, 2e-2 * vp.m * vp.g)
-    m.veh_extra = [("om_gear", om_eng), ("throttle", T_drive / F_env), ("F_env", F_env), ("stbi", stbi)]
+    m.veh_extra = [("om_gear", om_eng), ("throttle", ca.fmin(ca.fmax(T_drive / F_env, 0.0), 1.0)), ("F_env", F_env), ("stbi", stbi)]
     ctx.m23 = m
     return ctx
 
