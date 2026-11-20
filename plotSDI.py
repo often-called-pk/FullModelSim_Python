@@ -108,7 +108,7 @@ def plot_racing_line(data):
     if colour is not None:
         fig.add_trace(go.Scatter(
             x=xopt, y=yopt, mode="markers",
-            marker=dict(size=4, color=colour, colorscale="Turbo",
+            marker=dict(size=4, color=colour, colorscale="Turbo_r",
                         colorbar=dict(title="v [m/s]")),
             name="racing line"))
     else:

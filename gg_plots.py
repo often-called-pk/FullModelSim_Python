@@ -217,7 +217,7 @@ def plot_gg_vehicle_plotly(ax_g, ay_g, speed=None, s=None,
     has_cbar = False
     if speed is not None:
         sp = np.asarray(speed, float).reshape(-1)
-        marker.update(color=sp, colorscale="Turbo", showscale=True,
+        marker.update(color=sp, colorscale="Turbo_r", showscale=True,
                       colorbar=dict(title=dict(text="speed [m/s]", font=dict(color="white")),
                                     tickfont=dict(color="white"), outlinewidth=0,
                                     thickness=14, len=0.7))
