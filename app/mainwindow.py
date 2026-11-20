@@ -100,6 +100,22 @@ EM4_INERT_TIP = (
     "still reads it).")
 
 
+PT_TITLE = "Powertrain (physics corrected)"
+PT_PHYSICS_TIP = "The powertrain keys need physics = corrected."
+# key, label, unit, lo, hi, decimals, unit factor to the model (kW -> W), limit row (True: a check box switches it on,
+# False: sent when changed), start value of a limit row, tooltip
+PT_ROWS = [
+    ("gear", "Gear ratio", "", 0.1, 100.0, 4, 1.0, False, None,
+     "Final drive ratio. The default is OMmax x Rw / Vmax of Powertrain.py, with the old Rw 0.3142857."),
+    ("Tmax", "Max torque per motor", "N m", 1.0, 5000.0, 2, 1.0, False, None, "Torque rating of one motor."),
+    ("Pmax", "Max power per motor", "kW", 1.0, 5000.0, 2, 1000.0, False, None, "Power rating of one motor."),
+    ("Preg", "Regen power per motor", "kW", 0.0, 5000.0, 2, 1000.0, True, 50.0,
+     "Off: the motor does not regenerate. On: the motor regenerates up to this power. 0 kW has the same effect as Off."),
+    ("Ppack", "Pack power", "kW", 1.0, 5000.0, 2, 1000.0, True, 300.0,
+     "Limit of the sum of the motor powers. Off: the model has no such limit."),
+]
+
+
 HSL_TIP = ("Select the folder that holds the Coin-HSL library (libhsl.dll or libhsl.so). "
            "The ma* solvers use it. The COINHSL_DIR environment variable has priority. "
            "If the folder has no library, the solve uses MUMPS.")
@@ -147,6 +163,8 @@ class MainWindow(QMainWindow):
 
         self.atd.toggled.connect(self._update_inert_params)
         self.em4.toggled.connect(self._update_inert_params)
+        self.opt_combos["physics"].currentTextChanged.connect(self._update_pt)
+        self._update_pt()
         self._update_inert_params()          # ATD starts on, so brkB/Tdist start inert
 
         self.run_btn = QPushButton("Run")
@@ -247,6 +265,8 @@ class MainWindow(QMainWindow):
             sec.reset_requested.connect(lambda t=title: self._reset_section(t))
             vlay.addWidget(sec)
 
+        self._build_pt_section(vlay)
+
         self._car_box = QWidget()      # the car sections: shown instead of the 4EM sections with a car
         QVBoxLayout(self._car_box).setContentsMargins(0, 0, 0, 0)
         vlay.addWidget(self._car_box)
@@ -255,6 +275,80 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(container)
         return scroll
+
+    def _build_pt_section(self, vlay):
+        """The A5 powertrain keys of the 4EM car. They are not vp primaries, so they stay out of PARAM_GROUPS."""
+        from Powertrain import Powertrain
+        from functions.context import Ctx
+        ctx = Ctx()
+        Powertrain(ctx)
+        base = {"gear": ctx.vp.gear, "Tmax": ctx.pt.Tmax, "Pmax": ctx.pt.Pmax / 1000.0}
+        self.pt_spins, self.pt_checks, self.pt_defaults, self.pt_labels = {}, {}, {}, {}
+        sec = self._pt_sec = CollapsibleSection(PT_TITLE)
+        for key, label, unit, lo, hi, dec, _f, limit, start, tip in PT_ROWS:
+            sp = _spin(base.get(key, start), lo, hi, 0.1 if key == "gear" else 1.0, dec)
+            if unit:
+                sp.setSuffix(f" {unit}")
+            sp.valueChanged.connect(lambda _v=None: self._update_pt_changed())
+            self.pt_spins[key] = sp
+            self.pt_defaults[key] = sp.value()
+            lbl = self.pt_labels[key] = QLabel(label)      # _update_pt sets the tooltips
+            if limit:
+                cb = self.pt_checks[key] = QCheckBox("on")
+                sp.setEnabled(False)                       # the value counts only while the box is on
+                cb.toggled.connect(sp.setEnabled)
+                cb.toggled.connect(lambda _v=None: self._update_pt_changed())
+                row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0)
+                rl.addWidget(cb); rl.addWidget(sp)
+                sec.addRow(lbl, row)
+            else:
+                sec.addRow(lbl, sp)
+        sec.set_expanded(False)
+        sec.reset_requested.connect(self._reset_pt)
+        vlay.addWidget(sec)
+
+    def _pt_changed(self, key):
+        if key in self.pt_checks:
+            return self.pt_checks[key].isChecked()
+        return self.pt_spins[key].value() != self.pt_defaults[key]
+
+    def _update_pt_changed(self):
+        n = 0
+        for key, sp in self.pt_spins.items():
+            ch = self._pt_changed(key)
+            n += ch
+            self._set_field_changed_style(sp, ch)
+        self._pt_sec.set_changed_count(n)
+
+    def _reset_pt(self):
+        for key, sp in self.pt_spins.items():
+            sp.setValue(self.pt_defaults[key])      # a limit row keeps its start value, its check box goes off
+            if key in self.pt_checks:
+                self.pt_checks[key].setChecked(False)
+        self._update_pt_changed()
+
+    def _update_pt(self, _x=None):
+        """The group needs corrected physics and the 4EM car."""
+        car = bool(self.car.currentData())
+        ok = self.opt_combos["physics"].currentText() == "corrected"
+        self._pt_sec.setVisible(not car)
+        self._pt_sec.setEnabled(ok)
+        self._pt_sec.setToolTip("" if ok else PT_PHYSICS_TIP)
+        for r in PT_ROWS:
+            tip = r[-1] if ok else f"{r[-1]} {PT_PHYSICS_TIP}"
+            for w in (self.pt_spins[r[0]], self.pt_labels[r[0]]):
+                w.setToolTip(tip)
+
+    def _pt_values(self):
+        """The changed and switched-on values of the group in model units [W, N m]. The round removes the float
+        noise of kW x 1000."""
+        return {r[0]: round(self.pt_spins[r[0]].value() * r[6], 6) for r in PT_ROWS if self._pt_changed(r[0])}
+
+    def pt_overrides(self):
+        """The group as pt_overrides. None if nothing is sent: no change, a ChassisSim car or matlab physics."""
+        if self.car.currentData() or self.opt_combos["physics"].currentText() != "corrected":
+            return None
+        return self._pt_values() or None
 
     def _field_for(self, key):
         m = meta_for(key)
@@ -339,6 +433,7 @@ class MainWindow(QMainWindow):
         for k, field in self.vp_spins.items():
             field.setValue(float(defaults[k]))
         self._refresh_all_changed()
+        self._reset_pt()
 
     def _reset_section(self, title):
         defaults = self._vp_defaults()
@@ -356,6 +451,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         data = {k: float(self.vp_spins[k].value()) for k in self.vp_spins}
+        pt = self._pt_values()
+        if pt:
+            data["pt_overrides"] = pt
         try:
             with open(path, "w") as fh:
                 json.dump(data, fh, indent=2)
@@ -382,10 +480,26 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._append_log(f"[preset load error] {exc}\n")
             return
+        self._reset_pt()        # a preset is a full snapshot: a file without the key "pt_overrides" gives the default group
         self._apply_param_dict(data)
 
     def _apply_param_dict(self, data):
         applied, ignored = 0, 0
+        data = dict(data)
+        pt = data.pop("pt_overrides", None)
+        if isinstance(pt, dict):
+            rows = {r[0]: r for r in PT_ROWS}
+            self._reset_pt()                    # the preset decides the group: a key that it lacks is off
+            for k, v in pt.items():
+                try:
+                    self.pt_spins[k].setValue(float(v) / rows[k][6])
+                    if k in self.pt_checks:
+                        self.pt_checks[k].setChecked(True)
+                    applied += 1
+                except (KeyError, TypeError, ValueError):
+                    ignored += 1
+        elif pt is not None:
+            ignored += 1
         for k, v in data.items():
             if k in self.vp_spins:
                 try:
@@ -557,6 +671,12 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):
                 vp[k] = float(defaults[k])
         opts = {k: cb.currentText() for k, cb in self.opt_combos.items()}
+        more = self._more_options()
+        pt = self.pt_overrides()
+        if pt:
+            if "pt_overrides" in more:
+                raise ValueError("Set the powertrain keys in one place: the Powertrain group or More options.")
+            more["pt_overrides"] = pt
         return RunConfig(
             circuit=self.circuit.currentText(),
             AeroConfig=self.aero.currentText(),
@@ -583,7 +703,7 @@ class MainWindow(QMainWindow):
             tyre_set=tyre_set,
             homotopy=True if self.homotopy.isChecked() else None,
             **opts,
-            **self._more_options(),
+            **more,
             vp=vp,
         )
 
@@ -793,6 +913,7 @@ class MainWindow(QMainWindow):
             sec.setVisible(not car)
             sec.setToolTip(CAR_SETUP_TIP if car else "")
         self._update_inert_params()
+        self._update_pt()
         self._show_car_setup()
 
     # ---- the car sections of the Setup tab --------------------------------

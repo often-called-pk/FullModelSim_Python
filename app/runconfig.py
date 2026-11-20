@@ -93,7 +93,8 @@ class RunConfig:
         if self.expert_config:
             with open(self.expert_config) as fh:
                 expert = json.load(fh)
-            ov.update({k: v for k, v in expert.items() if k not in self.vp})   # expert fills only keys absent from vp
+            # The expert file fills only the keys that vp lacks. The GUI Powertrain group holds its "pt_overrides".
+            ov.update({k: v for k, v in expert.items() if k not in self.vp and k != "pt_overrides"})
         defaults = all_vp_defaults(self.tyre_set)
         _MISSING = object()
         for k, v in self.vp.items():                 # a key held by vp is decided by vp alone
