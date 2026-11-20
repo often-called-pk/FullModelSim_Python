@@ -16,6 +16,7 @@ this folder: a test that writes files uses tempfile, or CLAUDE_JOB_DIR_TMP when 
 """
 import atexit
 import os
+import shutil
 import sys
 import tempfile
 
@@ -39,3 +40,11 @@ if "FULLMODELSIM_SETTINGS" not in os.environ:
     os.close(_fd)
     os.environ["FULLMODELSIM_SETTINGS"] = _ini
     atexit.register(lambda: os.path.exists(_ini) and os.remove(_ini))
+
+# the GUI tests keep their Documents folder (default output, presets, saved cars) in a temp
+# folder of this process, never in the user's real Documents (app.paths.documents_dir reads
+# this variable). On Windows, Qt takes Documents from the shell, not from HOME or USERPROFILE.
+if "FULLMODELSIM_DOCUMENTS" not in os.environ:
+    _docs = tempfile.mkdtemp(prefix="fms_documents_")
+    os.environ["FULLMODELSIM_DOCUMENTS"] = _docs
+    atexit.register(shutil.rmtree, _docs, True)

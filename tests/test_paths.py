@@ -4,7 +4,7 @@ import os, sys, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
 from PySide6.QtCore import QSettings
-from app.paths import user_presets_dir, default_output_dir, settings, ORG_NAME, APP_NAME
+from app.paths import user_presets_dir, user_cars_dir, default_output_dir, settings, ORG_NAME, APP_NAME
 
 def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
@@ -48,5 +48,10 @@ finally:
 # ---- default output folder --------------------------------------------------
 ok("default output folder ends with FullModelSim",
    os.path.basename(os.path.normpath(default_output_dir())) == "FullModelSim")
+
+# _bootstrap sets FULLMODELSIM_DOCUMENTS to a temp folder of this process.
+ok("env FULLMODELSIM_DOCUMENTS is the Documents folder (output, presets and cars follow it)",
+   same_file(default_output_dir(), os.path.join(os.environ["FULLMODELSIM_DOCUMENTS"], "FullModelSim"))
+   and user_cars_dir().startswith(default_output_dir()))
 
 print("\nALL paths TESTS PASSED")

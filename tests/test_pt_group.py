@@ -31,6 +31,7 @@ HOME = os.path.join(TMP.name, "home")
 os.makedirs(os.path.join(HOME, ".config"))
 os.environ["HOME"] = HOME
 os.environ["XDG_CONFIG_HOME"] = os.path.join(HOME, ".config")
+os.environ["FULLMODELSIM_DOCUMENTS"] = os.path.join(HOME, "Documents")   # Windows: Qt does not read HOME
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 PRESETS = os.path.join(TMP.name, "presets")          # the user presets folder
 os.makedirs(PRESETS)

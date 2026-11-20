@@ -94,8 +94,7 @@ python tests/run_tests.py --quick    # default: every file but the 4 of REAL_IPO
 python tests/run_tests.py --all      # every file, or name the files: run_tests.py test_x.py ...
 ```
 
-`_bootstrap` also sets `FULLMODELSIM_SETTINGS` to a temp ini when it is not set (`app.paths.settings()` reads
-it), so a test never writes the real QSettings of the user.
+`_bootstrap` also sets `FULLMODELSIM_SETTINGS` to a temp ini and `FULLMODELSIM_DOCUMENTS` to a temp folder when they are not set. `app.paths.settings()` reads the first, and `app.paths.documents_dir()` reads the second (the output, presets and cars folders). So a test never writes the real QSettings or Documents folder of the user. On Windows, Qt takes the Documents folder from the shell, so HOME alone does not redirect it.
 
 - `test_foundation.py`: casadi-free helpers (collocation, geometry, simpleMA, Powertrain constants)
 - `test_transcription.py`: `discretise`, `order='F'` pack/unpack, curvature mesh, warm-start interpolation

@@ -35,6 +35,7 @@ HOME = os.path.join(TMP.name, "home")
 os.makedirs(os.path.join(HOME, ".config"))
 os.environ["HOME"] = HOME
 os.environ["XDG_CONFIG_HOME"] = os.path.join(HOME, ".config")
+os.environ["FULLMODELSIM_DOCUMENTS"] = os.path.join(HOME, "Documents")   # Windows: Qt does not read HOME
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 VENDOR = os.environ.pop("CHASSISSIM_DIR", None)      # the non-vendor sections run with no environment folder
 VENDOR = VENDOR if VENDOR and os.path.isdir(VENDOR) else None

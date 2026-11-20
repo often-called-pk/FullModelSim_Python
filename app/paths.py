@@ -26,15 +26,23 @@ ORG_NAME = "FullModelSim"
 APP_NAME = "FullModelSim"
 
 
+def documents_dir():
+    """Documents folder of the user. The env FULLMODELSIM_DOCUMENTS names a folder to use
+    instead (a test and override hook: the tests set it). Without the env, Qt gives the
+    folder. The home folder applies when Qt gives none."""
+    docs = os.environ.get("FULLMODELSIM_DOCUMENTS", "")
+    if not docs:
+        try:
+            from PySide6.QtCore import QStandardPaths
+            docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        except Exception:
+            pass
+    return docs or os.path.expanduser("~")
+
+
 def default_output_dir():
-    """Qt Documents folder + FullModelSim. Home folder when Qt gives none."""
-    docs = ""
-    try:
-        from PySide6.QtCore import QStandardPaths
-        docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-    except Exception:
-        pass
-    return os.path.join(docs or os.path.expanduser("~"), "FullModelSim")
+    """Documents folder (documents_dir) + FullModelSim."""
+    return os.path.join(documents_dir(), "FullModelSim")
 
 
 def settings():
