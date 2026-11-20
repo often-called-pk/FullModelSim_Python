@@ -21,6 +21,7 @@ from app import results, paths
 from app.vp_params import PARAM_GROUPS, meta_for, all_vp_defaults
 from app.widgets import CollapsibleSection, ScientificField
 from app.paths import user_presets_dir, settings
+from functions import chassissim
 
 CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
             "VirtualTrack", "BCN", "BCN_S1", "BCN_S2", "BCN_S3", "Jarama", "Spa",
@@ -60,6 +61,17 @@ HOMOTOPY_TIP = (
     "result before it. Use it when a cold solve fails. Choosing 4 Motors ticks this box, because a cold "
     "4-motor solve can fail. Clearing 4 Motors unticks it. Untick it to solve once, for example from a warm "
     "start .mat. MLTP refuses continue_from together with this box.")
+CAR_4EM = "4EM (FullModelSim)"
+CAR_TIP = ("Select the car of the solve. 4EM (FullModelSim) is the built-in car with four motors. A ChassisSim "
+           ".car file selects the car of that file. The solve of a ChassisSim car uses corrected physics, one "
+           "engine and static aero. The list shows the cars of the ChassisSim folder (Advanced tab) and of the "
+           "Models folder beside it. It also shows the saved cars of <Documents>/FullModelSim/presets/cars. "
+           "Browse adds a .car file from a different folder.")
+CS_DIR_TIP = ("Select the ChassisSim install folder. The ChassisSim circuits and cars come from this folder. "
+              "If the field is empty, the program uses the CHASSISSIM_DIR environment variable.")
+CAR_LOCK_TIP = ("A ChassisSim car sets this value, because the car model needs it. "
+                "Select the car 4EM (FullModelSim) to change the value.")
+CAR_SETUP_TIP = "A ChassisSim car takes its setup from its .car file."
 _PATH_ROLE = 256  # Qt.ItemDataRole.UserRole, stores the plot's filesystem path on the list item
 
 TYRE_SET_TIP = (
@@ -157,6 +169,10 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.log)
         self.setCentralWidget(central)
 
+        self._refresh_chassissim(initial=True)      # after self.log: a folder that does not list logs one line
+        self.car.currentIndexChanged.connect(self._on_car_changed)
+        self._on_car_changed()
+
     # ---- tab builders -----------------------------------------------------
     def _build_main_tab(self):
         w = QWidget(); form = QFormLayout(w)
@@ -173,7 +189,14 @@ class MainWindow(QMainWindow):
         self.ni_free.toggled.connect(lambda f: self.ni.setEnabled(not f))
         ni_row = QWidget(); nilay = QHBoxLayout(ni_row); nilay.setContentsMargins(0, 0, 0, 0)
         nilay.addWidget(self.ni); nilay.addWidget(self.ni_free)
+        self.car = QComboBox(); self.car.setToolTip(CAR_TIP)
+        car_btn = QPushButton("Browse..."); car_btn.clicked.connect(self._pick_car)
+        car_row = QWidget(); cl = QHBoxLayout(car_row); cl.setContentsMargins(0, 0, 0, 0)
+        cl.addWidget(self.car, 1); cl.addWidget(car_btn)
+        self._extra_cars = []         # .car files added by Browse or Load preset
+        self._pre_car = None          # the controls before a car locked them
         form.addRow("Circuit", self.circuit)
+        form.addRow(_tipped_label("Car", CAR_TIP), car_row)
         form.addRow("Aero config", self.aero)
         form.addRow("ATD", self.atd)
         form.addRow("4 Motors", self.em4)
@@ -331,8 +354,12 @@ class MainWindow(QMainWindow):
 
     def _load_preset(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load preset", user_presets_dir(), "JSON (*.json)")
+            self, "Load preset", user_presets_dir(), "Presets (*.json *.car)")
         if not path:
+            return
+        if path.lower().endswith(".car"):
+            self._select_car(path)
+            self._append_log(f"[car selected] {path}\n")
             return
         try:
             with open(path) as fh:
@@ -400,7 +427,15 @@ class MainWindow(QMainWindow):
         hs_btn = QPushButton("Browse..."); hs_btn.clicked.connect(self._pick_hsl)
         hs = QWidget(); hl = QHBoxLayout(hs); hl.setContentsMargins(0, 0, 0, 0)
         hl.addWidget(self.hsl_dir); hl.addWidget(hs_btn)
+        self.chassissim_dir = QLineEdit(self._saved("chassissim_dir"))
+        self.chassissim_dir.setPlaceholderText("(not set: CHASSISSIM_DIR)")
+        self.chassissim_dir.setToolTip(CS_DIR_TIP)
+        self.chassissim_dir.editingFinished.connect(self._refresh_chassissim)
+        cs_btn = QPushButton("Browse..."); cs_btn.clicked.connect(self._pick_chassissim)
+        cs = QWidget(); csl = QHBoxLayout(cs); csl.setContentsMargins(0, 0, 0, 0)
+        csl.addWidget(self.chassissim_dir); csl.addWidget(cs_btn)
         form.addRow("Linear solver", self.solver)
+        form.addRow(_tipped_label("ChassisSim folder", CS_DIR_TIP), cs)
         form.addRow(_tipped_label("Coin-HSL folder", HSL_TIP), hs)
         form.addRow(_tipped_label("Tyre set", TYRE_SET_TIP), self.tyre_set)
         form.addRow("Warm start .mat", ws)
@@ -502,8 +537,8 @@ class MainWindow(QMainWindow):
         defaults = all_vp_defaults(tyre_set)
         vp = {}
         for k, field in self.vp_spins.items():
-            try:
-                vp[k] = float(field.value())
+            try:        # a car takes its setup from its file, so its run gets the defaults (= no vp_overrides)
+                vp[k] = float(defaults[k] if self.car.currentData() else field.value())
             except (TypeError, ValueError):
                 vp[k] = float(defaults[k])
         opts = {k: cb.currentText() for k, cb in self.opt_combos.items()}
@@ -517,6 +552,8 @@ class MainWindow(QMainWindow):
             ni=None if self.ni_free.isChecked() else self.ni.value(),
             linear_solver=self.solver.currentText(),
             hsl_dir=self.hsl_dir.text().strip() or None,
+            chassissim_dir=self.chassissim_dir.text().strip() or None,
+            car=self.car_ref(),
             warm_start=self.warm_start.text() or None,
             save=self.save_cb.isChecked(),
             plot=self.plot_cb.isChecked(),
@@ -546,6 +583,8 @@ class MainWindow(QMainWindow):
                 pass
             self._save("output_dir", rc.output_dir)
             self._save("hsl_dir", rc.hsl_dir or "")
+            self._save("chassissim_dir", rc.chassissim_dir or "")
+            self._save("car", (rc.car or "")[len(chassissim.PREFIX):])
             fd, cfg_path = tempfile.mkstemp(prefix="fms_solve_cfg_", suffix=".json")
             os.close(fd)
             self._cfg_path = cfg_path
@@ -585,8 +624,9 @@ class MainWindow(QMainWindow):
             self._append_log(f"\n[solve exited with code {code}]\n")
 
     def _show_results(self, rc):
-        mat, pdir = results.result_paths(rc)
+        pdir = ""
         try:
+            mat, pdir = results.result_paths(rc)
             summ = results.parse_summary(mat)
             e = summ["energy_kWh"]
             self.summary.setText(
@@ -594,6 +634,7 @@ class MainWindow(QMainWindow):
                 + f"{summ['lap_time_s']:.3f} s"
                 + (f"   |   Energy: {e:.3f} kWh" if e is not None else ""))
         except Exception as exc:
+            self._append_log(f"[error] {exc}\n")
             self.summary.setText(f"Results unreadable: {exc}")
         self.plot_list.clear()
         for p in results.list_plots(pdir):
@@ -613,6 +654,120 @@ class MainWindow(QMainWindow):
 
     def _save(self, key, value):
         settings().setValue(key, value)
+
+    # ---- ChassisSim circuits and cars --------------------------------------
+    def _cs_dir(self):
+        """The ChassisSim folder: the Advanced field, else the environment. None when neither is set."""
+        return self.chassissim_dir.text().strip() or os.environ.get("CHASSISSIM_DIR") or None
+
+    def car_ref(self):
+        """'chassissim:<absolute path>' of the selected car, None for the 4EM car."""
+        path = self.car.currentData()
+        return chassissim.PREFIX + path if path else None
+
+    def _refresh_chassissim(self, initial=False):
+        """Rebuild the circuit and car combos from the ChassisSim folder. The selections stay. A selection that
+        left its list goes back to the first item, with one log line. A listing error gives one log line."""
+        cs = self._cs_dir()
+        names, cars = [], []
+        try:
+            names = chassissim.list_circuits(cs) if cs and os.path.isdir(cs) else []
+        except Exception as exc:
+            self._append_log(f"[error] The circuits of the ChassisSim folder '{cs}' do not list: "
+                             f"{str(exc).splitlines()[0]}\n")
+        try:        # apart from the circuits: a bad Circ_prop.ini does not hide the cars
+            cars = chassissim.list_cars(cs, os.path.join(user_presets_dir(), "cars"))
+        except Exception as exc:
+            self._append_log(f"[error] The cars of the ChassisSim folder '{cs}' do not list: "
+                             f"{str(exc).splitlines()[0]}\n")
+        want = self.circuit.currentText()
+        self.circuit.blockSignals(True)
+        self.circuit.clear()
+        self.circuit.addItems(CIRCUITS + [chassissim.PREFIX + n for n in names])
+        i = self.circuit.findText(want)
+        self.circuit.setCurrentIndex(max(i, 0))
+        self.circuit.blockSignals(False)
+        if i < 0 and want:
+            self._append_log(f"[circuit] '{want}' is not in the list now. The circuit is {CIRCUITS[0]}.\n")
+        want_car = self.car.currentData() or (self._saved("car") if initial else "")
+        if initial and want_car and want_car not in cars and os.path.isfile(want_car):
+            self._extra_cars.append(want_car)       # a saved car from a different folder stays a browsed car
+        cars = list(dict.fromkeys(cars + sorted(self._extra_cars, key=os.path.basename)))
+        base = [os.path.basename(f) for f in cars]
+        self.car.blockSignals(True)
+        self.car.clear()
+        self.car.addItem(CAR_4EM, None)
+        for f, b in zip(cars, base):       # a file name that repeats gets its folder name
+            self.car.addItem(b + (f" ({os.path.basename(os.path.dirname(f))})" if base.count(b) > 1 else ""), f)
+            self.car.setItemData(self.car.count() - 1, f, 3)    # Qt.ToolTipRole
+        i = self.car.findData(want_car) if want_car else 0
+        self.car.setCurrentIndex(max(i, 0))
+        self.car.blockSignals(False)
+        if i < 0:
+            self._append_log(f"[car] '{want_car}' is not in the list now. The car is {CAR_4EM}.\n")
+        if not initial:
+            self._on_car_changed()
+
+    def _pick_chassissim(self):
+        d = QFileDialog.getExistingDirectory(self, "ChassisSim folder", self.chassissim_dir.text())
+        if d:
+            self.chassissim_dir.setText(d)
+            self._refresh_chassissim()
+
+    def _pick_car(self):
+        f, _ = QFileDialog.getOpenFileName(self, "ChassisSim car", self._cs_dir() or "", "ChassisSim car (*.car)")
+        if f:
+            self._select_car(f)
+
+    def _select_car(self, path):
+        path = os.path.abspath(path)
+        if self.car.findData(path) < 0:
+            self._extra_cars.append(path)
+            self._refresh_chassissim()
+        self.car.setCurrentIndex(self.car.findData(path))
+
+    def _on_car_changed(self, _i=None):
+        """A ChassisSim car sets and locks the controls that its model needs. The 4EM car restores them."""
+        start = self.opt_combos["start_state"]
+        rolling = start.model().item(1)     # items: matlab, rolling, periodic
+        # widget, value with a car, tooltip without a car
+        locked = [(self.opt_combos["physics"], "corrected", OPTION_COMBOS[1][3]), (self.aero, "Static", ""),
+                  (self.em4, False, ""), (self.atd, False, ""), (self.homotopy, False, HOMOTOPY_TIP),
+                  (self.tyre, TYRES[0], ""), (self.tyre_set, TYRE_SETS[0], TYRE_SET_TIP)]
+
+        def value(w):
+            return w.isChecked() if isinstance(w, QCheckBox) else w.currentText()
+
+        def put(w, v):
+            w.setChecked(v) if isinstance(w, QCheckBox) else w.setCurrentText(v)
+
+        car = bool(self.car.currentData())
+        if car and self._pre_car is None:
+            self._pre_car = [value(w) for w, _, _ in locked] + [start.currentText() == "rolling"]
+            for w, v, _ in locked:
+                put(w, v)
+                w.setEnabled(False)
+                w.setToolTip(CAR_LOCK_TIP)
+            if self._pre_car[-1]:
+                start.setCurrentText("matlab")
+            rolling.setEnabled(False)
+            rolling.setToolTip(CAR_LOCK_TIP)
+        elif not car and self._pre_car is not None:
+            pre, self._pre_car = self._pre_car, None
+            for w, _, tip in locked:
+                w.setEnabled(True)
+                w.setToolTip(tip)
+            for (w, _, _), v in zip(locked, pre):       # after the loop above: 4 Motors disables ATD again
+                if not (w is self.atd and self.em4.isChecked()):
+                    put(w, v)
+            rolling.setEnabled(True)
+            rolling.setToolTip("")
+            if pre[-1] and start.currentText() == "matlab":     # only the lock moved it. A later choice stays
+                start.setCurrentText("rolling")
+        for sec in self._sections.values():     # the 4EM values stay in the table for the 4EM car
+            sec.setEnabled(not car)
+            sec.setToolTip(CAR_SETUP_TIP if car else "")
+        self._update_inert_params()
 
     def _pick_hsl(self):
         d = QFileDialog.getExistingDirectory(self, "Coin-HSL folder", self.hsl_dir.text())

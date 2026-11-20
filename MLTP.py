@@ -464,6 +464,9 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     if ctx.cs is not None and homotopy is not None and homotopy is not False:
         raise ValueError("A ChassisSim car does not accept homotopy. The friction homotopy scales the MF coefficients, "
                          "and the car does not use them.")
+    if ctx.cs is not None and TyreModel != "CombinedSlip":
+        raise ValueError(f"A ChassisSim car does not accept TyreModel={TyreModel!r}. "
+                         "The car takes its tyre model from its .car file.")
     if ctx.cs is not None and ladder not in ("qss23",):
         print("[MLTP] note: a ChassisSim car has no 7-state model, so the ladder is qss23.")
     lname, chain = resolve_ladder("qss23" if ctx.cs is not None else ladder)   # cold-start ladder

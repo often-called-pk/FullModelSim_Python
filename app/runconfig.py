@@ -14,6 +14,9 @@ CamberGain, between_knots, collocation, state_scaling, atd_tbr, ladder, homotopy
 continue_from and ipopt_overrides. Each default is the MLTP or userOpts default. So a cfg without
 them makes the same call as before. `pt_overrides` (the A5 powertrain keys) is not a cfg key.
 `write_cfg` adds it to `vp_overrides`, where vehParams reads it.
+
+`car` and `chassissim_dir` are top-level cfg fields too (default None = the 4EM car, the folder of the
+CHASSISSIM_DIR environment variable). A cfg always holds both keys. headless_solve sends them only when set.
 """
 import json
 from dataclasses import dataclass, asdict, field
@@ -68,6 +71,8 @@ class RunConfig:
     refine: Optional[Union[bool, dict]] = None      # None | True | refine options (functions.refine)
     continue_from: Optional[str] = None     # None | 'auto' (B5: start from the stored default result)
     ipopt_overrides: Optional[dict] = None  # any IPOPT options, merged last
+    chassissim_dir: Optional[str] = None    # ChassisSim install folder (circuits, car atmosphere). Else env CHASSISSIM_DIR
+    car: Optional[str] = None               # None (the 4EM car) | 'chassissim:<absolute path of a .car file>'
     pt_overrides: Optional[dict] = None     # A5 keys gear Tmax Pmax Preg Ppack (physics='corrected' only)
     # full vehicle-parameter set (primaries + Pacejka mf), seeded from the tyre_set defaults
     vp: Optional[dict] = None

@@ -5,6 +5,7 @@ A circuit name for userOpts has the form "chassissim:<Circuit name>".
 The readers use only the standard library and numpy.
 """
 import configparser
+import glob
 import hashlib
 import os
 from types import SimpleNamespace
@@ -92,6 +93,41 @@ def _find(folder, name):
     return None
 
 
+def _orphans(circ, blocks):
+    """{name: file} of the tr_<name>.txt files in circ that no ini block lists."""
+    listed = {b.get("Circuit file name", "").strip().lower() for b in blocks}
+    files = os.listdir(circ) if os.path.isdir(circ) else []
+    return {f[3:-4]: f for f in files
+            if f.lower().startswith("tr_") and f.lower().endswith(".txt") and f.lower() not in listed}
+
+
+def list_circuits(cs_dir):
+    """Sorted names of the circuits of a ChassisSim folder that load_circuit can load. An ini block counts when its
+    curvature file exists. A tr_<name>.txt file without a block counts when no ini block has its name."""
+    cs_dir = os.path.abspath(cs_dir)
+    circ, ini = os.path.join(cs_dir, "Circuits"), os.path.join(cs_dir, "Circ_prop.ini")
+    blocks = read_circ_prop(ini) if os.path.isfile(ini) else []
+    ini_names = {b.get("Circuit name", "").strip().lower() for b in blocks}     # load_circuit looks for a block first
+    names = {b.get("Circuit name", "").strip() for b in blocks if _find(circ, b.get("Circuit file name", "").strip())}
+    names |= {o for o in _orphans(circ, blocks) if o.lower() not in ini_names}
+    return sorted(n for n in names if n)
+
+
+def list_cars(cs_dir=None, extra_dir=None):
+    """Absolute paths of the .car files: <cs_dir>/*.car, then <cs_dir>/../Models/**/*.car, then <extra_dir>/*.car.
+    Each group is in file name order. A cs_dir that is not a folder adds nothing."""
+    pats = []
+    if cs_dir and os.path.isdir(cs_dir):
+        cs_dir = os.path.abspath(cs_dir)
+        pats += [os.path.join(glob.escape(cs_dir), "*.car"),
+                 os.path.join(glob.escape(os.path.dirname(cs_dir)), "Models", "**", "*.car")]
+    if extra_dir:
+        pats.append(os.path.join(glob.escape(extra_dir), "*.car"))
+    cars = [sorted({os.path.abspath(f) for f in glob.glob(p, recursive=True)},
+                   key=lambda f: (os.path.basename(f).lower(), f)) for p in pats]
+    return list(dict.fromkeys(f for group in cars for f in group))
+
+
 def load_circuit(name, cs_dir):
     """Load a circuit by its ChassisSim name. Return SimpleNamespace(s, k, grip, bump, alt, curvature).
 
@@ -116,10 +152,7 @@ def load_circuit(name, cs_dir):
         bump, alt = flagged("Circuit bp name", "Circuit bp flag"), flagged("Circuit alt rcamb name", "Circuit alt rcamb flag")
     else:
         # A circuit without an ini block: its curvature file is tr_<name>.txt and no block lists that file.
-        listed = {b.get("Circuit file name", "").strip().lower() for b in blocks}
-        files = os.listdir(circ) if os.path.isdir(circ) else []
-        orphans = {f[3:-4]: f for f in files
-                   if f.lower().startswith("tr_") and f.lower().endswith(".txt") and f.lower() not in listed}
+        orphans = _orphans(circ, blocks)
         hit = next((f for o, f in orphans.items() if o.lower() == name.lower()), None)
         if hit is None:
             known = sorted({b.get("Circuit name", "").strip() for b in blocks} | set(orphans))

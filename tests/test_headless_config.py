@@ -123,8 +123,10 @@ from headless_solve import FORWARD, run_mode
 FORWARD_DEFAULTS = {"ladder": "auto", "homotopy": None, "refine": None, "continue_from": None,
                     "ipopt_overrides": None, "physics": "matlab", "start_state": "matlab", "n_bounds": None,
                     "Steering": "NA", "CamberGain": "Off", "hsl_dir": None, "between_knots": "matlab",
-                    "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None}
-ok("FORWARD holds the 15 F2 options (hsl_dir included) at these defaults", FORWARD == FORWARD_DEFAULTS)
+                    "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,
+                    "chassissim_dir": None, "car": None}
+ok("FORWARD holds the 17 options (hsl_dir, chassissim_dir and car included) at these defaults",
+   FORWARD == FORWARD_DEFAULTS)
 
 OLD_KEYS = {"circuit", "vi", "ni", "AeroConfig", "ATD", "Electric_4Motors", "TyreModel", "linear_solver",
             "save", "plot", "results_dir", "plots_dir", "circuits_dir", "data_dir", "vp_overrides",
@@ -174,10 +176,11 @@ print("3. mode = qss")
 ok("mode default nlp, qss accepted", run_mode(cfg) == "nlp" and run_mode(dict(cfg, mode="qss")) == "qss")
 ok("a bad mode raises ValueError (run_mode and build_solve_kwargs)",
    raises(lambda: run_mode(dict(cfg, mode="QSS"))) and raises(lambda: build_solve_kwargs(dict(cfg, mode="QSS"), "/res")))
-kwn = build_solve_kwargs(dict(cfg, warm_start="/w.mat", **F2, **CONT), "/res")
+CAR_KEYS = {"chassissim_dir": "/cs", "car": "chassissim:/cs/a.car"}     # a car run: userOpts arguments too
+kwn = build_solve_kwargs(dict(cfg, warm_start="/w.mat", **F2, **CONT, **CAR_KEYS), "/res")
 ok("nlp mode keeps warm_start and every F2 option",
    kwn["warm_start"] == "/w.mat" and all(kwn[k] == v for k, v in {**F2, **CONT}.items()))
-kq = build_solve_kwargs(dict(cfg, mode="qss", warm_start="/w.mat", **F2, **CONT), "/res")
+kq = build_solve_kwargs(dict(cfg, mode="qss", warm_start="/w.mat", **F2, **CONT, **CAR_KEYS), "/res")
 ok("qss keeps results_dir, save, circuits_dir and the userOpts options",
    kq["results_dir"] == os.path.join("/out", "Results") and kq["save"] is True
    and kq["circuits_dir"] == os.path.join("/res", "Circuits")

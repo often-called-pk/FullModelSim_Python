@@ -16,7 +16,7 @@ FORWARD = {
     "ladder": "auto", "homotopy": None, "refine": None, "continue_from": None,        # MLTP
     "ipopt_overrides": None, "physics": "matlab", "start_state": "matlab",              # userOpts
     "n_bounds": None, "Steering": "NA", "CamberGain": "Off",
-    "hsl_dir": None,
+    "hsl_dir": None, "chassissim_dir": None, "car": None,
     "between_knots": "matlab", "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,
 }
 # MLTP_screen has no NLP and no plots. The qss call drops these keys. userOpts raises TypeError on all of them

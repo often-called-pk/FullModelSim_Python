@@ -515,7 +515,9 @@ def userOpts(ctx,
                                ("state_scaling", state_scaling != "matlab", "The typical scales fit the 4EM chassis states."),
                                ("atd_tbr", atd_tbr is not None, "The car has no ATD."),
                                ("between_knots", between_knots != "matlab", "The car model has no linear inputs yet."),
-                               ("collocation", collocation != "legendre", "Radau is not tested with the car model.")):
+                               ("collocation", collocation != "legendre", "Radau is not tested with the car model."),
+                               ("tyre_set", tyre_set != "MF205", "The car takes its tyres from its .car file."),
+                               ("CamberGain", CamberGain != "Off", "The car takes its camber change from its hardpoints.")):
             if bad:
                 raise ValueError(f"A ChassisSim car does not accept {name}={locals()[name]!r}. {why}")
         ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):], chassissim_dir)
