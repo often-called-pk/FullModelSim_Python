@@ -104,8 +104,7 @@ def load_from(path, h):
         h._load_preset()
 
 
-# ---- synthetic car builder, copied from tests/test_cs_gui.py (lines 111-118, 143-291) ----
-# ---- synthetic car builder, copied from tests/test_cs_wiring.py (lines 45-51, 54, 93-114, 116-264) ----
+# ---- synthetic car builder, copied from tests/test_cs_gui.py ----
 CORNERS = ("fl", "fr", "rl", "rr")
 # The value lists below name the corners in the order fl, fr, rl, rr. The car file stores the right wheel first
 # (FR, FL, RR, RL), so the builder swaps the two cids of each left / right pair. An over or omit cid is a file cid.
@@ -137,7 +136,7 @@ HARD = (49, 50, 51, 52)                  # front left, front right, rear left, r
 HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
                     [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
 HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
-BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel; toe change zero (cids 74-77)
+BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel. The toe change is zero (cids 74-77)
 EXPLICIT = {
     84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
@@ -149,7 +148,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m; third gaps 0 (no third element)
+GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m. Third gaps 0 (no third element)
 EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])

@@ -463,7 +463,7 @@ alt file paths (the model reads them in phase 3). Stems, init files and plot fol
 ChassisSim cars (phases 2 and 2b, 2026-11-18 to 2026-11-19, `vehModel_cs.py`, `functions/chassissim.load_car`).
 `car='chassissim:<path>'` builds the car of a `.car` file in place of the 4EM car. It needs `physics='corrected'`. A car refuses
 the options that it cannot honour: `start_state='rolling'`, `state_scaling='typical'`, `atd_tbr`, `Electric_4Motors='On'`, an
-`AeroConfig` other than 'Static', `between_knots` other than 'matlab', `collocation='radau'` and a 7-state init `warm_start`. ATD
+`AeroConfig` other than 'Static', `between_knots` other than 'matlab', `collocation='radau'`, a 7-state init `warm_start`, a tyre_set other than the default, a CamberGain other than 'Off' and a TyreModel other than 'CombinedSlip'. ATD
 goes Off without a warning, and the ladder is 'qss23'. `MLTP_initial`, `optimise_design` and `setup_sweep` refuse a car. The model keeps nx 23 with the inputs `T_drive`, `T_brake` and `delta` (a hybrid car adds `F_dep`, and `F_pad` with the paddle). Every corner record of the file stores the right wheel first: FR,
 FL, RR, RL. The bar motion ratios use the cids 27, 170, 28 and 171 in that order. ChassisSim copies an empty left record from its
 right sibling, and so does load_car. This covers the springs, gaps with their flags, rubbers, corner and bar motion ratios,
@@ -687,7 +687,7 @@ The box takes the keys of `mainwindow.MORE_KEYS`: n_bounds, ladder, ipopt_overri
 between_knots, collocation, state_scaling, atd_tbr and continue_from. Choosing 4 Motors ticks Homotopy, and clearing 4 Motors
 unticks it. The library default stays None. F2-V1 (BCN, 4 motors, ATD Off, homotopy, MUMPS): 938 + 234 + 98 + 59
 iterations, 111.17993 s. `app.results.result_paths(rc)` builds the .mat path and the plot folder from the same stem as the
-solve (physics, start state, band, `RunConfig.setup_tag()`, `_qss`). `app/main.py` calls `multiprocessing.freeze_support()`
+solve (physics, start state, band, car, `RunConfig.setup_tag()`, `_qss`). `app/main.py` calls `multiprocessing.freeze_support()`
 first (not yet tested in a frozen Windows exe). Phase 2c G2 (2026-11-19): the Output tab holds the output folder. Its default is `<Documents>/FullModelSim` from
 QStandardPaths (else the home folder), and the GUI keeps it in QSettings (`app.paths.settings()`). The Advanced tab holds
 the Coin-HSL folder field (`hsl_dir`, a route key, not a setup knob). The cfg file comes from `tempfile.mkstemp`. G3:
@@ -698,18 +698,18 @@ quick tests and the start scripts on Windows and Linux. `release.yml` runs on a 
 smoke checks on them: a headless QSS, a headless NLP at max_iter 1 and an offscreen GUI start. It checks the Linux folder
 in an `ubuntu:22.04` container and attaches the zip and the tar.gz to a GitHub Release. The first CI run waits for the
 push of the branch (2026-11-20). Packaging notes: `build/README.md`.
-Phase 5 (2026-11-20, plan `docs/superpowers/plans/2026-11-20-chassissim-phase5-gui.md`, pinned by `tests/test_cs_gui.py` and
-`tests/test_car_edit.py`). The Advanced tab has a ChassisSim folder field (RunConfig and FORWARD `chassissim_dir`). The field wins
+Phase 5 (2026-11-20, plan `docs/superpowers/plans/2026-11-20-chassissim-phase5-gui.md`, pinned by `tests/test_cs_gui.py`, `tests/test_car_edit.py` and `tests/test_pt_group.py`). The Advanced tab has a ChassisSim folder field (RunConfig and FORWARD `chassissim_dir`). The field wins
 over the env `CHASSISSIM_DIR`. The circuit combo appends `chassissim:<name>` entries from `chassissim.list_circuits`. It lists the
 ini blocks that have their curvature file and the orphan `tr_*.txt` circuits. The `CIRCUITS` constant does not change. The Main
 tab Car combo lists `chassissim.list_cars`: the install folder, the Models folder beside it and `<presets>/cars`, then the browsed
 files. The cfg sends `car` as `chassissim:<abs path>`. A car locks physics corrected, Aero Static, 4 Motors off, ATD off, Homotopy
 off, the rolling start, Tyre model CombinedSlip and the default Tyre set. The 4EM car restores them, and the 4EM Setup rows are
-not sent with a car. With a car, userOpts refuses a tyre set other than the default and a CamberGain other than Off. MLTP refuses
-a TyreModel other than CombinedSlip. The car reads none of them. Steering stays allowed, because the car reads it. Car editing (`app/car_edit.py`, `CarEdit`) shows the scalars only, in the file units of ChassisSim. These are the tag 1 and tag 6 records and the slots of the tag 11 springs and rubbers and of the tag 13 tyres. The D9 gate runs on the source bytes, and an edit changes only its own record.
-`chassissim.left_copies`, shared with `load_car`, decides the rows of a copied left corner. A left gap of 0 with a live right gap
-is refused. Run writes `<presets>/cars/<base>_<sha8>.car` once and solves it. Save writes a new `.car` and refuses an existing
-path and the ChassisSim folders. The Powertrain group holds gear, Tmax and Pmax [kW per motor], Preg and Ppack (check boxes). It
+not sent with a car. With a car, userOpts refuses a tyre set other than the default and a CamberGain other than Off. MLTP refuses a TyreModel other than CombinedSlip. The car reads none of them. The car checks of userOpts live in one helper,
+`userOpts.car_refusal(kwargs)`. The GUI calls it before a car run and logs one `[error]` line, so no solve starts. After a folder
+change the GUI logs `[ChassisSim] <folder>: N circuits, M cars.`, and a JSON preset loaded in car mode logs that the car does not
+read its values. Steering stays allowed, because the car reads it. Car editing (`app/car_edit.py`, `CarEdit`) shows the scalars only, in the file units of ChassisSim. These are the tag 1 and tag 6 records and the slots of the tag 11 springs and rubbers and of the tag 13 tyres. The D9 gate runs on the source bytes, and an edit changes only its own record. An edit in a copied left pair also writes the left record.
+`chassissim.left_copies`, shared with `load_car`, decides the rows of a copied left corner. `validate` refuses a left gap of 0 with a live right gap. Run writes `<presets>/cars/<base>_<sha8>.car` once and solves it. Save writes a new `.car` and refuses an existing
+path and the ChassisSim folders. The Powertrain group holds gear, Tmax [N m per motor] and Pmax [kW per motor], Preg and Ppack (check boxes). It
 sends `pt_overrides` only for changed values, only with physics corrected, and it hides in car mode. The JSON preset stores these values under `pt_overrides`, and a preset without the key gives the default group. With Preg off, the motor does not regenerate. A GUI edit of the GP3 front spring rate +20 % moves its QSS lap at Eastern Creek from 74.055 s to
 74.069 s.
 
@@ -852,8 +852,7 @@ solve**), `Results/` (`.mat` outputs), `Plots/` (HTML figures).
   unchanged, only the corrected graph hashes change (by design). Not built: the side-force roll moment (the side
   force is 0 at the default `alpha_TW = 0`).
 - **Powertrain keys (A5, corrected only, 2026-10-21, pinned by `tests/test_power_a5.py`).** `vp_overrides` takes
-  `gear, Tmax, Pmax, Preg, Ppack` (`vehParams.PT_KEYS`). They are not primaries: no GUI rows (the More options box takes
-  them as `pt_overrides`, F2), no sweep.
+  `gear, Tmax, Pmax, Preg, Ppack` (`vehParams.PT_KEYS`). They are not primaries: no sweep. The GUI has them in the Powertrain group of the Setup tab (phase 5) and in the More options key `pt_overrides` (F2).
   ValueError under `physics='matlab'` or for a value not finite and > 0 (Preg may be 0). Set only when given: `gear`
   -> `vp.gear`, the rest -> `ctx.pt`. Tmax / Pmax = ratings of ONE motor. `Preg` (regen W per motor) sets the torque
   lower bound -Tmax, the `motor_power` ub `1 + Preg/Pmax` (P >= -Preg) and the `BrTh` ub inf. The energy then

@@ -236,16 +236,16 @@ Run, the GUI saves the folder for the next start. The Advanced tab has a Coin-HS
 3. Select a car in the Car combo. Or click Browse, or use Load preset with a `.car` file.
 4. Click Run.
 
-A car sets Physics to `corrected`. It locks the controls that a car cannot use: Aero, 4 Motors, ATD,
+A car sets Physics to `corrected` and locks it. It also locks the controls that a car cannot use: Aero, 4 Motors, ATD,
 Homotopy, the rolling start, the tyre model and the tyre set. The 4EM car restores them. The Car combo
 lists the `.car` files of the ChassisSim folder, of the `Models` folder beside it and of
 `<Documents>/FullModelSim/presets/cars`.
 
-**Edit a car.** With a car selected, the Setup tab shows the values of its `.car` file in the units of
-ChassisSim, for example N/m, mm and rpm. Edit a value and click Run. The GUI writes the edited car to
+**Edit a car.** With a car selected, the Setup tab shows the values of its `.car` file.
+The values keep the file units, for example N/m, m, mm and rpm. Edit a value and click Run. The GUI writes the edited car to
 `<Documents>/FullModelSim/presets/cars/<name>_<code>.car` and solves it. The source file does not
 change. To keep the edits, click Save preset. The GUI then writes a new `.car` file. It never writes
-over a file or into a ChassisSim folder. Tables, curves and maps are read-only. A row that the
+over a file or into a ChassisSim folder. The editor does not show tables, curves and maps. A row that the
 FullModelSim solve does not read has a tooltip that says so.
 
 **Powertrain group.** For the 4EM car, the Setup tab has the group `Powertrain (physics corrected)`.

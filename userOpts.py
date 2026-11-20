@@ -297,6 +297,33 @@ def car_id(car):
         raise ValueError(f"Cannot read the car file {path}: {e}") from e
 
 
+def car_refusal(kw):
+    """Return the reason why a ChassisSim car refuses the userOpts keyword values kw, or None.
+    A key that kw lacks has its userOpts default. userOpts and the GUI (at Run) call this function."""
+    from functions import chassissim
+    if kw.get("physics", "matlab") != "corrected":
+        return "A ChassisSim car needs physics='corrected'."
+    if kw.get("Electric_4Motors", "Off") == "On":
+        return "A ChassisSim car has one engine. Electric_4Motors must be 'Off'."
+    if kw.get("AeroConfig", "Static") != "Static":
+        return "A ChassisSim car has fixed aero. AeroConfig must be 'Static'."
+    for name, default, why in (("start_state", "matlab", "The rolling start reads the 4EM model."),
+                               ("state_scaling", "matlab", "The typical scales fit the 4EM chassis states."),
+                               ("atd_tbr", None, "The car has no ATD."),
+                               ("between_knots", "matlab", "The car model has no linear inputs yet."),
+                               ("collocation", "legendre", "Radau is not tested with the car model."),
+                               ("tyre_set", "MF205", "The car takes its tyres from its .car file."),
+                               ("CamberGain", "Off", "The car takes its camber change from its hardpoints.")):
+        v = kw.get(name, default)
+        if v == "rolling" if name == "start_state" else v != default:
+            return f"A ChassisSim car does not accept {name}={v!r}. {why}"
+    try:
+        chassissim.vp_refusal(kw.get("vp_overrides"))       # the A5 powertrain keys too
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def car_atmos(chassissim_dir=None):
     """Atmospheric engine torque factor of a ChassisSim car (chassissim._atmos), rounded to 12 significant digits."""
     return float(f"{chassissim._atmos(chassissim_dir):.12g}")
@@ -505,26 +532,16 @@ def userOpts(ctx,
         from functions import chassissim
         if not (isinstance(car, str) and car.startswith(chassissim.PREFIX)):
             raise ValueError(f"car must be None or '{chassissim.PREFIX}<path of a .car file>', got {car!r}")
-        if physics != "corrected":
-            raise ValueError("A ChassisSim car needs physics='corrected'.")
-        if Electric_4Motors == "On":
-            raise ValueError("A ChassisSim car has one engine. Electric_4Motors must be 'Off'.")
-        if AeroConfig != "Static":
-            raise ValueError("A ChassisSim car has fixed aero. AeroConfig must be 'Static'.")
-        for name, bad, why in (("start_state", start_state == "rolling", "The rolling start reads the 4EM model."),
-                               ("state_scaling", state_scaling != "matlab", "The typical scales fit the 4EM chassis states."),
-                               ("atd_tbr", atd_tbr is not None, "The car has no ATD."),
-                               ("between_knots", between_knots != "matlab", "The car model has no linear inputs yet."),
-                               ("collocation", collocation != "legendre", "Radau is not tested with the car model."),
-                               ("tyre_set", tyre_set != "MF205", "The car takes its tyres from its .car file."),
-                               ("CamberGain", CamberGain != "Off", "The car takes its camber change from its hardpoints.")):
-            if bad:
-                raise ValueError(f"A ChassisSim car does not accept {name}={locals()[name]!r}. {why}")
+        why = car_refusal(dict(
+            physics=physics, Electric_4Motors=Electric_4Motors, AeroConfig=AeroConfig, start_state=start_state,
+            state_scaling=state_scaling, atd_tbr=atd_tbr, between_knots=between_knots, collocation=collocation,
+            tyre_set=tyre_set, CamberGain=CamberGain, vp_overrides=vp_overrides))
+        if why:
+            raise ValueError(why)
         ctx.cs = chassissim.load_car(car[len(chassissim.PREFIX):], chassissim_dir)
         ctx.car = f"{ctx.cs.path}#{ctx.cs.sha8}"
         ctx.car_atmos = car_atmos(chassissim_dir)       # 1.0 = no correction, else the value of the knob car_atmos
         chassissim.check_car(ctx.cs)
-        chassissim.vp_refusal(vp_overrides)
         flags = [getattr(ctx.cs.susp, f"gap_flag_{c}") for c in ("fl", "fr", "rl", "rr")]
         if any(f not in (0, 1) for f in flags):
             raise ValueError("The car file holds a bump rubber gap flag (cids 204 to 207) other than 0 or 1.")

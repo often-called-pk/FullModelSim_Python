@@ -22,6 +22,8 @@ from app.vp_params import PARAM_GROUPS, meta_for, all_vp_defaults
 from app.widgets import CollapsibleSection, ExactField, ScientificField
 from app.paths import settings
 from functions import chassissim
+from headless_solve import build_solve_kwargs
+from userOpts import car_refusal
 
 CIRCUITS = ["Sturn", "Straight", "Hairpin", "Circle", "ZigZag", "ZigZagMirror",
             "VirtualTrack", "BCN", "BCN_S1", "BCN_S2", "BCN_S3", "Jarama", "Spa",
@@ -71,7 +73,6 @@ CS_DIR_TIP = ("Select the ChassisSim install folder. The ChassisSim circuits and
               "If the field is empty, the program uses the CHASSISSIM_DIR environment variable.")
 CAR_LOCK_TIP = ("A ChassisSim car sets this value, because the car model needs it. "
                 "Select the car 4EM (FullModelSim) to change the value.")
-CAR_SETUP_TIP = "A ChassisSim car takes its setup from its .car file."
 _PATH_ROLE = 256  # Qt.ItemDataRole.UserRole, stores the plot's filesystem path on the list item
 
 TYRE_SET_TIP = (
@@ -187,6 +188,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.log)
         self.setCentralWidget(central)
 
+        self._cs_logged = None
         self._refresh_chassissim(initial=True)      # after self.log: a folder that does not list logs one line
         self.car.currentIndexChanged.connect(self._on_car_changed)
         self._on_car_changed()
@@ -514,6 +516,9 @@ class MainWindow(QMainWindow):
         if ignored:
             msg += f", ignored {ignored} unknown/invalid keys"
         self._append_log(msg + "\n")
+        if self.car.currentData():
+            self._append_log("[preset] The selected ChassisSim car does not read these values. "
+                             "They apply to the 4EM car.\n")
 
     def _build_output_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
@@ -715,6 +720,9 @@ class MainWindow(QMainWindow):
                 if err:
                     raise ValueError(err)
                 rc.car = chassissim.PREFIX + self._car_edit.materialize(paths.user_cars_dir())
+            why = rc.car and car_refusal(build_solve_kwargs(rc._cfg(), ""))    # the texts of userOpts, before a subprocess
+            if why:
+                raise ValueError(why)
             rc.output_dir = os.path.abspath(rc.output_dir.strip() or paths.default_output_dir())
             self.output_dir.setText(rc.output_dir)  # an empty field shows the default folder that the run uses
             res_dir = os.path.join(rc.output_dir, "Results")
@@ -813,17 +821,21 @@ class MainWindow(QMainWindow):
         """Rebuild the circuit and car combos from the ChassisSim folder. The selections stay. A selection that
         left its list goes back to the first item, with one log line. A listing error gives one log line."""
         cs = self._cs_dir()
-        names, cars = [], []
+        names, cars, cs_cars = [], [], []
         try:
             names = chassissim.list_circuits(cs) if cs and os.path.isdir(cs) else []
         except Exception as exc:
-            self._append_log(f"[error] The circuits of the ChassisSim folder '{cs}' do not list: "
+            self._append_log(f"[error] The GUI cannot list the circuits of the ChassisSim folder '{cs}': "
                              f"{str(exc).splitlines()[0]}\n")
         try:        # apart from the circuits: a bad Circ_prop.ini does not hide the cars
-            cars = chassissim.list_cars(cs, paths.user_cars_dir())
+            cs_cars = chassissim.list_cars(cs)
+            cars = list(dict.fromkeys(cs_cars + chassissim.list_cars(None, paths.user_cars_dir())))
         except Exception as exc:
-            self._append_log(f"[error] The cars of the ChassisSim folder '{cs}' do not list: "
+            self._append_log(f"[error] The GUI cannot list the cars of the ChassisSim folder '{cs}': "
                              f"{str(exc).splitlines()[0]}\n")
+        if cs and cs != self._cs_logged:      # one line for each new folder, also for a folder that lists nothing
+            self._append_log(f"[ChassisSim] {cs}: {len(names)} circuits, {len(cs_cars)} cars.\n")
+        self._cs_logged = cs
         want = self.circuit.currentText()
         self.circuit.blockSignals(True)
         self.circuit.clear()
@@ -909,9 +921,7 @@ class MainWindow(QMainWindow):
             if pre[-1] and start.currentText() == "matlab":     # only the lock moved it. A later choice stays
                 start.setCurrentText("rolling")
         for sec in self._sections.values():     # the 4EM values stay in the table for the 4EM car
-            sec.setEnabled(not car)
             sec.setVisible(not car)
-            sec.setToolTip(CAR_SETUP_TIP if car else "")
         self._update_inert_params()
         self._update_pt()
         self._show_car_setup()
@@ -923,7 +933,7 @@ class MainWindow(QMainWindow):
         if path == self._car_path:
             return
         if self._car_edit and self._car_edit.edits:
-            self._append_log(f"[car] The setup edits of the car {self._car_edit.base} are dropped.\n")
+            self._append_log(f"[car] The GUI drops the setup edits of the car {self._car_edit.base}.\n")
         self._car_edit, self._car_path, self._car_fields, self._car_secs = None, path, {}, {}
         lay = self._car_box.layout()
         while lay.count():
@@ -934,7 +944,7 @@ class MainWindow(QMainWindow):
             ce = car_edit.CarEdit(path)
         except Exception as exc:
             self._append_log(f"[error] {os.path.basename(path)}: {exc}\n")
-            lay.addWidget(QLabel("This car file cannot be edited. The run uses the file as it is."))
+            lay.addWidget(QLabel("The GUI cannot edit this car file. The run uses the file as it is."))
             return
         self._car_edit = ce
         rows = ce.rows()
@@ -981,7 +991,7 @@ class MainWindow(QMainWindow):
         """Save the edited car as a new .car file. A file that exists is never overwritten."""
         ce = self._car_edit
         if ce is None:
-            return self._append_log("[error] The car file cannot be edited, so it cannot be saved.\n")
+            return self._append_log("[error] The GUI cannot edit this car file, so it cannot save the file.\n")
         folder = paths.user_cars_dir()
         os.makedirs(folder, exist_ok=True)
         path, _ = QFileDialog.getSaveFileName(

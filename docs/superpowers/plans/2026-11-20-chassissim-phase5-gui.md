@@ -22,9 +22,9 @@ Files: app/mainwindow.py, app/runconfig.py, app/results.py, headless_solve.py, f
 
 Files: app/mainwindow.py, app/car_edit.py (new), functions/carfile.py (helpers only if needed).
 
-- [ ] `car_edit`: from `carfile.decode` records to editable fields. These are the tag 1 scalars and tag 6 ints of the CAR_FIELDS groups mass, geom, susp, engine, brake, aero, hybrid and env. Also the scalars inside the tag 11 springs (preload, rate), the tag 12 dampers and the tag 13 tyres. Labels and units come from CAR_FIELDS (SI display = file value x factor).
+- [ ] `car_edit`: from `carfile.decode` records to editable fields. These are the tag 1 scalars and tag 6 ints of the CAR_FIELDS groups mass, geom, susp, engine, brake, aero, hybrid and env. Also the scalars inside the tag 11 springs (preload, rate), the tag 12 dampers and the tag 13 tyres. Labels and units come from the decode, in the file units of the `.car` (P5-B brief ruling 1).
 - [ ] Setup tab car mode: the 4EM groups and the Powertrain group are hidden. The car groups show the file values as defaults, with the changed highlight and Reset against the file.
-- [ ] Edit by record: only edited records change (value / factor back to file units), and unread records stay byte-equal. A left record copied from the right is written out when the user edits it.
+- [ ] Edit by record: only edited records change (values stay in file units), and unread records stay byte-equal. A left record copied from the right is written out when the user edits it.
 - [ ] D9 gate on the source bytes before any write: `encode(decode_bytes(b)) == b`, else `[error]` and no editing.
 - [ ] Validate the new bytes: `load_car`, `check_car`, `power_refusals`, `aero_refusals`. Errors go to the log as `[error]` lines.
 - [ ] Run with edits: write `<presets>/cars/<base>_<sha8 of the new bytes>.car` (reuse a file with equal bytes, `write` never overwrites), then run with `car=<new path>`.

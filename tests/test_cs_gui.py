@@ -28,7 +28,7 @@ import numpy as np
 
 from functions import carfile
 
-# A temp home for everything the GUI reads or writes (set before Qt starts; see app.paths).
+# A temp home for everything the GUI reads or writes. Set it before Qt starts (see app.paths).
 TMP = types.SimpleNamespace(name=tempfile.mkdtemp(prefix="cs_gui_"))
 atexit.register(shutil.rmtree, TMP.name, True)
 HOME = os.path.join(TMP.name, "home")
@@ -164,7 +164,7 @@ HARD = (49, 50, 51, 52)                  # front left, front right, rear left, r
 HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
                     [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
 HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
-BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel; toe change zero (cids 74-77)
+BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel. The toe change is zero (cids 74-77)
 EXPLICIT = {
     84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
@@ -176,7 +176,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m; third gaps 0 (no third element)
+GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m. Third gaps 0 (no third element)
 EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
@@ -378,7 +378,7 @@ def circuit_items(combo):
     return [combo.itemText(i) for i in range(combo.count())]
 
 
-# (b1) the folder field is saved on Run and restored; the circuit combo lists the ChassisSim circuits
+# (b1) the folder field is saved on Run and restored. The circuit combo lists the ChassisSim circuits
 fresh_settings()
 h = MainWindow()
 h.chassissim_dir.setText(GUI_CS)
@@ -408,7 +408,7 @@ ok("car labels: the file name, and the parent folder for a repeated name",
 ok("the car items carry the absolute paths",
    h.car.findData(ABS_A) >= 0 and h.car.findData(os.path.abspath(CAR_DEF_SUB)) >= 0)
 
-# (b4) a car sets and locks the controls; the 4EM car restores them
+# (b4) a car sets and locks the controls. The 4EM car restores them
 h.opt_combos["physics"].setCurrentText("matlab")
 h.aero.setCurrentText("Active")
 h.em4.setChecked(False)
@@ -430,9 +430,6 @@ ok("a car sets Tyre model CombinedSlip and Tyre set MF205, both disabled",
    and h.tyre_set.currentText() == "MF205" and not h.tyre_set.isEnabled())
 ok("a car moves the start state off rolling and disables the rolling item",
    st.currentText() == "matlab" and not st.model().item(1).isEnabled())
-ok("a car disables the Setup sections, with the car tooltip",
-   bool(h._sections) and all(not s.isEnabled() for s in h._sections.values())
-   and next(iter(h._sections.values())).toolTip() == mw.CAR_SETUP_TIP)
 h.car.setCurrentIndex(0)
 ok("the 4EM car restores physics, aero, ATD, Homotopy, tyre and tyre set",
    h.opt_combos["physics"].currentText() == "matlab" and h.aero.currentText() == "Active"
@@ -442,7 +439,7 @@ ok("... the rolling start comes back, and the Setup sections are enabled again",
    st.currentText() == "rolling" and st.model().item(1).isEnabled()
    and all(s.isEnabled() for s in h._sections.values()))
 
-# (b5) a car with a changed mb row: the captured cfg has no vp_overrides and the car path; 4EM keeps the row
+# (b5) a car with a changed mb row: the captured cfg has no vp_overrides and the car path. 4EM keeps the row
 h.car.setCurrentIndex(h.car.findData(ABS_A))
 mb0 = h.vp_spins["mb"].value()
 h.vp_spins["mb"].setValue(mb0 + 100.0)

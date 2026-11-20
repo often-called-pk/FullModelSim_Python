@@ -30,7 +30,7 @@ import numpy as np
 
 from functions import carfile, chassissim
 
-# A temp home for everything the GUI reads or writes (set before Qt starts; see app.paths).
+# A temp home for everything the GUI reads or writes. Set it before Qt starts (see app.paths).
 TMP = types.SimpleNamespace(name=tempfile.mkdtemp(prefix="car_edit_"))
 atexit.register(shutil.rmtree, TMP.name, True)
 HOME = os.path.join(TMP.name, "home")
@@ -40,7 +40,7 @@ os.environ["XDG_CONFIG_HOME"] = os.path.join(HOME, ".config")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 VENDOR = os.environ.pop("CHASSISSIM_DIR", None)      # the non-vendor sections run with no environment folder
 VENDOR = VENDOR if VENDOR and os.path.isdir(VENDOR) else None
-PRESETS = os.path.join(TMP.name, "presets")          # the user presets folder; the cars go to presets/cars
+PRESETS = os.path.join(TMP.name, "presets")          # the user presets folder. The cars go to presets/cars
 CARS = os.path.join(PRESETS, "cars")
 
 from app import car_edit                              # noqa: E402  (after the environment is set)
@@ -141,7 +141,7 @@ HARD = (49, 50, 51, 52)                  # front left, front right, rear left, r
 HP_LEFT = np.array([[-0.15, 0.25, 0.10], [0.15, 0.25, 0.10], [0.0, 0.68, 0.11],
                     [-0.15, 0.30, 0.28], [0.15, 0.30, 0.28], [0.0, 0.64, 0.33]])
 HP_RIGHT = HP_LEFT * np.array([1.0, -1.0, 1.0])
-BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel; toe change zero (cids 74-77)
+BUMP_STEER_X = np.linspace(-0.02, 0.02, 11)   # m of wheel travel. The toe change is zero (cids 74-77)
 EXPLICIT = {
     84: 700.0, 85: 25.0, 86: 35.0, 87: 60.0, 88: 280.0, 89: 600.0, 96: 0.44,
     90: 3.1, 91: 1.52, 92: 1.49, 93: 0.33,
@@ -153,7 +153,7 @@ EXPLICIT = {
     121: 3.5, 122: 0.95, 123: 0.1, 125: 1.2,                # CLA, CDA, offset, rho
     390: 350.0,
 }
-GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m; third gaps 0 (no third element)
+GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}   # rubber ground gaps, m. Third gaps 0 (no third element)
 EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
@@ -260,19 +260,6 @@ def build_records(arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
     R.append((carfile.END_TAG, carfile.END_CID, None))
     return R
 
-
-def write_car(name, arb_front=None, mirror=False, toe=0.0, toes=None, over=None):
-    path = os.path.join(TMP.name, name)
-    carfile.write(build_records(arb_front, mirror, toe, toes, over), path)
-    return path
-
-
-def raised(fn, exc=ValueError):
-    try:
-        fn()
-    except exc:
-        return True
-    return False
 
 HYBRID = [(6, 177, 1), (1, 180, 50000.0), (1, 181, 1.0e6), (1, 183, 1.0)]    # hybrid master on, deploy scale, energy cap, map scale
 
@@ -572,7 +559,7 @@ F[(1, 2)].setValue(1.5e5)
 w.log.clear()
 w._select_car(OTHER)
 ok("a car change drops the pending edits with one log line",
-   w._car_edit.base == "other_car" and w._car_edit.edits == {} and w.log.toPlainText().count("are dropped") == 1,
+   w._car_edit.base == "other_car" and w._car_edit.edits == {} and w.log.toPlainText().count("drops the setup edits") == 1,
    w.log.toPlainText())
 
 w._select_car(base)
@@ -583,7 +570,7 @@ w.log.clear()
 w._load_preset()
 F = w._car_fields
 ok("Load preset of the selected car drops the edits and shows the file values",
-   w._car_edit.edits == {} and F[(1, 2)].value() == w._car_edit.file_value((1, 2)) and "are dropped" in w.log.toPlainText(),
+   w._car_edit.edits == {} and F[(1, 2)].value() == w._car_edit.file_value((1, 2)) and "drops the setup edits" in w.log.toPlainText(),
    w.log.toPlainText())
 
 SAVED = os.path.join(TMP.name, "saved", "edit_one.car")

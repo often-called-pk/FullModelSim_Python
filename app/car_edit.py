@@ -180,7 +180,7 @@ class CarEdit:
         self.records = carfile.decode_bytes(b)
         if carfile.encode(self.records) != b:
             raise ValueError("The file does not encode back to its own bytes, so a new file would differ from it "
-                             "in places that we do not read. The car cannot be edited.")
+                             "in places that we do not read. The GUI cannot edit the car.")
         self.base = os.path.splitext(os.path.basename(self.path))[0]
         self.by_cid = {c: (t, v) for t, c, v in self.records}
         self.copies = chassissim.left_copies(self.by_cid)       # left cid -> right cid that load_car reads
@@ -215,7 +215,8 @@ class CarEdit:
 
     def set(self, key, x):
         """Set an edit. A value equal to the file value removes the edit."""
-        if x == self.file_value(key):
+        fv = self.file_value(key)
+        if x == fv or (x != x and fv != fv):     # a NaN of the file equals a NaN
             self.edits.pop(key, None)
         else:
             self.edits[key] = x
