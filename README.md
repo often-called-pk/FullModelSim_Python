@@ -229,6 +229,31 @@ folder `FullModelSim` in the Documents folder of the user, on Windows and on Lin
 Run, the GUI saves the folder for the next start. The Advanced tab has a Coin-HSL folder field (see
 "Linear solver").
 
+**ChassisSim cars and circuits.** To run a ChassisSim car or circuit in the GUI, do these steps:
+
+1. On the Advanced tab, set the ChassisSim folder. Or set the environment variable `CHASSISSIM_DIR`.
+2. On the Main tab, select a circuit `chassissim:<name>`, or keep a FullModelSim circuit.
+3. Select a car in the Car combo. Or click Browse, or use Load preset with a `.car` file.
+4. Click Run.
+
+A car sets Physics to `corrected`. It locks the controls that a car cannot use: Aero, 4 Motors, ATD,
+Homotopy, the rolling start, the tyre model and the tyre set. The 4EM car restores them. The Car combo
+lists the `.car` files of the ChassisSim folder, of the `Models` folder beside it and of
+`<Documents>/FullModelSim/presets/cars`.
+
+**Edit a car.** With a car selected, the Setup tab shows the values of its `.car` file in the units of
+ChassisSim, for example N/m, mm and rpm. Edit a value and click Run. The GUI writes the edited car to
+`<Documents>/FullModelSim/presets/cars/<name>_<code>.car` and solves it. The source file does not
+change. To keep the edits, click Save preset. The GUI then writes a new `.car` file. It never writes
+over a file or into a ChassisSim folder. Tables, curves and maps are read-only. A row that the
+FullModelSim solve does not read has a tooltip that says so.
+
+**Powertrain group.** For the 4EM car, the Setup tab has the group `Powertrain (physics corrected)`.
+It holds the gear ratio, Tmax and Pmax of one motor, the regen power Preg and the pack power limit Ppack.
+Preg and Ppack each have a check box. With Preg off, the motor does not regenerate. With Ppack off, the
+pack has no power limit. The group is active only when Physics is `corrected`. The GUI
+sends only the values that you change.
+
 The Advanced tab has the group "Run, model and start":
 
 - Run: `nlp` (the solve) or `qss` (a QSS lap estimate in about 1 s, with no IPOPT and no plots).
