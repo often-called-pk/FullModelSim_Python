@@ -711,8 +711,8 @@ def userOpts(ctx,
 
     # ---- solver options (IPOPT) -------------------------------------------
     # `linear_solver` is configurable (default 'ma57'). An ma* solver uses
-    # Coin-HSL, which IPOPT loads at solve time from `hsl_dir` (resolved against
-    # COINHSL_DIR / a seeded default in functions/hsl.py); _make_solver probes it
+    # Coin-HSL, which IPOPT loads at solve time from `hsl_dir` (functions/hsl.py takes
+    # COINHSL_DIR, then hsl_dir, then the hsl folder of a frozen app); _make_solver probes it
     # and transparently falls back to MUMPS if it is unavailable. 'mumps' (the
     # casadi-bundled solver) is always available and needs no external library.
     ipopt = {

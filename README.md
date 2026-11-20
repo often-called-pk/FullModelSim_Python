@@ -70,11 +70,20 @@ uv run fullmodelsim     # start the GUI
 uv run python tests/run_tests.py --quick
 ```
 
+A `.venv` from before the switch to PySide6-Essentials can lose Qt files on `uv sync`.
+In that case, run `uv sync --reinstall-package pyside6-essentials`, or delete `.venv` and
+run the setup again.
+
 `requirements.txt` is generated from `uv.lock` for pip users. Do not edit it. To change
 a dependency, edit `pyproject.toml`. Then run `uv lock` and
 `uv export --no-dev --no-hashes --no-emit-project -o requirements.txt`.
 
-Download route (a packaged app for each OS): added with the release workflow.
+Download route. The release workflow attaches `FullModelSim-<tag>-windows.zip` and
+`FullModelSim-<tag>-linux.tar.gz` to the GitHub Release of each `v*` tag. Extract the
+archive and start `FullModelSim.exe` (Windows) or `FullModelSim` (Linux). The Linux app
+needs glibc 2.35 or later and the system libraries libGL, libEGL and libxcb. The downloads
+use MUMPS and hold no vendor data. The release steps are in
+[`build/README.md`](build/README.md).
 
 `Data/DATA_AA.mat` (aerodynamic coefficients) is **required for a real solve**.
 
@@ -130,8 +139,10 @@ uv run fullmodelsim
 ```
 
 The GUI writes a JSON config, spawns the solve as a subprocess, streams the IPOPT
-log into the log pane, and lists the resulting plots. GUI runs write results and
-plots under `%USERPROFILE%\Documents\FullModelSim`.
+log into the log pane, and lists the resulting plots. GUI runs write results and plots to
+the output folder of the Output tab. The default is the folder `FullModelSim` in the
+Documents folder of the user, on Windows and on Linux. The GUI keeps the folder for the
+next start. The Advanced tab has a Coin-HSL folder field (see Linear solver).
 
 The Advanced tab has the group "Run, model and start":
 
@@ -147,19 +158,17 @@ The Advanced tab has the group "Run, model and start":
 
 The Output tab finds the result file with the same name rule as the solve.
 
-### C) Build the standalone Windows exe
+### C) Build the standalone app (Windows and Linux)
 
-```powershell
-$env:COINHSL_DIR = "C:\path\to\coinhsl\bin"   # optional: bundle Coin-HSL for MA57/MA97
-uv run pyinstaller build\app.spec
+```
+uv run pyinstaller build/app.spec    # set COINHSL_DIR first to bundle Coin-HSL for MA57/MA97
 ```
 
-Output: `dist\FullModelSim\FullModelSim.exe` (onedir). It launches the GUI; run
-`FullModelSim.exe --headless cfg.json` to solve and exit (this is what the Run
-button spawns). The build is **windowed** by default (no console window); set
-`FMS_CONSOLE=1` at build time for a debug build with a console. Full build notes,
-packaging rationale, and the acceptance checklist are in
-[`build/README.md`](build/README.md).
+Output: `dist\FullModelSim\FullModelSim.exe` on Windows and `dist/FullModelSim/FullModelSim`
+on Linux (onedir). The program starts the GUI. Run `FullModelSim --headless cfg.json` to
+solve and exit (the Run button starts this command). The Windows build has no console
+window. Set `FMS_CONSOLE=1` at build time for a debug build with a console. The build
+notes and the release steps are in [`build/README.md`](build/README.md).
 
 ---
 
@@ -258,10 +267,12 @@ Each item has the trigger that makes it worth adding.
 IPOPT ships **inside** the CasADi wheel. The solve **defaults to HSL `ma57`**
 (run with `ma57_automatic_scaling` so it converges on the stiff 23-state
 problem). HSL solvers need a **Coin-HSL** shared library (the MinGW/`libgfortran5`
-`CoinHSL_jll` build matches the casadi wheel's ABI); point the framework at it
-with the `COINHSL_DIR` environment variable, or rely on the seeded default in
-`functions/hsl.py`. In a frozen exe, the bundled Coin-HSL DLLs are found at the
-PyInstaller root (`sys._MEIPASS`).
+`CoinHSL_jll` build matches the casadi wheel's ABI). The solve uses the first folder of
+this list that exists:
+
+1. The `COINHSL_DIR` environment variable.
+2. The Coin-HSL folder of the GUI (Advanced tab), or the `hsl_dir` keyword.
+3. In a frozen app, the `hsl` folder of the bundle.
 
 If no working Coin-HSL library is found, the solve **transparently falls back to
 MUMPS** (bundled, needs no external library), a solve never crashes on a missing

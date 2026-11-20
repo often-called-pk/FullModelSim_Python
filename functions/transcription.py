@@ -652,8 +652,8 @@ def _make_solver(ca, nlp, opts, info=None):
     HSL is unavailable or fails to load, transparently fall back to MUMPS
     (bundled in the casadi wheel) so a solve never crashes on a missing or
     incompatible HSL DLL. The HSL directory is taken from a private top-level
-    `opts["_hsl_dir"]` hint (set by userOpts) resolved against COINHSL_DIR and
-    a seeded default; the hint is always stripped before reaching CasADi.
+    `opts["_hsl_dir"]` hint (set by userOpts), after COINHSL_DIR and before the
+    hsl folder of a frozen app (hsl.resolve_hsl_dir). The hint never reaches CasADi.
     `info` (optional dict) receives the effective "linear_solver".
     """
     import copy
