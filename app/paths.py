@@ -1,4 +1,4 @@
-"""Frozen-aware path resolution for the windows-app GUI.
+"""Frozen-aware path resolution for the desktop GUI (Windows and Linux).
 
 Bundled (PyInstaller) read-only resources live under sys._MEIPASS; in a dev
 checkout they live in the repo root (app/paths.py -> app/ -> repo root).

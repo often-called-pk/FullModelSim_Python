@@ -287,18 +287,29 @@ below = [float(g) for g in np.sort(np.asarray(e.gears, float))[::-1] if g != top
 expect = []
 for g in below:
     vg = e.rpm_limit * R_t / g
-    F, Rg = float(F_raw(vg)), c0 + c2 * vg * vg
+    F, Rg = float(F_raw(vg)), max(c0 + c2 * vg * vg, 0.0)
     if F > Rg:
         expect.append((vg, F, Rg))
 ok(f"one band per gear below the top with F > R: {len(bands)} bands, expected {len(expect)} "
    f"(gears below the top {len(below)})", len(bands) == len(expect) and len(bands) >= 1)
-# The model's own resistance fit is above the drive force at every upshift on this car (c2 < 0), so the
-# no-band rule is checked with a flat resistance R = 1000 N: gears with F <= R get no band.
+# The model's own resistance fit is above the drive force at every upshift on this car (c2 < 0). The resistance
+# in the band law is max(c0 + c2 v_g^2, 0) (a resistance never pushes), so the no-band rule is checked with a flat
+# resistance R = 1000 N: gears with F <= R get no band.
 R_flat = 1000.0
 b_flat = V.shift_bumps(cs_c, R_t, m_eff, (R_flat, 0.0))
 exp_flat = [e.rpm_limit * R_t / g for g in below if float(F_raw(e.rpm_limit * R_t / g)) > R_flat]
 ok(f"flat R 1000 N: bands only where F > R ({len(b_flat)} of {len(below)} upshifts, expected {len(exp_flat)})",
    len(b_flat) == len(exp_flat) == 2 and all(abs(vg - ve) <= 1e-12 * ve for (vg, _, _), ve in zip(b_flat, exp_flat)))
+# A resistance fit with a negative slope (-8e4 N per (m/s)^2, no constant) must not push the depth past 1 / max(w)
+# or the envelope factor below 0: the clamp keeps R_g >= 0 at every upshift.
+b_neg = V.shift_bumps(cs_c, R_t, m_eff, (-8e4, 0.0))
+vfine = np.linspace(0.0, 120.0, 24001)
+fac_neg = 1.0 - sum(c * bump(vfine, vg, W) for vg, W, c in b_neg)
+wmax_ok = all(c * float(np.max(bump(np.linspace(vg - W, vg + 2.0 * W, 6001), vg, W))) < 1.0 for vg, W, c in b_neg)
+ok(f"resistance fit (-8e4, 0): {len(b_neg)} bands with c < 1 / w_max (all bands: {wmax_ok}), "
+   f"depths {[round(c, 4) for _, _, c in b_neg]}", len(b_neg) >= 1 and wmax_ok)
+ok(f"resistance fit (-8e4, 0): the envelope factor stays above 0 at every speed (min {fac_neg.min():.4f})",
+   float(fac_neg.min()) > 0.0)
 for (vg, W, c), (vg_e, F, Rg) in zip(bands, expect):
     ok(f"v_g = rpm_limit R / g at {vg:.3f} m/s", abs(vg - vg_e) <= 1e-12 * vg_e)
     W_e = max((1.0 - e.cut_min) * F * t_d / m_eff, 3.0)

@@ -282,7 +282,7 @@ def shift_bumps(cs, R, m_eff, res):
     out = []
     for g in np.sort(np.asarray(e.gears, float))[::-1][:-1]:      # every gear but the top, lowest gear first
         vg = e.rpm_limit * R / g
-        F, Rg = float(Fn(vg)), res[0] + res[1] * vg * vg
+        F, Rg = float(Fn(vg)), max(res[0] + res[1] * vg * vg, 0.0)     # a resistance never pushes, so c <= 1 / max(w)
         lost = (1.0 - e.cut_min) * F * t                          # impulse that the cut takes [N s]
         if lost <= 0.0 or F <= Rg:
             continue
@@ -791,7 +791,7 @@ def vehModel_cs(ctx):
     hyb_rows, lap_terms, P_dep, P_harv = [], [], None, None
     if hyb:
         h = cs.hybrid
-        _, brk_on, pad_on = hybrid_gates(cs)        # ChassisSim gates: 535 and 590 (brake), 573 and 589 (paddle)
+        _, brk_on, pad_on = hybrid_gates(cs)        # ChassisSim gates: 535, 590 and 973 (brake), 573 and 589 (paddle)
         S = float(h.scale_deploy)
         mapf = deploy_map(cs)
         v_f = 0.5 * (Om_fl + Om_fr) * Rw["f"]

@@ -63,12 +63,14 @@ E_S = 1e5                                             # J, the scale of the ener
 CLAMP, S_DEP = 60000.0, 60000.0                       # regen clamp and deploy scale of the synthetic hybrid car [W]
 KR, KD = 0.8, 0.8                                     # regen scale (182) and deploy scale after the map (183)
 HEAD = ["P_dep", "P_harv", "sf", "v_r", "om", "T_drive", "T_brake"]
-FLAG_CIDS = {177, 178, 464, 466, 535, 573, 589, 590, 870}
+FLAG_CIDS = {177, 178, 464, 466, 535, 573, 589, 590, 870, 973}
 CAP = {}                                              # the last fake solve: nlp, bounds and start point
 SEED = {}                                             # optional start point: {"nu": n, "u": f(k, N) -> {input: value}}
 # Hybrid records of the synthetic car. The regen gate 590 and the deploy blend 464 / 465 are on.
-HYB = {177: 1, 179: CLAMP, 180: S_DEP, 181: 400000.0, 182: KR, 183: KD, 836: 0.0, 535: 1, 590: 1, 464: 1, 465: 0.3}
-PAD = {573: 1, 589: 1}                                # paddle regen (second control)
+HYB = {177: 1, 179: CLAMP, 180: S_DEP, 181: 400000.0, 182: KR, 183: KD, 836: 0.0, 535: 1, 590: 1, 973: 1, 464: 1,
+       465: 0.3}                                      # 973 = brake regen blend (ChassisSim: the brake harvest needs it)
+PAD = {573: 1, 589: 1, 182: 1}                        # paddle regen (second control); the paddle cars use cid 182 = 1
+KP = 1.0                                              # regen scale of the paddle cars (cid 182)
 FRONT = {870: 1, 871: 0.55}                           # regen front share (the axle split of the brake)
 GL_TAU, GL_W = np.polynomial.legendre.leggauss(3)     # Gauss-Legendre weights on [0, 1] (the B of the Legendre scheme)
 GL_B = GL_W / 2.0
@@ -144,6 +146,25 @@ def build_install(root):
 
 
 INST = build_install(os.path.join(TMP.name, "ChassisSim_v3_41"))
+
+
+def build_track_install(root, name, spec):
+    """ChassisSim install with one circuit of 600 m: corners (a, b, R) in m with 6 m smooth edges, straights between.
+    The file holds k then s per row, as build_install writes it."""
+    s = np.arange(0.0, 600.5, 1.0)
+    k = np.zeros_like(s)
+
+    def edge(x, lo, hi):
+        t = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+        return t * t * (3.0 - 2.0 * t)
+    for a, b, R in spec:
+        k += (edge(s, a, a + 6.0) - edge(s, b - 6.0, b)) / R
+    os.makedirs(os.path.join(root, "Circuits"))
+    write_text(os.path.join(root, "Circ_prop.ini"),
+               INI.replace(f"Circuit name = {CIRC}", f"Circuit name = {name}").replace("tr_synth.txt", "tr_chic.txt"))
+    rows = [f"{float(a)!r}   {float(b)!r}" for a, b in zip(k, s)]
+    write_text(os.path.join(root, "Circuits", "tr_chic.txt"), "\r\n".join(rows) + "\r\n")
+    return root
 
 
 # ---- synthetic car: literal cids and tags (as in tests/test_cs_power.py) -----------------------------
@@ -264,11 +285,11 @@ def build_records():
     return R
 
 
-def car_path(cids=None, maps=None, name=None):
+def car_path(cids=None, maps=None, name=None, drop=()):
     """Write the synthetic car with the hybrid records (cid -> value) and the maps (cid -> (x, z, data)).
-    The records of the same cid are replaced, not repeated. Return the path."""
+    The records of the same cid are replaced, not repeated. drop lists the cids to leave out. Return the path."""
     cids, maps = dict(cids or {}), dict(maps or {})
-    body = [r for r in build_records() if r[1] not in cids and r[1] not in maps]
+    body = [r for r in build_records() if r[1] not in cids and r[1] not in maps and r[1] not in drop]
     extra = [(6 if c in FLAG_CIDS else 1, c, v) for c, v in cids.items()] + [(9, c, v) for c, v in maps.items()]
     path = os.path.join(CARS_DIR, name or f"car_{next(COUNT)}.car")
     carfile.write(body + extra + [(carfile.END_TAG, carfile.END_CID, None)], path)
@@ -292,9 +313,10 @@ def build(path, **kw):
 
 
 def msg_of(path):
-    """'silent' or the ValueError message of load_car, power_refusals and aero_refusals."""
+    """'silent' or the ValueError message of load_car, check_car, power_refusals and aero_refusals (as userOpts runs them)."""
     try:
         cs = C.load_car(path, INST)
+        C.check_car(cs)
         C.power_refusals(cs)
         C.aero_refusals(cs)
         return "silent"
@@ -333,6 +355,15 @@ def at(c, xp, up):
     return dict(zip(names, out))
 
 
+def dx_at(c, xp, up):
+    """Physical dx of the 23-state model at the physical state xp and the scaled inputs up (numpy)."""
+    m = c.m23
+    fn = ca.Function("dx", [m.x, m.u, m.pv], [m.dx])
+    xs = np.asarray(m.x_s, float)
+    xn = np.reshape(np.asarray(xp, float) / xs, (-1, 1))
+    return np.array(fn(xn, np.reshape(np.asarray(up, float), (-1, 1)), 0.0), float).ravel() * xs
+
+
 def state(c, vx, spin=0.03):
     """Straight state at vx: the front wheels roll free, the rear wheels spin by spin (v_r = (1 + spin) vx)."""
     x = np.zeros(23)
@@ -363,9 +394,9 @@ def seed_inputs(k, N):
 
 # ---- checks ----------------------------------------------------------------------------------------------
 print("[cs_hybrid] a. gates")
-ok("177 off: no layer (all gates off, no input) with 535, 590, 573 and 589 on",
-   C.hybrid_gates(C.load_car(car_path({177: 0, 535: 1, 590: 1, 573: 1, 589: 1}), INST)) == (False, False, False)
-   and C.hybrid_inputs(C.load_car(car_path({177: 0, 535: 1, 590: 1, 573: 1, 589: 1}), INST)) == [])
+ok("177 off: no layer (all gates off, no input) with 535 and 590 on",
+   C.hybrid_gates(C.load_car(car_path({177: 0, 535: 1, 590: 1}), INST)) == (False, False, False)
+   and C.hybrid_inputs(C.load_car(car_path({177: 0, 535: 1, 590: 1}), INST)) == [])
 cs_no590 = C.load_car(car_path({**HYB, 590: 0}), INST)
 ok("535 = 1 with 590 = 0: deploy on, brake regen off", C.hybrid_gates(cs_no590) == (True, False, False))
 cs_no589 = C.load_car(car_path({**HYB, **{573: 1, 589: 0}}), INST)
@@ -404,6 +435,12 @@ ok("n_lap 2 in the structure of the deploy car, 2 with the paddle too",
 lbg, ubg = (np.asarray(c_h.cap["k"][n]).ravel() for n in ("lbg", "ubg"))
 ok(f"lap rows: lb -inf, ub 836 / E_S = 0 (E_dep - E_harv) and ub (181 + 836) / E_S = 4 (E_dep)",
    np.all(np.isneginf(lbg[-2:])) and np.allclose(ubg[-2:], [0.0, (HYB[181] + HYB[836]) / E_S]))
+
+c_no973 = build(car_path({**HYB, 973: 0}))
+o = at(c_no973, state(c_no973, 40.0), [0.0, -0.5, 0.0, 0.0])
+ok(f"177 / 535 / 590 = 1 with 973 = 0: P_harv is 0 at a braking state ({o['P_harv']!r} W)", o["P_harv"] == 0.0)
+o = at(c_h, state(c_h, 40.0), [0.0, -0.5, 0.0, 0.0])
+ok(f"973 = 1: the brake harvest returns at the same braking state ({o['P_harv']:.1f} W)", o["P_harv"] > 0.0)
 
 print("[cs_hybrid] c. hand values")
 m_h = c_h.m23
@@ -449,15 +486,38 @@ ok(f"brake harvest with the front share 0.55 (k {k_f:.4f}, v_mix 0.45 v_r + 0.55
 o = at(c_p, state(c_p, VX), [0.0, -0.1, 0.0, 0.0, 0.1])
 F_pad = 0.1 * F_ref
 hb0 = min(CLAMP, (1.0 - bias) * B_net * v_r)
-hp_hand = KR * v_r * F_pad
-ok(f"paddle: P_harv = P_hb + P_hp = {o['P_harv']:.1f} against {KR * hb0 + hp_hand:.1f} W",
-   abs(o["P_harv"] - (KR * hb0 + hp_hand)) < 1e-3 * CLAMP)
+hp_hand = KP * v_r * F_pad
+ok(f"paddle: P_harv = P_hb + P_hp = {o['P_harv']:.1f} against {KP * hb0 + hp_hand:.1f} W",
+   abs(o["P_harv"] - (KP * hb0 + hp_hand)) < 1e-3 * CLAMP)
 row_hand = (CLAMP - hb0 - F_pad * v_r) / CLAMP
 ok(f"paddle_pw = (clamp - P_hb0 - F_pad v) / clamp (got {o['paddle_pw']:.6f}, hand {row_hand:.6f})",
    abs(o["paddle_pw"] - row_hand) < 1e-3)
 o = at(c_p, state(c_p, VX), [0.0, 0.0, 0.0, 0.0, 0.1])
-ok(f"paddle alone: P_harv = 0.8 v_r F_pad = {KR * v_r * F_pad:.1f} W (got {o['P_harv']:.1f})",
-   abs(o["P_harv"] - KR * v_r * F_pad) < 1e-3 * CLAMP)
+ok(f"paddle alone: P_harv = v_r F_pad = {KP * v_r * F_pad:.1f} W (got {o['P_harv']:.1f})",
+   abs(o["P_harv"] - KP * v_r * F_pad) < 1e-3 * CLAMP)
+
+print("[cs_hybrid] c2. paddle with an engine split of 0.5")
+c_ps = build(car_path({**HYB, **PAD, 111: 0.5}))              # open differentials (112, 113 = 1)
+SPL, F_p = 0.5, 0.1 * F_ref
+Rf, Rr = float(c_ps.cs.tyre.fl["radius"]), float(c_ps.cs.tyre.rl["radius"])
+xs_ = state(c_ps, VX)
+o = at(c_ps, xs_, [0.0, 0.0, 0.0, 0.0, 0.1])
+v_pad_hand = (1.0 - SPL) * v_r + SPL * v_f                   # the paddle speed of the split (v_pad = v_mix(split))
+ok(f"paddle split 0.5: P_hp = 0.8 v_pad F_pad at v_pad = 0.5 v_r + 0.5 v_f (got {o['P_harv']:.1f} W, "
+   f"hand {KP * v_pad_hand * F_p:.1f} W)", abs(o["P_harv"] - KP * v_pad_hand * F_p) < 1e-3 * CLAMP)
+# Front and rear forces of the paddle, from the wheel speed derivatives: the tyre force depends on the state only,
+# so the change of dOm/dt between two inputs is the change of the wheel torque over Jw (dx = sf dOm/dt / x_s).
+u0, u1 = [0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.1]
+dd = dx_at(c_ps, xs_, u1) - dx_at(c_ps, xs_, u0)
+sf_ = at(c_ps, xs_, u0)["sf"]
+Jw = float(c_ps.vp.Jw)
+F_front = 2.0 * Jw * dd[5] / sf_ / Rf                        # both front wheels (open differential: half each)
+F_rear = 2.0 * Jw * dd[7] / sf_ / Rr
+ok(f"paddle front force -split F_pad = {-SPL * F_p:.4f} N (model {F_front:.4f} N, rel {rel(F_front, -SPL * F_p):.1e})",
+   rel(F_front, -SPL * F_p) < 1e-9)
+ok(f"paddle rear force -(1 - split) F_pad = {-(1 - SPL) * F_p:.4f} N (model {F_rear:.4f} N, rel "
+   f"{rel(F_rear, -(1 - SPL) * F_p):.1e})", rel(F_rear, -(1 - SPL) * F_p) < 1e-9)
+ok("paddle: the two front wheels take the same force", abs(dd[5] - dd[6]) <= 1e-12 * max(abs(dd[5]), 1e-12))
 
 print("[cs_hybrid] d. net-force harvest")
 c_b = np.sqrt(1e-3 * F_ref * B)                       # drive = brake on the BrTh_1 bound
@@ -504,10 +564,13 @@ for name, cids, maps, cid in (
     ok(f"{name} raises ValueError naming cid {cid}", msg != "silent" and str(cid) in msg)
 ok("183 = 2 loads (a deploy scale above 1 is allowed)", msg_of(car_path({**HYB, 183: 2.0})) == "silent")
 ok("182 = 1 and 836 = 0 load (the bounds themselves)", msg_of(car_path(HYB)) == "silent")
+no112 = msg_of(car_path(HYB, drop=(112,)))
+ok(f"front deploy share (464 = 1, 465 = 0.3) with no cid 112 raises, naming cid 112 ({no112[:60]!r})",
+   no112 != "silent" and "112" in no112)
 
 print("[cs_hybrid] g. skip rule")
-ON_OFF = {177: 0, 535: 1, 590: 1, 573: 1, 589: 1, 179: CLAMP, 180: S_DEP, 181: 4e5, 182: 1.0, 183: 1.0, 836: 0.0,
-          464: 1, 465: 0.3, 466: 1}
+ON_OFF = {177: 0, 535: 1, 590: 1, 179: CLAMP, 180: S_DEP, 181: 4e5, 182: 1.0, 183: 1.0, 836: 0.0,
+          464: 1, 465: 0.3, 466: 1}                 # the paddle (573, 589) is refused with 177 off: see below
 c_off = build(car_path(ON_OFF))
 ok("177 = 0: nu 3, no lap rows (n_lap absent or 0), no hybrid rows",
    c_off.m23.nu == 3 and int(c_off.data["nlp"]["structure"].get("n_lap", 0)) == 0
@@ -516,6 +579,9 @@ ok("177 = 0: no data['hybrid'], no deploy or paddle row", "hybrid" not in c_off.
    and not {"deploy_pw", "deploy_brk", "paddle_pw", "paddle_drv"} & set(c_off.data["constraints"]))
 ok("177 = 0 keeps the base graph (dx, sf hash equal to the car without hybrid records)",
    graph_hash(car_path(ON_OFF)) == graph_hash(car_path()))
+pad_off = msg_of(car_path({**ON_OFF, 573: 1, 589: 1}))
+ok(f"177 off with the paddle (573, 589 = 1) raises, naming cid 573 ({pad_off[:60]!r})",
+   pad_off != "silent" and "573" in pad_off)
 
 print("[cs_hybrid] h. warm starts")
 P_H, P_B = car_path(HYB), car_path()
@@ -537,9 +603,9 @@ ok(f"limit_prices runs on the hybrid result (keys {sorted(lp)[:3]}...)", isinsta
 
 print("[cs_hybrid] j. data['hybrid'] and the channels")
 hyb = c_q.data["hybrid"]
-ok("data['hybrid'] holds E_dep and E_harv in J, and the cids 177, 590 and 589",
-   all(k in hyb for k in ("E_dep", "E_harv", "cid177", "cid590", "cid589")) and hyb["cid590"] == 1.0
-   and hyb["cid589"] == 1.0)
+ok("data['hybrid'] holds E_dep and E_harv in J, and the cids 177, 590, 589 and 973",
+   all(k in hyb for k in ("E_dep", "E_harv", "cid177", "cid590", "cid589", "cid973")) and hyb["cid590"] == 1.0
+   and hyb["cid589"] == 1.0 and hyb["cid973"] == 1.0)
 ok(f"data['hybrid'] energies equal the quadrature (E_dep rel {rel(hyb['E_dep'], E_dep_q):.1e}, "
    f"E_harv rel {rel(hyb['E_harv'], E_harv_q):.1e})",
    rel(hyb["E_dep"], E_dep_q) < 1e-9 and rel(hyb["E_harv"], E_harv_q) < 1e-9)
@@ -685,7 +751,7 @@ def deploy_steps(q, label, e_want, s_want):
 print("[cs_hybrid] k. the hybrid layer in the QSS (MLTP_screen)")
 # (a) skip rule: cid 177 = 0 gives the lap of the car without the hybrid cids, and no record
 q_none = qss(qss_car_path({}))
-q_off = qss(qss_car_path({177: 0, 535: 1, 590: 1, 573: 1, 589: 1, 178: 1, 181: 1000.0}))
+q_off = qss(qss_car_path({177: 0, 535: 1, 590: 1, 178: 1, 181: 1000.0}))
 ok(f"177 = 0 (other hybrid cids on): the QSS lap equals the car without them ({q_off.data.lap_time!r})",
    q_off.data.lap_time == q_none.data.lap_time and "hybrid" not in vars(q_off.data) and q_off.envelope.hybrid is None)
 
@@ -714,6 +780,10 @@ ok(f"E_store = min(E_harv, cid 181) + cid 836 ({h0['E_store']:.3f} J, within 1 J
 ok(f"E_dep <= E_store + 1 J ({h0['E_dep']:.3f} J)", h0["E_dep"] <= h0["E_store"] + 1.0)
 ok(f"mode 0: the lap below the cid-177-off lap ({q0.data.lap_time:.5f} s, base {base_lap():.5f} s)",
    q0.data.lap_time < base_lap())
+q_973 = qss(hy_car({178: 0, 973: 0}))
+ok(f"973 = 0 (177, 535, 590 on): QSS E_harv {q_973.data.hybrid['E_harv']!r} J and E_dep {q_973.data.hybrid['E_dep']!r} J, "
+   "both 0", q_973.data.hybrid["E_harv"] == 0.0 and q_973.data.hybrid["E_dep"] == 0.0)
+ok(f"973 = 1: the QSS harvest returns ({h0['E_harv']:.1f} J)", h0["E_harv"] > 0.0)
 
 # (c) mode 1 runs, zones, sweeps
 q1 = qss(hy_car({178: 1}))
@@ -742,6 +812,41 @@ ok(f"181 = 0: no store, no deploy, the base lap ({q_z.data.lap_time:.9f} s)",
 q_nh = qss(hy_car({178: 0, 590: 0}))
 ok(f"590 = 0 (no paddle): E_harv 0 and the base lap ({q_nh.data.lap_time:.9f} s)",
    q_nh.data.hybrid["E_harv"] == 0.0 and abs(q_nh.data.lap_time - base_lap()) < 1e-9)
+
+# (e2) carry: a zone that cannot spend its budget hands it on (mode 1). The chicane track has four accel zones; the
+# first (25 m, out of the first corner) gets a budget share above its own deploy capacity, so the rest goes on.
+CHIC = build_track_install(os.path.join(TMP.name, "ChassisSim_chicane"), "Synth Chicane",
+                           [(80, 130, 60), (200, 215, 12), (420, 450, 40)])
+
+
+def zone_caps(q_):
+    """Zones of the profile without deploy, and the deploy each zone spends alone with an unlimited budget [J]."""
+    env_ = q_.envelope
+    hy_ = env_.hybrid
+    env_.hybrid = None
+    try:
+        p_ = G.march(env_, q_.track.s, q_.track.k, VI_QSS)
+    finally:
+        env_.hybrid = hy_
+    zs = G._hybrid_zones(p_["v_fwd"], p_["v_bwd"])
+    lut_, kl_, vap = G._lut(env_), np.abs(p_["k"]).tolist(), p_["v_apex"].tolist()
+    v0_ = min(VI_QSS, vap[0])
+    return zs, [G._hybrid_pass(env_, lut_, kl_, vap, v0_, p_["ds"], [z], 1e9, p_["v_bwd"])[1] for z in zs]
+
+
+zs_c, caps_c = zone_caps(qss(hy_car({178: 1, 181: 0.0}), circ="Synth Chicane", install=CHIC))
+lens_c = [b - a for a, b in zs_c]
+E_t = 0.9 * sum(caps_c)                              # a store below the total deploy capacity
+share1 = E_t * lens_c[0] / sum(lens_c)               # mode 1 share of the first zone
+no_carry = sum(min(E_t * n / sum(lens_c), c) for n, c in zip(lens_c, caps_c))   # spend if no zone carried its budget
+q_c = qss(hy_car({178: 1, 181: 0.0, 836: E_t}), circ="Synth Chicane", install=CHIC)
+hc = q_c.data.hybrid
+ok(f"chicane: {len(zs_c)} zones, the first {lens_c[0]} m cannot spend its share ({share1:.0f} J > cap {caps_c[0]:.0f} J)",
+   len(zs_c) > 1 and share1 > caps_c[0])
+ok(f"carry: mode 1 spends the whole store ({hc['E_dep']:.1f} J of {hc['E_store']:.1f} J)",
+   abs(hc["E_store"] - E_t) < 1.0 and abs(hc["E_dep"] - hc["E_store"]) < 1.0)
+ok(f"the spend beats the no-carry sum of the zones ({hc['E_dep']:.0f} J > {no_carry:.0f} J)",
+   hc["E_dep"] > no_carry + 1e4)
 
 # (f) ValueErrors name the cid; a car with 177 off is silent
 m178 = raised(qss, hy_car({178: 2}))
@@ -807,9 +912,9 @@ def vendor(cs_dir):
     models = os.path.join(os.path.dirname(cs_dir), "Models")
     gp3 = sorted(glob.glob(os.path.join(glob.escape(models), "GP3*", "*Eastern*", "def*.car")))
     ok("GP3 car file found by folder glob", bool(gp3))
-    body = [r for r in carfile.decode(gp3[0]) if r[1] not in (177, 535, 590) and r[1] != carfile.END_CID]
+    body = [r for r in carfile.decode(gp3[0]) if r[1] not in (177, 535, 590, 973) and r[1] != carfile.END_CID]
     path = os.path.join(CARS_DIR, "gp3_hybrid.car")
-    carfile.write(body + [(6, 177, 1), (6, 535, 1), (6, 590, 1), (carfile.END_TAG, carfile.END_CID, None)], path)
+    carfile.write(body + [(6, 177, 1), (6, 535, 1), (6, 590, 1), (6, 973, 1), (carfile.END_TAG, carfile.END_CID, None)], path)
     c = quiet(MLTP, car=f"chassissim:{path}", circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir,
               physics="corrected", save=False, plot=False, linear_solver="mumps", results_dir=RES)
     ok(f"the hybrid GP3 copy builds with nu 4 (got {c.m23.nu}, keys {c.input_keys})",
@@ -841,9 +946,9 @@ def vendor_qss(cs_dir):
         ok(f"{label} QSS lap at {circ} unchanged: {lap!r} (tol 1e-9)", abs(lap - want) < 1e-9)
     recs = carfile.decode(str(gp3[0]))
     for mode in (0, 1):
-        body = [r for r in recs if r[1] not in (177, 178, 535, 590) and r[1] != carfile.END_CID]
+        body = [r for r in recs if r[1] not in (177, 178, 535, 590, 973) and r[1] != carfile.END_CID]
         path = os.path.join(CARS_DIR, f"gp3_hyb_m{mode}.car")
-        carfile.write(body + [(6, 177, 1), (6, 178, mode), (6, 535, 1), (6, 590, 1),
+        carfile.write(body + [(6, 177, 1), (6, 178, mode), (6, 535, 1), (6, 590, 1), (6, 973, 1),
                               (carfile.END_TAG, carfile.END_CID, None)], path)
         c = qss(path, circ="Eastern Creek", install=cs_dir)
         h = c.data.hybrid

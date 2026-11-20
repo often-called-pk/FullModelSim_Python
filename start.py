@@ -39,6 +39,15 @@ HSL_PROBE = (
     "'Coin-HSL: found, does not load: solves use MUMPS' if p else "
     "'Coin-HSL: not found, solves use MUMPS (slower, no licence)')"
 )
+GUI_HSL = (
+    "import os\n"
+    "try:\n"
+    "    from app.paths import settings\n"
+    "    v = settings().value('hsl_dir') or ''\n"
+    "    print('GUI Coin-HSL field: ' + (v or 'not set') + ('' if not v or os.path.isdir(v) else ' (not a folder)'))\n"
+    "except ImportError:\n"
+    "    print('GUI Coin-HSL field: not checked (PySide6 does not import)')\n"
+)
 
 
 def fail(message, hint):
@@ -162,6 +171,7 @@ def main():
 
     print("[5/8] Optional parts (they never stop the setup)")
     run_py(uv, "python", "-c", HSL_PROBE)
+    run_py(uv, "python", "-c", GUI_HSL)
     cs = os.environ.get("CHASSISSIM_DIR")
     if not cs:
         print("CHASSISSIM_DIR: not set (ChassisSim circuits and cars are unavailable)")

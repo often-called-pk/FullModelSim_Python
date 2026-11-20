@@ -18,13 +18,17 @@ def ok(name, cond):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
     assert cond, name
 
+# One root for every temp folder of this file. cleanup() at the end removes it.
+# ignore_cleanup_errors: Windows cannot delete a library that this process loaded.
+_TMP = tempfile.TemporaryDirectory(prefix="hsl_", ignore_cleanup_errors=True)
+
 # ---- 1. resolve_hsl_dir precedence: COINHSL_DIR > explicit > frozen root > None ----
 # The seed folder is gone: no module default, so an unset env and no explicit folder resolve to None.
 print("resolve_hsl_dir")
 _saved_env = os.environ.pop("COINHSL_DIR", None)
 try:
-    real_a = tempfile.mkdtemp(prefix="hsl_a_")   # stands in for an explicit dir
-    real_b = tempfile.mkdtemp(prefix="hsl_b_")   # stands in for COINHSL_DIR
+    real_a = tempfile.mkdtemp(prefix="hsl_a_", dir=_TMP.name)   # stands in for an explicit dir
+    real_b = tempfile.mkdtemp(prefix="hsl_b_", dir=_TMP.name)   # stands in for COINHSL_DIR
     missing = os.path.join(real_a, "no_such_dir")
     ok("no module seed (H._DEFAULT_HSL_DIR is gone)", not hasattr(H, "_DEFAULT_HSL_DIR"))
     ok("env unset, explicit existing -> explicit",
@@ -44,7 +48,7 @@ finally:
 print("missing explicit folder")
 _saved_env = os.environ.pop("COINHSL_DIR", None)
 try:
-    _gone = os.path.join(tempfile.mkdtemp(prefix="hsl_gone_"), "coinhsl")
+    _gone = os.path.join(tempfile.mkdtemp(prefix="hsl_gone_", dir=_TMP.name), "coinhsl")
     H.resolve_hsl_dir(_gone)                      # records the folder that was asked for
     with warnings.catch_warnings(record=True) as _seen:
         warnings.simplefilter("always")
@@ -55,6 +59,24 @@ try:
        _out["ipopt"]["linear_solver"] == "mumps" and "hsllib" not in _out["ipopt"])
     ok("the warning names the missing folder",
        any(_gone in m and "does not exist" in m for m in _msgs))
+    # COINHSL_DIR wins and holds no library: the warning names it first, then the missing explicit folder
+    _envdir = tempfile.mkdtemp(prefix="hsl_env_", dir=_TMP.name)
+    os.environ["COINHSL_DIR"] = _envdir
+    _used = H.resolve_hsl_dir(_gone)
+    with warnings.catch_warnings(record=True) as _seen:
+        warnings.simplefilter("always")
+        H.apply_linear_solver({}, linear_solver="ma57", hsl_dir=_used, probe=lambda *_: True)
+    del os.environ["COINHSL_DIR"]
+    _m = str(_seen[-1].message)
+    ok("COINHSL_DIR without a library: the warning names it before the missing explicit folder",
+       _used == os.path.abspath(_envdir) and "has no library" in _m and "does not exist" in _m
+       and -1 < _m.find(_used) < _m.find(_gone))
+    H.resolve_hsl_dir(_used)
+    with warnings.catch_warnings(record=True) as _seen:
+        warnings.simplefilter("always")
+        H.apply_linear_solver({}, linear_solver="ma57", hsl_dir=_used, probe=lambda *_: True)
+    ok("no missing explicit folder: the warning names only the folder in use",
+       _used in str(_seen[-1].message) and "does not exist" not in str(_seen[-1].message))
 finally:
     if _saved_env is not None:
         os.environ["COINHSL_DIR"] = _saved_env
@@ -68,14 +90,14 @@ _saved_env = os.environ.pop("COINHSL_DIR", None)
 _saved_frozen = getattr(sys, "frozen", None)
 _saved_meipass = getattr(sys, "_MEIPASS", None)
 try:
-    meipass = tempfile.mkdtemp(prefix="hsl_meipass_")   # stands in for the bundle root
+    meipass = tempfile.mkdtemp(prefix="hsl_meipass_", dir=_TMP.name)   # stands in for the bundle root
     bundle_hsl = os.path.join(meipass, "hsl")
     os.mkdir(bundle_hsl)                                 # the spec's hsl subfolder
     open(os.path.join(bundle_hsl, "libhsl.so"), "wb").close()
     open(os.path.join(meipass, "libhsl.so"), "wb").close()   # root copy: not a candidate
-    bare = tempfile.mkdtemp(prefix="hsl_bare_")          # a frozen root without hsl/
+    bare = tempfile.mkdtemp(prefix="hsl_bare_", dir=_TMP.name)          # a frozen root without hsl/
     open(os.path.join(bare, "libhsl.so"), "wb").close()
-    explicit = tempfile.mkdtemp(prefix="hsl_explicit_")
+    explicit = tempfile.mkdtemp(prefix="hsl_explicit_", dir=_TMP.name)
     sys._MEIPASS = meipass
 
     # attr present but not frozen -> _MEIPASS/hsl must be ignored
@@ -169,7 +191,7 @@ else:
     if _CC is None:
         print("  [SKIP] chain checks: no gcc on PATH")
     else:
-        _chain = tempfile.mkdtemp(prefix="hsl_chain_")
+        _chain = tempfile.mkdtemp(prefix="hsl_chain_", dir=_TMP.name)
         _build_chain(_chain)
         # control: in a child process the chain does not load without the preload
         _probe = subprocess.run(
@@ -189,7 +211,7 @@ else:
         ok("Linux: PATH is not touched", os.environ.get("PATH") == _path0)
 
         # a folder without libhsl loads nothing
-        _nolib = tempfile.mkdtemp(prefix="hsl_nolib_")
+        _nolib = tempfile.mkdtemp(prefix="hsl_nolib_", dir=_TMP.name)
         _build_chain(_nolib, with_hsl=False)
         H.register_hsl_dll_dir(_nolib)
         ok("a folder without libhsl loads nothing", _maps_of(_nolib) == set())
@@ -198,7 +220,7 @@ else:
 # and the solve falls back to MUMPS (section 5 runs the solve). Runs on Linux only.
 _unread = None
 if not sys.platform.startswith("win"):
-    _unread = tempfile.mkdtemp(prefix="hsl_unread_")
+    _unread = tempfile.mkdtemp(prefix="hsl_unread_", dir=_TMP.name)
     with open(os.path.join(_unread, "libhsl.so"), "wb") as fh:
         fh.write(b"not an ELF object, so no load can succeed")
     os.chmod(_unread, 0o311)                   # search and write, no read: listing the folder fails
@@ -210,7 +232,7 @@ if not sys.platform.startswith("win"):
 
 # ---- 2. hsllib_path ----------------------------------------------------------
 print("hsllib_path")
-_d = tempfile.mkdtemp(prefix="hsl_lib_")
+_d = tempfile.mkdtemp(prefix="hsl_lib_", dir=_TMP.name)
 ok("empty dir -> None", H.hsllib_path(_d) is None)
 _lib = os.path.join(_d, "libhsl.dll")
 open(_lib, "wb").close()
@@ -266,7 +288,7 @@ _nlp = {"x": _x, "f": (_x - 1) ** 2, "g": _x}
 # (a) a missing folder + ma57 -> must NOT crash (key popped), must solve (mumps), must name the folder
 _saved_env = os.environ.pop("COINHSL_DIR", None)
 try:
-    _gone5 = os.path.join(tempfile.mkdtemp(prefix="hsl_gone5_"), "coinhsl")
+    _gone5 = os.path.join(tempfile.mkdtemp(prefix="hsl_gone5_", dir=_TMP.name), "coinhsl")
     with warnings.catch_warnings(record=True) as _seen5:
         warnings.simplefilter("always")
         S = _make_solver(ca, _nlp, {"ipopt": {"linear_solver": "ma57", "print_level": 0,
@@ -333,4 +355,7 @@ c3 = Ctx(); userOpts(c3, circuit="Sturn", linear_solver="ma97", hsl_dir=_d)
 ok("ma97 + hsl_dir threaded",
    c3.opts["ipopt"]["linear_solver"] == "ma97" and c3.opts["_hsl_dir"] == _d)
 
+if _unread is not None:
+    os.chmod(_unread, 0o700)                   # else cleanup cannot list the folder
+_TMP.cleanup()
 print("ALL HSL TESTS PASSED")

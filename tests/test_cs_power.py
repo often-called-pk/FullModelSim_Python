@@ -272,6 +272,21 @@ HYB_VALID = [(6, 177, 1), (6, 535, 1), (6, 590, 1), (1, 179, 60000.0), (1, 180, 
 ok("a car with 177 = 1 and valid hybrid values loads (cids 177, 535, 573 are no refusal)",
    power_msg(write_car(HYB_VALID), INST) == "silent")
 
+print("[cs_power] brake split, tyre-limit split and paddle gates")
+ok("brake left share 160 = 0.6 raises naming cid 160",
+   raises_cid(power_msg(write_car([(1, 160, 0.6)]), INST), 160))
+ok("brake left share 160 = 0.5 loads", power_msg(write_car([(1, 160, 0.5)]), INST) == "silent")
+ok("cid 853 = 1 (brake split by the tyre limit) raises naming cid 853",
+   raises_cid(power_msg(write_car([(6, 853, 1)]), INST), 853))
+ok("cid 853 = 0 loads", power_msg(write_car([(6, 853, 0)]), INST) == "silent")
+no177 = power_msg(write_car([(6, 573, 1), (6, 589, 1)]), INST)
+ok("paddle 573 = 589 = 1 with 177 off raises naming cid 573 and cid 177",
+   "573" in no177 and raises_cid(no177, 177))
+PADDLE = [r for r in HYB_VALID if r[1] != 182] + [(6, 573, 1), (6, 589, 1)]
+ok("paddle on with regen scale 182 = 0.8 raises naming cid 182",
+   raises_cid(power_msg(write_car(PADDLE + [(1, 182, 0.8)]), INST), 182))
+ok("paddle on with regen scale 182 = 1 loads", power_msg(write_car(PADDLE + [(1, 182, 1.0)]), INST) == "silent")
+
 print("[cs_power] text and engine-brake table")
 for cid in (897, 906):
     ok(f"cid {cid} with a file name raises naming the cid",
@@ -394,6 +409,30 @@ q_on = quiet(MLTP_screen, circuit=opts["circuit"], car=opts["car"], physics="cor
              results_dir=res, chassissim_dir=INST_ON)
 ok("the QSS screen of the Eng Corr car also stores data['car_atmos']",
    dget(q_on.data, "car_atmos") is not None and rel(dget(q_on.data, "car_atmos"), HAND) < 1e-9)
+
+# (g) continue_from='auto' (B5): the plain default of the car seeds the Eng Corr run, which carries the car_atmos knob.
+# The default file holds no car_atmos knob, so default_source accepts it. Only the car_file tag is in its name.
+def solved(ca_, nlp, opts, info=None):
+    """The fake solver with the status of a converged solve: continue_from takes only such a default."""
+    sv = fake(ca_, nlp, opts, info)
+    sv.stats = lambda: {"iter_count": 0, "return_status": "Solve_Succeeded"}
+    return sv
+
+
+res_g = os.path.join(TMP.name, "results_g")
+os.makedirs(res_g)
+g_opts = dict(opts, results_dir=res_g)
+T._make_solver = solved
+try:
+    quiet(MLTP, chassissim_dir=INST, **g_opts)                 # the plain default, status Solve_Succeeded
+    c_cont = quiet(MLTP, chassissim_dir=INST_ON, continue_from="auto", **g_opts)
+finally:
+    T._make_solver = fake
+ok(f"(g) continue_from auto with car_atmos: the plain default seeds full+duals (got {c_cont.elapsed['warm_start']})",
+   c_cont.elapsed["warm_start"] == "full+duals")
+ok("(g) the source is the plain default file, the car_atmos run is saved under its own tag",
+   c_cont.data.provenance["run"]["source"] == os.path.basename(c_plain.out_path)
+   and knob_tag(k_on) in os.path.basename(c_cont.out_path))
 
 
 # ---- vendor -----------------------------------------------------------------------------------------

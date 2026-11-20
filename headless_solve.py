@@ -77,6 +77,9 @@ def build_solve_kwargs(cfg, resource_root_dir):
 
 
 def main(argv):
+    for stream in (sys.stdout, sys.stderr):    # a character outside the console code page must not stop a solve
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     if not argv:
         print("usage: headless_solve.py <cfg.json>", file=sys.stderr)
         return 2

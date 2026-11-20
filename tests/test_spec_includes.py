@@ -8,7 +8,7 @@ def ok(name, cond):
     assert cond, name
 
 spec = open(os.path.join(_bootstrap.ROOT, "build", "app.spec")).read()
-for token in ("Circuits", "Data", "app/presets", "casadi", "PySide6", "headless_solve"):
+for token in ("Circuits", "Data", "app/presets", "casadi", "headless_solve"):
     ok(f"spec references {token}", token in spec)
 ok("spec sets app name", "name='FullModelSim'" in spec or 'name="FullModelSim"' in spec)
 # F2: a frozen exe re-runs itself for every multiprocessing worker (MLTP_screen.screen_batch with
@@ -44,6 +44,16 @@ def _assigned(name):
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
             return node.value
     raise AssertionError(f"spec has no {name} assignment")
+
+# The PyInstaller hooks of PySide6 collect the Qt parts that the app imports. collect_all("PySide6")
+# would bundle all of Qt.
+_collected = [ast.literal_eval(n.iter) for n in ast.walk(spec_tree) if isinstance(n, ast.For)
+              and any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "collect_all" for c in ast.walk(n))]
+ok("the collect_all tuple names casadi and not PySide6",
+   len(_collected) == 1 and "casadi" in _collected[0] and "PySide6" not in _collected[0])
+ok("no collect_all call names PySide6 directly",
+   not any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "collect_all" and "PySide6" in _str_consts(c)
+           for c in ast.walk(spec_tree)))
 
 circuit_files = ast.literal_eval(_assigned("CIRCUIT_FILES"))
 ok("CIRCUIT_FILES has no duplicates", len(circuit_files) == len(set(circuit_files)))

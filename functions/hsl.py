@@ -205,8 +205,14 @@ def apply_linear_solver(opts, *, linear_solver, hsl_dir, probe=probe_linear_solv
             ip.setdefault("ma57_automatic_scaling", "yes")
         return opts
 
-    why = (f"the Coin-HSL folder {_bad_explicit} does not exist"
-           if lib is None and _bad_explicit else f"hsl_dir={hsl_dir!r}, lib={lib!r}")
+    # The folder that resolve_hsl_dir used comes first, then a missing explicit folder.
+    why = []
+    if hsl_dir:
+        why.append(f"the Coin-HSL folder {hsl_dir} has no library" if lib is None
+                   else f"the library {lib} does not load")
+    if _bad_explicit:
+        why.append(f"the Coin-HSL folder {_bad_explicit} does not exist")
+    why = ", and ".join(why) or "no Coin-HSL folder is set"
     warnings.warn(
         f"HSL linear_solver '{linear_solver}' unavailable "
         f"({why}); falling back to MUMPS.",

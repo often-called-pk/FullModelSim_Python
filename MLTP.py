@@ -864,7 +864,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
         hybrid = {"E_dep": _lap_int(vehicle_full["P_dep"]), "E_harv": _lap_int(vehicle_full["P_harv"]),
                   **{f"cid{c}": float(v) for c, v in ((177, h_.on), (178, h_.mode), (179, h_.clamp_regen), (180, h_.scale_deploy),
                                                       (181, h_.e_cap), (182, h_.k_regen), (183, h_.k_deploy), (836, h_.e_free),
-                                                      (535, h_.use_brake_maps), (590, h_.gate_brake),
+                                                      (535, h_.use_brake_maps), (590, h_.gate_brake), (973, h_.blend_brake),
                                                       (573, h_.use_paddle), (589, h_.gate_paddle),
                                                       (464, h_.blend_on), (465, h_.blend), (466, h_.map_on),
                                                       (870, h_.regen_front_on), (871, h_.regen_front_share)) if v is not None}}

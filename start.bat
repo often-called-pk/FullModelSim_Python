@@ -1,4 +1,5 @@
 @echo off
+setlocal
 rem One command setup for Windows. Extra arguments go to start.py.
 cd /d "%~dp0"
 py -3 --version >nul 2>&1

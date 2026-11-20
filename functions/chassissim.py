@@ -222,18 +222,20 @@ CAR_FIELDS = {
     161: ("engine.brake_table", (RPM, 1.0)),
     # Hybrid layer (P4). 177 master, 178 deploy mode, 179 regen clamp [W], 180 deploy scale [W], 181 energy cap [J],
     # 182 regen scale, 183 deploy scale after the map, 836 free energy offset, 590 brake regen gate, 589 paddle gate.
+    # 973 = brake regen blend: ChassisSim cuts the friction brake for the regen only when it is on (absent = off).
     # 870 = 1 sends the regen front share 871 to the front axle (0: rear axle only).
     # Deploy maps 467 (front) and 468 (rear): x engine speed, z throttle / 100, data = fraction of cid 180.
     **{c: (f"hybrid.{n}", 1.0) for c, n in ((177, "on"), (178, "mode"), (179, "clamp_regen"), (180, "scale_deploy"),
                                              (181, "e_cap"), (182, "k_regen"), (183, "k_deploy"), (836, "e_free"),
                                              (590, "gate_brake"), (535, "use_brake_maps"), (573, "use_paddle"),
-                                             (589, "gate_paddle"),
+                                             (589, "gate_paddle"), (973, "blend_brake"),
                                              (464, "blend_on"), (465, "blend"), (466, "map_on"),
                                              (870, "regen_front_on"), (871, "regen_front_share"))},
     467: ("hybrid.map_front", (RPM, 1.0, 1.0)), 468: ("hybrid.map_rear", (RPM, 1.0, 1.0)),
     # Features that the model refuses when on: brake ramp 571, split recompute 598, push-to-pass 649, torque
     # multiplier maps 520, throttle trims 419 / 423 / 426 / 428, battery plugin 897 / 906, wake map flags 876 to 879.
-    **{c: (f"refused.c{c}", 1.0) for c in (571, 598, 649, 520, 419, 423, 426, 428, 897, 906, *range(876, 880))},
+    # 853 = brake split by the tyre limit of each wheel (ChassisSim then ignores cid 160).
+    **{c: (f"refused.c{c}", 1.0) for c in (571, 598, 853, 649, 520, 419, 423, 426, 428, 897, 906, *range(876, 880))},
     112: ("diff.front_type", 1.0), 113: ("diff.rear_type", 1.0), 114: ("diff.front_map", 1.0),
     116: ("diff.rear_map", 1.0),
     107: ("brake.force", 1.0), 108: ("brake.front_bias", 1.0), 109: ("brake.delay", 1.0),
@@ -487,10 +489,10 @@ def flag_on(v):
 
 def hybrid_gates(cs):
     """Return (deploy, brake regen, paddle regen) of the hybrid layer, as ChassisSim gates them.
-    Deploy needs cid 177. Brake regen needs 177, 535 and 590. Paddle regen needs 177, 573 and 589."""
+    Deploy needs cid 177. Brake regen needs 177, 535, 590 and 973. Paddle regen needs 177, 573 and 589."""
     h = cs.hybrid
     dep = flag_on(h.on)
-    return (dep, dep and flag_on(h.use_brake_maps) and flag_on(h.gate_brake),
+    return (dep, dep and flag_on(h.use_brake_maps) and flag_on(h.gate_brake) and flag_on(h.blend_brake),
             dep and flag_on(h.use_paddle) and flag_on(h.gate_paddle))
 
 
@@ -535,9 +537,21 @@ def power_refusals(cs):
                 if not (np.all(np.isfinite(d)) and np.all(d >= 0)):
                     raise ValueError(f"The car file {cs.path} holds a deploy map (cid {c}) with a value that is "
                                      "not a number or is below 0. Each map value must be 0 or more.")
+    ls = cs.brake.left_share
+    if ls is not None and ls != 0.5:
+        raise ValueError(f"The car file {cs.path} holds a brake left share (cid 160) of {ls}. "
+                         "The car model gives each side 0.5 of the brake force. Use 0.5.")
+    if on(h.use_paddle) and on(h.gate_paddle) and not dep:
+        raise ValueError(f"The car file {cs.path} sets the paddle regen (cids 573 and 589) with the hybrid layer off "
+                         "(cid 177). The car model builds the paddle only in the hybrid layer. Set cid 177, or clear cid 573.")
+    if pad and h.k_regen not in (None, 1):
+        raise ValueError(f"The car file {cs.path} sets the paddle regen (cids 177, 573 and 589) with a regen scale "
+                         f"(cid 182) of {h.k_regen}. ChassisSim scales the paddle force and its energy together. "
+                         "The car model does not build that. Use a regen scale of 1.")
     for what, c, hit in (
             ("the brake ramp", 571, on(r.c571)),
             ("the per-step torque split recompute", 598, on(r.c598)),
+            ("the brake split by the tyre limit of each wheel", 853, on(r.c853)),
             *(("a battery plugin", c, _text_live(getattr(r, f"c{c}"))) for c in (897, 906)),
             ("push-to-pass", 649, on(r.c649)),
             ("the engine torque multiplier maps", 520, on(r.c520)),
@@ -569,7 +583,9 @@ def check_car(cs):
             ("brake", cs.brake, ("force", "front_bias")),
             ("tyre", cs.tyre, C)):
         need.update({f"{grp}.{n}": getattr(obj, n) for n in names})
-    if cs.engine.torque_split:      # a front drive share needs the front differential
+    h = cs.hybrid                   # the front deploy share is s_dep of vehModel_cs.hybrid_params
+    s_dep = flag_on(h.on) and flag_on(h.blend_on) and (h.blend or 0) > 0
+    if cs.engine.torque_split or s_dep:     # a front drive or deploy share needs the front differential
         need["diff.front_type"] = cs.diff.front_type
         if (cs.diff.front_type or 0) >= 4:      # ChassisSim clamps the front type at 4, so a higher type reads the map
             need["diff.front_map"] = cs.diff.front_map
@@ -589,7 +605,11 @@ def check_car(cs):
             need[f"aero.sp_{n}"] = getattr(a, f"sp_{n}")
     missing = sorted(k for k, v in need.items() if v is None)
     if missing:
-        raise ValueError(f"The car file {cs.path} lacks the fields {missing}. A ChassisSim car needs them.")
+        front = ""
+        if any(k.startswith("diff.front") for k in missing):
+            front = (" The front axle gets a drive force (torque split, cid 111, or hybrid deploy share, cids 464 and 465)."
+                     " It needs the front differential type (cid 112). A type of 4 or more also needs the front map (cid 114).")
+        raise ValueError(f"The car file {cs.path} lacks the fields {missing}. A ChassisSim car needs them.{front}")
 
 
 # vp keys that the car model reads. The car record wins for t, kt, Rw, f and the tyre, aero and engine data.

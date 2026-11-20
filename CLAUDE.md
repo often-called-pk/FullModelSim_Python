@@ -48,7 +48,8 @@ python -c "from MLTP_paramOptim import MLTP_paramOptim; MLTP_paramOptim(circuit=
 
 **Using Coin-HSL (HSL linear solver).** The solve defaults to IPOPT's HSL `ma57`. Provide a
 Coin-HSL library (the MinGW/`libgfortran5` `CoinHSL_jll` build matches the casadi wheel's ABI)
-by setting `COINHSL_DIR` to its `bin/` folder, the Coin-HSL folder field of the GUI (Advanced tab) or
+by setting `COINHSL_DIR` to its folder (Windows: `bin/` of the MinGW build, with `libhsl.dll`. Linux: `lib/` of the
+`x86_64-linux-gnu-libgfortran5` build, with `libhsl.so`), the Coin-HSL folder field of the GUI (Advanced tab) or
 `hsl_dir=`. `resolve_hsl_dir` takes the first existing folder of `COINHSL_DIR`, the field or kwarg, and the `hsl`
 folder of a frozen bundle. There is no seeded default (G2 and G3). On Linux it preloads the other
 libraries of the folder (RTLD_LOCAL) only when libhsl does not load alone. The directory is registered on the Windows DLL path and probed once; if HSL
@@ -155,9 +156,9 @@ it), so a test never writes the real QSettings of the user.
 - `test_cs_rubber.py`: ChassisSim phase 2 T11 and phase 2b T15. Rubber gap flag 1 (gap as stored) and flag 0 (gap less the static deflection, a hand value), gap 0 gives no rubber node. NLP and QSS share the gap. Flag 2 and a zero spring rate raise ValueError. Hysteresis: the loading curve at rest and in compression, the unloading curve in extension, and passivity (dF/dxsdot >= 0). Also the curve checks, the raise for flag 2 and for the third-spring flags, and the QSS loading curve. Vendor section: the GP3, F2 and GT3 gaps, the F3 refusal, the F2 and GT3 builds, every shipped car with hysteresis off
 - `test_cs_third.py`: ChassisSim phase 2b T12. The third element: the heave is the third motion ratio of the mean wheel travel. Each wheel gets half the third force through its motion ratio. The rubber onset by flag (flag 1 the gap, flag 0 the gap less the static heave). A gap of 0 or of 0.5 m and more gives no third rubber. Also the damper by the sign of the heave velocity and the QSS axle table. Vendor section: the F2 builds with a rear third element (effective gap 13.615 mm, log 13.63 mm), and the GP3 has none
 - `test_cs_stbi.py`: ChassisSim phase 2b T16. `stbi_index` against the hand formula (wheelbase divisor, smooth floor). The channel below the cap and at the clipped operating point past it, and the sign (a stiffer rear gives a lower index). The QSS map cases: the flag off or a zero map change nothing. A map of 0.9 gives apex speeds x0.9 below the speed cap. A map of 1.0 gives the same lap, and axes that do not increase raise. Also `MLTP_screen` on a live-map car and the channel of a fake-IPOPT build. Vendor section: the GP3 builds with the channel. Set `CS_STBI_SEED_DIR` to a folder with a stored GP3 fixed-line result. Then the median of a seeded rebuild is within 2 points of the log (-8.83 %)
-- `test_cs_power.py`: ChassisSim phase 2c P1. Each refusal cid that is on raises ValueError naming the cid, and off, absent and NUL text load. The wake gate: maps 872 to 875 live or flags 876 to 879 not 0 raise, and cid 870 alone loads. The atmospheric factor of `Atmos_Cond.ini`: the hand value, the file name rule, the defaults and the errors. The knob `car_atmos` (setup tag, `data['car_atmos']`), and a factor of 1.0 changes no graph. Vendor section: 28 shipped car files load and 3 refuse (the FSAE loads, the WRX refuses), with the factor 1.0 for each
-- `test_cs_shift.py`: ChassisSim phase 2c P3. The shift band law on a synthetic car with a cut: v_g = rpm_limit R / ratio_g below the top gear. The band width is W = max((1 - minF) F t / m_eff, 3 m/s). The crossing time loss equals tau = (1 - minF) F t / (F - R). No band where F <= R. Delay 0 gives no band and the graph of a car without cut fields. MinF 1 gives no band, and minF outside [0, 1] raises ValueError. The QSS drive table = the raw envelope x (1 - sum c w) = the NLP F_env. The throttle channel stays in [0, 1]. Vendor section: the GT3 bands at 41.88, 50.76, 59.44 and 68.80 m/s, and its Adelaide QSS lap +0.137 s against delay 0. The GP3 and F2 laps do not change
-- `test_cs_hybrid.py`: ChassisSim phase 2c P4. The gates: 177 off gives no layer. 535 with 590 = 0 gives no brake harvest, and 573 with 589 = 0 gives no paddle input. A fake-IPOPT build: nu 3 / 4 / 5, the row names, the n_g growth, n_lap 2 and the lap-row bounds. Hand values: P_dep at the mixed wheel speed, the brake factor k, P_hb at and below the clamp, and the paddle harvest. Drive and brake that overlap, and drive and paddle that overlap, harvest less than 1 % of F v. The lap rows equal an independent quadrature (rel 1e-9). Also the ValueErrors, the skip rule (177 = 0), the warm starts, `nlp_index` and `limit_prices` on a hybrid result, and `data['hybrid']`. Phase 2c P5 (QSS section): the skip rule, the harvest against a scalar loop and the store. Modes 0 and 1, and a hand deploy step (e = s and e != s). Also the caps, the ValueErrors of cids 178 and 836, the seed rows of a hybrid car and the QSS `data['hybrid']`. Vendor section: every shipped car has 177 off, and a hybrid GP3 copy builds with nu 4 and the deploy front share 0.2. The base QSS laps do not change, and the hybrid GP3 copy gains 0.40 to 0.65 s in the QSS. The 4EM Sturn screen runs with casadi blocked
+- `test_cs_power.py`: ChassisSim phase 2c P1. Each refusal cid that is on raises ValueError naming the cid, and off, absent and NUL text load. The wake gate: maps 872 to 875 live or flags 876 to 879 not 0 raise, and cid 870 alone loads. The atmospheric factor of `Atmos_Cond.ini`: the hand value, the file name rule, the defaults and the errors. The knob `car_atmos` (setup tag, `data['car_atmos']`), and a factor of 1.0 changes no graph. Final review: cid 160 other than 0.5 and cid 853 not 0 raise. So do the paddle without cid 177 and a regen scale other than 1 with the paddle. `continue_from='auto'` with an atmos factor seeds full+duals from the plain default. Vendor section: 28 shipped car files load and 3 refuse (the FSAE loads, the WRX refuses), with the factor 1.0 for each
+- `test_cs_shift.py`: ChassisSim phase 2c P3. The shift band law on a synthetic car with a cut: v_g = rpm_limit R / ratio_g below the top gear. The band width is W = max((1 - minF) F t / m_eff, 3 m/s). The crossing time loss equals tau = (1 - minF) F t / (F - R). No band where F <= R. Delay 0 gives no band and the graph of a car without cut fields. MinF 1 gives no band, and minF outside [0, 1] raises ValueError. The QSS drive table = the raw envelope x (1 - sum c w) = the NLP F_env. The throttle channel stays in [0, 1]. A negative resistance fit gives depths below 1 / w_max. Vendor section: the GT3 bands at 41.88, 50.76, 59.44 and 68.80 m/s, and its Adelaide QSS lap +0.136 s against delay 0. The GP3 and F2 laps do not change
+- `test_cs_hybrid.py`: ChassisSim phase 2c P4. The gates: 177 off gives no layer. 535 with 590 = 0 or 973 = 0 gives no brake harvest, and 573 with 589 = 0 gives no paddle input. A fake-IPOPT build: nu 3 / 4 / 5, the row names, the n_g growth, n_lap 2 and the lap-row bounds. Hand values: P_dep at the mixed wheel speed, the brake factor k, P_hb at and below the clamp, and the paddle harvest. Drive and brake that overlap, and drive and paddle that overlap, harvest less than 1 % of F v. The lap rows equal an independent quadrature (rel 1e-9). Also the ValueErrors, the skip rule (177 = 0), the warm starts, `nlp_index` and `limit_prices` on a hybrid result, and `data['hybrid']`. Phase 2c P5 (QSS section): the skip rule, the harvest against a scalar loop and the store. Modes 0 and 1, and a hand deploy step (e = s and e != s). Also the caps, the ValueErrors of cids 178 and 836, the seed rows of a hybrid car and the QSS `data['hybrid']`. Vendor section: every shipped car has 177 off, and a hybrid GP3 copy builds with nu 4 and the deploy front share 0.2. The base QSS laps do not change, and the hybrid GP3 copy gains 0.40 to 0.65 s in the QSS. The 4EM Sturn screen runs with casadi blocked
 - `test_start.py`: phase 2c G1. It imports `start.py` as a module (main does not run on import). It checks find_uv, install_uv, ask, xcb_missing, the HSL probe texts and the argparse flags. It also checks the --yes prompt skip and the --quick list of `run_tests.py` (read with ast). Every outside call is patched: no network, no real uv
 - App/GUI group (`test_headless_config`, `test_runconfig`, `test_vp_params`, `test_presets`, `test_paths`, `test_results`, `test_solve_runner`, `test_spec_includes`, `test_mainwindow`, `test_gui_logic`): cfg.json forwarding, `RunConfig`, vp registry, presets, paths, results parsing, solve dispatch, PyInstaller-spec lint, offscreen Qt window (PySide6). F2: `FORWARD` sends a key only when set and not default, and `mode='qss'` drops the NLP-only keys and runs `MLTP_screen`. `RunConfig` folds `pt_overrides` into `vp_overrides`, and `setup_tag()` == the MLTP tag. `result_paths`, `freeze_support` first in `__main__`, the Advanced-tab combos and the More options box. 4 Motors ticks Homotopy. Phase 2c G2: the default output folder, `hsl_dir` forwarded as a route key (no setup tag) and the settings ini
 
@@ -460,8 +461,7 @@ ChassisSim cars (phases 2 and 2b, 2026-11-18 to 2026-11-19, `vehModel_cs.py`, `f
 `car='chassissim:<path>'` builds the car of a `.car` file in place of the 4EM car. It needs `physics='corrected'`. A car refuses
 the options that it cannot honour: `start_state='rolling'`, `state_scaling='typical'`, `atd_tbr`, `Electric_4Motors='On'`, an
 `AeroConfig` other than 'Static', `between_knots` other than 'matlab', `collocation='radau'` and a 7-state init `warm_start`. ATD
-goes Off without a warning, and the ladder is 'qss23'. `MLTP_initial`, `optimise_design` and `setup_sweep` refuse a car. The model
-keeps nx 23 with the inputs `T_drive`, `T_brake` and `delta`. Every corner record of the file stores the right wheel first: FR,
+goes Off without a warning, and the ladder is 'qss23'. `MLTP_initial`, `optimise_design` and `setup_sweep` refuse a car. The model keeps nx 23 with the inputs `T_drive`, `T_brake` and `delta` (a hybrid car adds `F_dep`, and `F_pad` with the paddle). Every corner record of the file stores the right wheel first: FR,
 FL, RR, RL. The bar motion ratios use the cids 27, 170, 28 and 171 in that order. ChassisSim copies an empty left record from its
 right sibling, and so does load_car. This covers the springs, gaps with their flags, rubbers, corner and bar motion ratios,
 dampers and tyres. Tyre: the peak force F'(Fz) of table 3 at the background temperature, the normalised slip curve, a 0.9 lateral
@@ -483,8 +483,8 @@ the outer wheel of a turn gains negative camber. K1 = tan(castor) / sqrt(1 + tan
 tyre and the kingpin inclination of the ball joints. The GP3 has K1 = 0.1517 against 0.1506 in the log. The channel
 `dynamic_camber_<c>` reads negative camber as positive on both sides, as the ChassisSim log does. Results saved before b9e157a
 negate the right corners. Bump steer adds the toe of a table on the wheel travel to the static toe (cids 74-77, m and rad). An
-axle side with a zero table copies the other side. The bump sign (bump positive) is an assumption. The rear differential follows
-the file: open, super, spool, custom map or Detroit. The channel `stbi` is the stability index of ChassisSim in percent, negative
+axle side with a zero table copies the other side. The bump sign (bump positive) is an assumption. The differentials follow the file: open, super, spool, custom map or Detroit. That is the rear axle, and the
+front axle with a torque split or a front deploy share. The channel `stbi` is the stability index of ChassisSim in percent, negative
 for understeer. Its axle cornering stiffness is the slope of the tyre curve without the 0.9 cap. ChassisSim takes that slope at an
 operating point clipped at the start of the capped plateau, and divides by the wheelbase. On the GP3 log states the index
 correlates 0.94 with StabIND. The QSS (`ggv.build_envelope_cs`) uses the same functions, without DRS and at zero sideslip. It uses
@@ -517,15 +517,16 @@ ChassisSim powertrain (phase 2c, 2026-11-19 to 2026-11-20, spec decisions D26-D4
 `tests/test_cs_diff.py`, `tests/test_cs_shift.py`. Front drive: cid 111 sends a constant share of the drive force to the front
 axle. The rear axle gets the rest. Both axles use the five differential laws of the file. The front type is cid 112, and the model
 clamps it to 4 or less, as ChassisSim does. The QSS limits the drive force to min(front capacity / split, rear capacity / (1 -
-split)). A split of 0 keeps the rear-drive graph. A split outside 0 to 1 raises ValueError. A GP3 copy at 50 / 50 (open front)
+split)). A split of 0 keeps the rear-drive graph. A split outside 0 to 1 raises ValueError. A car with a split or a hybrid front deploy share above 0 needs the front differential type (cid 112). A type of 4 or
+more also needs the map (cid 114). A GP3 copy at 50 / 50 (open front)
 takes 368 iterations to 16.332 s on Sturn (cold, MUMPS). The GP3 takes 16.150 s. Shift cut: on each upshift ChassisSim cuts the
 drive torque to the share minF (cid 105) for a delay (cid 104). Then it ramps the torque back (cid 106). The model has no gear
 state. So `shift_bumps` puts a smooth dip into the drive envelope at each upshift speed v_g, the rev limit in each gear below the
 top gear. The dip costs the time of the cut: tau = (1 - minF) F t / (F - R). Here t = delay + ramp / 2, and F and R are the
 envelope and the QSS resistance at v_g. The band width is W = max((1 - minF) F t / m_eff, 3 m/s), so a 30 m mesh can see the band.
-A root search sets its depth. No band forms where F <= R, and a delay of 0 adds no node. The QSS computes the bands once
-(`env.info['shift_bands']`), and the NLP reads them. Only the GT3 has a cut (0.1 s at half torque). Its QSS lap at Adelaide
-rises by 0.137 s. A time-domain model with a gear state gives 0.127 s. The fixed-line NLP (cold, MUMPS, N 110) takes 148
+A root search sets its depth. No band forms where F <= R, and a delay of 0 adds no node. A negative resistance fit counts as 0, so the band depth
+stays below 1. The QSS computes the bands once
+(`env.info['shift_bands']`), and the NLP reads them. Only the GT3 has a cut (0.1 s at half torque). Its QSS lap at Adelaide rises by 0.136 s. A time-domain model with a gear state gives 0.127 s. The fixed-line NLP (cold, MUMPS, N 110) takes 148
 iterations to 75.872 s. A copy with delay 0 takes 134 iterations to 75.800 s (+0.072 s). The drive row holds at the knots only, so
 the NLP sees about half of the dip. RMS vx against the log falls from 2.93 to 2.75 m/s. Cid 109 (a brake delay) is dead in
 ChassisSim. Atmospheric correction: ChassisSim reads `<parent of the install folder>/<install folder name>Atmos_Cond.ini`. That
@@ -534,7 +535,8 @@ x the dry-pressure ratio. The defaults are 1.013 bar, water 0 and 15 degC. The f
 other than 1 is the knob `car_atmos` and goes into `data['car_atmos']`. No install on disk has the file (factor 1).
 `chassissim.power_refusals` raises ValueError for these cids: the brake ramp (571), the per-step torque split recompute (598) and
 a battery plugin (897, 906). It also raises for push-to-pass (649), the engine torque multiplier maps (520), a throttle trim (419,
-423, 426, 428) and a non-zero engine-brake table (161). The wake maps raise too (872 to 875 live, or flags 876 to 879 not 0). A
+423, 426, 428) and a non-zero engine-brake table (161). It also raises for a brake left share other than 0.5 (cid 160). A brake split by the tyre limit of each wheel
+(cid 853 not 0) raises too. The wake maps raise too (872 to 875 live, or flags 876 to 879 not 0). A
 hardpoint block with other than 6 points raises ValueError: the model has no strut suspension. The WRX, the only front-drive car,
 has struts. The FSAE loads (zero aero).
 Hybrid layer (D36-D38, owner rulings Q11-Q15, pinned by `tests/test_cs_hybrid.py`). Cid 177 enables it, and every shipped car has
@@ -543,21 +545,26 @@ Hybrid layer (D36-D38, owner rulings Q11-Q15, pinned by `tests/test_cs_hybrid.py
 rear 468, blend 464 / 465, enable 466. With 466 off or a map absent, the factor is 1, and an all-zero map gives 0. The force goes
 through the differentials: the front gets the 465 share with 464 set, else the engine split (cid 111). The power is the machine
 power at the wheel speed of each share. The decode uses F V at car speed, which differs by the slip (GP3: +3.2 % under drive, -1.7
-% under braking). Brake regen (gate 177, 535 and 590): regen replaces part of the friction braking of the regen axles, and the
-axle forces do not change. The regen axle is the rear with cid 870 = 0, else the front share cid 871. Harvest power = smooth
+% under braking). Brake regen (gate 177, 535, 590 and 973): regen replaces part of the friction braking of the regen axles. The axle
+forces do not change. The regen axle is the rear with cid 870 = 0, else the front share cid 871. Cid 973 is the blend enable of ChassisSim.
+With 973 = 0 ChassisSim does not cut the friction brake, so its regen is about 0. Harvest power = smooth
 min(cid 179, k B_net v) x cid 182, with k = min(bias / f, (1 - bias) / (1 - f)). B_net is the brake force less the drive force,
 through a smooth positive part that is 0 at 0. So a drive and a brake that overlap inside the 1e-3 relaxation of BrTh_1 harvest
 only the net force. Paddle regen (gate 177, 573 and 589): the input F_pad adds deceleration on the driven axles by the cid 111
 split. Its power stays at or below cid 179 less the brake harvest (row paddle_pw). It harvests the net retarding force x cid 182.
-The rows deploy_brk and paddle_drv (the form of BrTh_1) keep the deploy off the brake and the paddle off the drive. Energy per
+The rows deploy_brk and paddle_drv (the form of BrTh_1) keep the deploy off the brake and the paddle off the drive.
+The paddle cids with 177 off raise ValueError. ChassisSim applies the paddle force from its distance maps without
+177, but the model builds the paddle only inside the hybrid layer. A regen scale (cid 182) other than 1 with the
+paddle on raises too, because ChassisSim scales the paddle force and its energy together. Energy per
 lap: two rows of `m.lap_rows`, last in g. They use the B-weighted quadrature of the objective and the scale E_S = 1e5 J. E_dep -
 E_harv <= cid 836, and E_dep <= cid 181 + cid 836. The NLP deploys optimally (owner Q12), so the deploy mode (cid 178) applies to
 the QSS only. A car with 0 < cid 836 < 1 raises ValueError: ChassisSim reads that value as an early stop, and no tier builds it.
-Cid 178 outside 0 and 1 raises too. When 177 is on, these raise ValueError: 179 or 180 not above 0 and 181 below 0. So do 182, 183
+Cid 178 outside 0 and 1 raises too. When 177 is on, these raise ValueError: 180 not above 0 and 181 below 0. So does 179 not above 0 with brake or paddle regen on. So do 182, 183
 or 836 not finite or below 0. So do shares outside 0 to 1 and map values that are not finite or below 0. Cid 182 above 1 raises
 too: the blend keeps the axle forces, so a larger scale would make energy. Results: the channels P_dep and P_harv (W) and
 data['hybrid'] (E_dep, E_harv in J, and the cids). A warm start across hybrid on and off goes full-interp, and `nlp_index` counts
-the lap rows (`n_lap`). A hybrid copy of the GP3 at Eastern Creek sets 177, 535 and 590 to 1 and keeps the maps of the file. On
+the lap rows (`n_lap`). A hybrid copy of the GP3 at Eastern Creek sets 177, 535, 590 and 973 to 1 and keeps the maps of the file. Its solves
+ran before the gate of cid 973 existed, which equals 973 = 1. On
 the fixed line (cold, MUMPS) it takes 439 iterations to 74.678 s, against 75.294 s for the GP3. The deploy uses the full 400 kJ on
 11 knots of corner exits and straights, and the harvest is 709 kJ. The solve took 498 s and 4.2 GB of peak memory. The P4 seed
 (the QSS without the layer, F_dep 0) gave 74.572 s in 372 iterations. One solve per seed does not rank the seeds. QSS (D39,
@@ -567,11 +574,11 @@ The deploy zones are the maximal runs where the forward pass binds in the profil
 store on the last zone, and mode 1 splits it by zone length. A zone deploys at full power from its start until it spends its
 budget. A budget that a zone cannot spend goes to the next zone (an assumption, ChassisSim decode U). The engine force that the
 tyres allow comes first, and the deploy fills the room that remains on each axle. The pass does not deploy where the backward pass
-binds. The march repeats until the harvest changes by less than 1 J (5 sweeps at most). The deploy uses the map at full throttle,
+binds. The march repeats until the store changes by less than 1 J (5 sweeps at most). The deploy uses the map at full throttle,
 also where the tyres limit the engine. ChassisSim scales the deploy by the throttle instead. `vehModel_cs.hybrid_params` holds the
 share rules for both tiers. The qss23 seed of a hybrid car puts the force above the engine envelope into F_dep. `MLTP_screen`
 stores data['hybrid'] (E_harv, E_store and E_dep in J, mode, zones, sweeps). Its QSS lap without the layer is 74.055 s. The hybrid
-GP3 copy gains 0.484 s in mode 0 and 0.557 s in mode 1. The NLP gains 0.616 s (0.722 s from the P4 seed). The QSS harvests 717 kJ
+GP3 copy gains 0.484 s in mode 0 and 0.556 s in mode 1. The NLP gains 0.616 s (0.722 s from the P4 seed). The QSS harvests 717 kJ
 (mode 0) and 726 kJ (mode 1), and the NLP 709 kJ.
 Track QA (2026-10-18, `functions/track_qa.py`): every real track goes through `check_track` at load
 (turning, closure, sign agreement with x,y, spacing, monotonic s). An error raises ValueError (no bypass
@@ -681,7 +688,8 @@ solve (physics, start state, band, `RunConfig.setup_tag()`, `_qss`). `app/main.p
 first (not yet tested in a frozen Windows exe). Phase 2c G2 (2026-11-19): the Output tab holds the output folder. Its default is `<Documents>/FullModelSim` from
 QStandardPaths (else the home folder), and the GUI keeps it in QSettings (`app.paths.settings()`). The Advanced tab holds
 the Coin-HSL folder field (`hsl_dir`, a route key, not a setup knob). The cfg file comes from `tempfile.mkstemp`. G3:
-`build/app.spec` builds a onedir app on Windows and on Linux (Linux folder 533 MB, tar.gz 192 MiB). With `COINHSL_DIR` set
+`build/app.spec` builds a onedir app on Windows and on Linux (Linux folder 513 MB without the Qt GTK3 theme and the libraries that only it needs. Before that cut it was 533 MB, with a
+192 MiB tar.gz). With `COINHSL_DIR` set
 at build time, it bundles the Coin-HSL libraries in the `hsl` folder of the bundle. `.github/workflows/tests.yml` runs the
 quick tests and the start scripts on Windows and Linux. `release.yml` runs on a `v*` tag. It builds both apps and runs
 smoke checks on them: a headless QSS, a headless NLP at max_iter 1 and an offscreen GUI start. It checks the Linux folder

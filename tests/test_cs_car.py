@@ -179,8 +179,9 @@ def build_records(omit=(), over=None):
         add(1, cid, 0.0)
     add(1, 160, 0.5)                                                     # brake left share, even split
     add(7, 161, (ENGINE_RPM, np.zeros(len(ENGINE_RPM))))                  # engine-brake table, zero in y
-    for cid in (177, 178, 464, 466, 535, 573, 589, 590, 870, 876, 877, 878, 879, 419, 423, 426, 428, 520, 571, 598, 649):
-        add(6, cid, 0)                                                   # flags, off
+    for cid in (177, 178, 464, 466, 535, 573, 589, 590, 870, 876, 877, 878, 879, 419, 423, 426, 428, 520, 571, 598, 649,
+                973, 853):
+        add(6, cid, 0)                                                   # flags, off (973 brake regen blend, 853 tyre split)
     for cid in (897, 906):
         add(8, cid, b"")                                                 # text, empty
     for cid in (467, 468):

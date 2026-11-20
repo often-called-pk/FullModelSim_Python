@@ -19,7 +19,8 @@ On Linux, install these libraries before the build. PyInstaller bundles them, bu
 `libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libegl1 libgl1 libfontconfig1 libdbus-1-3`.
 
-The Linux build took about 30 s on the dev machine. The folder is 533 MB and the `tar.gz` is 192 MiB.
+The Linux build took about 40 s on the dev machine. The folder is 513 MB. The spec leaves out the Qt GTK3 platform theme and the libraries that only it needs. These are GTK,
+pango, cairo, atk and some X11 libraries. So the file dialogs and the style are those of Qt. Before that cut the folder was 533 MB and the `tar.gz` 192 MiB.
 The spec collects only what the app reads. From Qt, these are QtCore, QtGui, QtWidgets, their plugins and the Qt libraries of the plugins.
 The data are the circuit files of the app, `Data/DATA_AA.mat` and the presets. The spec leaves out the casadi
 C headers (the frozen app runs without JIT) and the scipy tests.
@@ -93,7 +94,7 @@ Run the checks on a machine without Python. Use a clean Windows VM and a clean U
 
 1. Copy or extract the `FullModelSim` folder and start the program.
    On Linux, start `./FullModelSim`.
-2. Main tab: circuit `Sturn`, Aero `Static`, ATD on, linear solver `mumps`.
+2. Main tab: circuit `Sturn`, Aero `Static`, ATD on. Advanced tab: linear solver `mumps`.
 3. Click Run. The IPOPT log shows in the log pane.
 4. When the solve ends, the summary shows a lap time. The Output tab lists the plots.
    A double-click opens a plot in the browser.

@@ -49,7 +49,7 @@
 ### P3: shift cut (D35)
 **Files:** `vehModel_cs.py` (envelope), `functions/ggv.py` (same envelope in the QSS).
 - [ ] Dip per upshift speed v_g = rpm_limit R / ratio_g (g < top): factor 1 - (1 - minF) w(v), w a smooth bump over [v_g, v_g + dv], dv = speed gained in `delay` at the dipped full drive (impulse matched); ramp time adds half its length. delay 0: no node.
-- [ ] Checks: GT3 (LP560): QSS and NLP envelope dips at its upshift speeds; the GT3 Adelaide log torque drop 0.575 at 12 upshifts for 0.1 s vs the model's impulse; the GT3 fixed-line solve again (lap change reported); other cars' hashes equal.
+- [ ] Checks: GT3: QSS and NLP envelope dips at its upshift speeds; the GT3 Adelaide log torque drop 0.575 at 12 upshifts for 0.1 s vs the model's impulse; the GT3 fixed-line solve again (lap change reported); other cars' hashes equal.
 
 ### P4: hybrid layer, NLP (D36-D38)
 **Files:** `vehModel_cs.py` (new control F_dep >= 0, and F_pad >= 0 when cid 573 is on; harvest power from the brake blend; deploy through the differentials with the 464 / 465 front share), `functions/transcription.py` or `MLTP.py` (two lap-integral rows: deploy <= harvest + E_free, deploy <= E_cap + E_free; the quadrature of sf as for the lap time), result channels (P_dep, P_harv, E_dep, E_harv).

@@ -10,8 +10,8 @@ There are two ways to use it:
 
 1. **Python scripts**, `MLTP.py`, `MLTP_initial.py`, and the co-optimisation
    wrappers; deliverables are `.mat` result files and Plotly HTML figures.
-2. **FullModelSim desktop app**, a PySide6 GUI frozen to a standalone Windows
-   `.exe` (PyInstaller) that runs on a machine with **no Python installed**.
+2. **FullModelSim desktop app**, a PySide6 GUI that PyInstaller freezes into a standalone
+   app for Windows and Linux. The app runs on a machine with **no Python installed**.
 
 > Deep architecture/internals live in [`CLAUDE.md`](CLAUDE.md). This README is
 > the quick-start and current-status overview.
@@ -26,14 +26,14 @@ There are two ways to use it:
 | Co-optimisation (`MLTP_paramOptim`, `MLTP_TyreOptim`) | ✅ working |
 | HSL linear solvers (MA57/MA97/MA27) with MUMPS fallback | ✅ working |
 | Desktop GUI app (`app/`) | ✅ working |
-| Standalone Windows `.exe` (PyInstaller) | ✅ builds & runs; verified end-to-end |
-| Coin-HSL inside the frozen exe (`sys._MEIPASS`) | ✅ verified (`ma57`, self-contained) |
-| Automated test suite (the files in `tests/`) | ✅ all pass |
+| Standalone app (PyInstaller, `build/app.spec`) | Linux: builds, smoke checks pass. Windows: first run in CI |
+| Coin-HSL inside the frozen app (`hsl` folder of the bundle) | found with a stand-in library. No run with real Coin-HSL |
+| Automated test suite (the files in `tests/`) | ✅ all pass on Linux. Windows: first run in CI |
 
-The frozen build has been verified on the dev machine end-to-end (Sturn solve on
-`ma57` from the bundled Coin-HSL → `Optimal Solution Found`, results + plots
-written). A literal **clean-VM run** (a machine with no Python/casadi/HSL) remains
-the gold-standard final acceptance check, see [`build/README.md`](build/README.md).
+On the dev machine, the frozen Linux build passes the three smoke checks of the release workflow.
+They are a headless QSS lap, a headless NLP with one iteration and an offscreen GUI start. The
+Windows build has no run yet, and no CI run exists yet. A run on a clean machine (no
+Python, casadi or HSL) is still the final acceptance check, see [`build/README.md`](build/README.md).
 
 ---
 
@@ -56,9 +56,11 @@ The script does these steps:
 1. It installs uv if uv is missing. It asks first.
 2. It creates `.venv` from `uv.lock`. uv downloads Python 3.13 if the machine does not have it.
 3. It checks the Qt system libraries (Linux) and `Data/DATA_AA.mat`.
-4. It builds the model and computes one QSS lap.
-5. It runs the quick tests.
-6. It opens the GUI.
+4. It reports the optional parts: Coin-HSL, the ChassisSim folder (`CHASSISSIM_DIR`) and a C
+   compiler. A missing part never stops the setup.
+5. It builds the model and computes one QSS lap.
+6. It runs the quick tests.
+7. It opens the GUI.
 
 The flags are `--yes` (no questions), `--no-gui` and `--no-tests`.
 
@@ -141,8 +143,8 @@ uv run fullmodelsim
 The GUI writes a JSON config, spawns the solve as a subprocess, streams the IPOPT
 log into the log pane, and lists the resulting plots. GUI runs write results and plots to
 the output folder of the Output tab. The default is the folder `FullModelSim` in the
-Documents folder of the user, on Windows and on Linux. The GUI keeps the folder for the
-next start. The Advanced tab has a Coin-HSL folder field (see Linear solver).
+Documents folder of the user, on Windows and on Linux. When you click Run, the GUI saves the
+folder for the next start. The Advanced tab has a Coin-HSL folder field (see Linear solver).
 
 The Advanced tab has the group "Run, model and start":
 
@@ -267,7 +269,9 @@ Each item has the trigger that makes it worth adding.
 IPOPT ships **inside** the CasADi wheel. The solve **defaults to HSL `ma57`**
 (run with `ma57_automatic_scaling` so it converges on the stiff 23-state
 problem). HSL solvers need a **Coin-HSL** shared library (the MinGW/`libgfortran5`
-`CoinHSL_jll` build matches the casadi wheel's ABI). The solve uses the first folder of
+`CoinHSL_jll` build matches the casadi wheel's ABI). On Windows, use the `bin/` folder of the
+MinGW build (`libhsl.dll`). On Linux, use the `lib/` folder of the
+`x86_64-linux-gnu-libgfortran5` build (`libhsl.so`). The solve uses the first folder of
 this list that exists:
 
 1. The `COINHSL_DIR` environment variable.
@@ -321,12 +325,16 @@ vehModel.py, vehModel_initial.py        # full 23-state / reduced 7-state models
 vehParams.py, Powertrain.py, userOpts.py  # config: params, ratings, options + overrides
 plotSDI.py, gg_plots.py, bench_linear_solver.py   # plotting + solver benchmark
 headless_solve.py               # cfg.json -> MLTP entry (used by the GUI subprocess)
+start.py, start.sh, start.bat   # one-command setup (checks, uv sync, model check, tests, GUI)
+pyproject.toml, uv.lock         # dependencies (requirements.txt is generated from uv.lock)
+vehModel_cs.py, MLTP_screen.py  # ChassisSim car model, QSS lap estimate
 
 functions/                      # transcription engine, collocation, hsl, .mat I/O, geometry
 app/                            # PySide6 GUI: main, mainwindow, runconfig, solve_runner,
                                 #   results, paths, presets/default.json
 build/                          # PyInstaller spec, runtime hook, version info, build README
-tests/                          # plain-script test suite: test_*.py + _bootstrap.py
+tests/                          # plain-script test suite: test_*.py, _bootstrap.py, run_tests.py
+.github/workflows/              # CI: tests.yml (branch pushes, pull requests), release.yml (v* tags)
 
 Circuits/   Data/DATA_AA.mat    # inputs (real track .mat, aero coefficients)
 Results/    Plots/              # outputs (.mat results, Plotly HTML figures)

@@ -468,7 +468,7 @@ def userOpts(ctx,
                                            # circuit='chassissim:<name>' and the Atmos_Cond.ini of a car
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
-             hsl_dir=None,                 # Coin-HSL bin dir; None -> COINHSL_DIR env / default
+             hsl_dir=None,                 # Coin-HSL folder; COINHSL_DIR wins, then this, then the hsl folder of a frozen app
              vp_overrides=None,            # dict of vehParams primary/mf overrides (+ PT_KEYS if physics='corrected')
              tyre_set="MF205",             # 'MF205' (default, MATLAB-run lateral set) | 'CopyB' (legacy shipped set, pKy4=0) | 'file:<path to a .tir>'
              OPT_ds=30,                    # collocation step (m)

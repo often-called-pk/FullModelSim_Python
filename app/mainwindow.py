@@ -538,7 +538,8 @@ class MainWindow(QMainWindow):
     def _on_run(self):
         try:
             rc = self.collect_runconfig()           # a bad "More options" box raises here: log it, start nothing
-            rc.output_dir = os.path.abspath(rc.output_dir)
+            rc.output_dir = os.path.abspath(rc.output_dir.strip() or paths.default_output_dir())
+            self.output_dir.setText(rc.output_dir)  # an empty field shows the default folder that the run uses
             res_dir = os.path.join(rc.output_dir, "Results")
             os.makedirs(res_dir, exist_ok=True)
             with tempfile.TemporaryFile(dir=res_dir):       # a read-only folder raises here, before the solve

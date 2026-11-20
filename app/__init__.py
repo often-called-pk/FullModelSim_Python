@@ -1,1 +1,1 @@
-"""windows-app GUI package for the MLTP simulator."""
+"""Desktop GUI package (Windows and Linux) for the MLTP simulator."""

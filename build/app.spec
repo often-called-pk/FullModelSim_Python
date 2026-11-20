@@ -61,6 +61,29 @@ a = Analysis(
     runtime_hooks=[os.path.join(ROOT, "build", "rthook_casadi.py")],
     excludes=[],
 )
+# Linux: leave out the Qt GTK3 platform theme (platformthemes/libqgtk3.so) and each library that only
+# it needs (GTK, GDK, pango, cairo, atk). Qt then uses its own style. A library that another binary
+# needs stays (glib and gio stay: QtCore needs them).
+if sys.platform.startswith("linux"):
+    from PyInstaller.depend import bindepend
+
+    def _needs(paths):
+        """Real paths of all libraries that the files in `paths` need, direct or not."""
+        seen, todo = set(), list(paths)
+        while todo:
+            for _name, path in bindepend.get_imports(todo.pop()):
+                real = path and os.path.realpath(path)
+                if real and real not in seen:
+                    seen.add(real)
+                    todo.append(real)
+        return seen
+
+    _src = {os.path.realpath(src): dest for dest, src, _kind in a.binaries}
+    _gtk = {s for s, dest in _src.items() if os.path.basename(dest) == "libqgtk3.so"}
+    _drop = _needs(_gtk)
+    _drop = _gtk | (_drop - _needs(s for s in _src if s not in _drop and s not in _gtk))
+    a.binaries = [b for b in a.binaries if os.path.realpath(b[1]) not in _drop]
+
 pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True,

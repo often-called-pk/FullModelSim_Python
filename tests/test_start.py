@@ -56,7 +56,7 @@ def exits(fn):
 
 def fake_uv(folder):
     folder.mkdir(parents=True, exist_ok=True)
-    p = folder / "uv"
+    p = folder / ("uv.exe" if start.WIN else "uv")
     p.write_text("#!/bin/sh\necho uv 0.0.0\n", encoding="ascii")
     p.chmod(0o755)
     return p
@@ -66,6 +66,7 @@ def find_with(extra, base):
     """find_uv with a clean environment: empty PATH, HOME without uv, plus extra."""
     env = {"HOME": str(base / "nohome"), "PATH": str(base / "nopath")}
     env.update({k: str(v) for k, v in extra.items()})
+    env["USERPROFILE"] = env["HOME"]  # Path.home() reads USERPROFILE on Windows
     with mock.patch.dict(os.environ, env, clear=True):
         return start.find_uv()
 

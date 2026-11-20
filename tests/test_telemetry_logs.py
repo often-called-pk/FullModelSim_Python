@@ -451,7 +451,7 @@ with tempfile.TemporaryDirectory() as tmp:
     titles = [a.title.text for a in res["fig"].select_yaxes()]
     ok("the figure has 5 panels (speed, time delta, ax, ay, steer) and 9 traces (4 pairs and the delta)",
        titles == ["v [m/s]", "log - sim [s]", "ax [m/s^2]", "ay [m/s^2]", "steer [deg]"] and len(res["fig"].data) == 9)
-    with open(f_html) as fh:
+    with open(f_html, encoding="utf-8") as fh:
         html_text = fh.read()
     ok("the HTML file holds the figure and plotly.js (it opens offline)",
        os.path.getsize(f_html) > 1e6 and "Plotly" in html_text)
