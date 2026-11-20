@@ -71,24 +71,29 @@ def find_with(extra, base):
         return start.find_uv()
 
 
+def same_path(found, path):
+    """True when found is path. Windows shutil.which adds the PATHEXT spelling (uv.EXE), so the case can differ."""
+    return found is not None and os.path.normcase(found) == os.path.normcase(str(path))
+
+
 def section_find_uv(base):
     print("1. find_uv")
     (base / "nopath").mkdir(exist_ok=True)
     (base / "nohome").mkdir(exist_ok=True)
 
     p1 = fake_uv(base / "p1")
-    ok("found through PATH", find_with({"PATH": base / "p1"}, base) == str(p1))
+    ok("found through PATH", same_path(find_with({"PATH": base / "p1"}, base), p1))
     i1 = fake_uv(base / "i1")
-    ok("found in UV_INSTALL_DIR", find_with({"UV_INSTALL_DIR": base / "i1"}, base) == str(i1))
+    ok("found in UV_INSTALL_DIR", same_path(find_with({"UV_INSTALL_DIR": base / "i1"}, base), i1))
     i2 = fake_uv(base / "i2" / "bin")
-    ok("found in UV_INSTALL_DIR/bin", find_with({"UV_INSTALL_DIR": base / "i2"}, base) == str(i2))
+    ok("found in UV_INSTALL_DIR/bin", same_path(find_with({"UV_INSTALL_DIR": base / "i2"}, base), i2))
     xb = fake_uv(base / "xbin")
-    ok("found in XDG_BIN_HOME", find_with({"XDG_BIN_HOME": base / "xbin"}, base) == str(xb))
+    ok("found in XDG_BIN_HOME", same_path(find_with({"XDG_BIN_HOME": base / "xbin"}, base), xb))
     xd = fake_uv(base / "d" / "bin")
     ok("found in XDG_DATA_HOME/../bin",
-       find_with({"XDG_DATA_HOME": base / "d" / "share"}, base) == str(xd))
+       same_path(find_with({"XDG_DATA_HOME": base / "d" / "share"}, base), xd))
     hm = fake_uv(base / "home2" / ".local" / "bin")
-    ok("found in ~/.local/bin", find_with({"HOME": base / "home2"}, base) == str(hm))
+    ok("found in ~/.local/bin", same_path(find_with({"HOME": base / "home2"}, base), hm))
     ok("none -> None", find_with({}, base) is None)
 
 

@@ -147,7 +147,7 @@ ok("repeated column: inf", C.gamma(np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
 ok("zero column: inf", C.gamma(np.array([[1.0, 0.0], [2.0, 0.0]])) == np.inf)
 S = np.array([[1.0, 0.96], [0.0, np.sqrt(1 - 0.96 ** 2)]])
 ok("two unit columns, cos 0.96: 1 / sqrt(1 - 0.96) = 5", abs(C.gamma(S) - 5.0) < 1e-9)
-ok("one column: 1", C.gamma(np.array([[3.0], [4.0]])) == 1.0)
+ok("one column: 1", abs(C.gamma(np.array([[3.0], [4.0]])) - 1.0) < 1e-12)
 
 print("1b. functions/correlate.py imports with casadi blocked")
 code = ("import sys; sys.modules['casadi'] = None; sys.path.insert(0, %r); "
@@ -183,7 +183,7 @@ for circ in ("Sturn", "BCN"):
     r4 = C.identifiable(ctx, ["LMUY", "Cl_scale"], obs)
     r5 = C.identifiable(ctx, ["LMUY", "pDy2"], obs)
     r6 = C.identifiable(ctx, ["LFZO"], obs)
-    ok(f"{circ}: LMUY alone: gamma 1 and ok", r1["gamma"] == 1.0 and r1["ok"])
+    ok(f"{circ}: LMUY alone: gamma 1 and ok", abs(r1["gamma"] - 1.0) < 1e-12 and r1["ok"])
     ok(f"{circ}: LFZO alone: gamma 1, never ['LFZO'], not ok (the NEVER rule alone refuses it)",
        abs(r6["gamma"] - 1.0) < 1e-12 and r6["never"] == ["LFZO"] and not r6["ok"])
     ok(f"{circ}: LMUY with pDy2 (no NEVER name): gamma {r5['gamma']:.1f} above 15, not ok",

@@ -240,8 +240,13 @@ with tempfile.TemporaryDirectory() as tmp:
        raises(FileNotFoundError, cs.load_circuit, "Ghost Ring", root))
     ok("load_circuit: a cs_dir without Circuits/ raises ValueError", raises(ValueError, cs.load_circuit, "Alpha Park", other))
 
-    rel = os.path.relpath(root, os.getcwd())
-    alpha_rel = quiet(cs.load_circuit, "Alpha Park", rel)
+    # The temp folder can be on another drive than the repo (Windows). Then no relative path from the repo exists.
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(os.path.dirname(root))
+        alpha_rel = quiet(cs.load_circuit, "Alpha Park", os.path.basename(root))
+    finally:
+        os.chdir(old_cwd)
     ok("load_circuit: relative cs_dir gives an absolute bump path",
        alpha_rel.bump is not None and os.path.isabs(alpha_rel.bump) and alpha_rel.bump.endswith("bump_alpha.dat"))
 
