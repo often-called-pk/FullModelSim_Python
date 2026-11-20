@@ -129,6 +129,7 @@ class Envelope:
     Fz_rear: np.ndarray = None    # [N]     rear-axle load, static + aero (no transfer)
     F_drive_tab: np.ndarray = None  # [N]     drive force on v_grid (a car: its gear envelope). None: torque, power and rpm
     apex_factor: object = None    # callable(v_apex) -> factor of the apex speed (a car with a stability index map). None: off
+    hybrid: dict = None           # the hybrid layer of a car (cid 177 on): tables and scales for the march. None: off
     info: dict = field(default_factory=dict)
 
     def F_res(self, v):
@@ -158,7 +159,9 @@ class Envelope:
         """Plain dict for scipy.io.savemat (no None values)."""
         out = {}
         for key, val in vars(self).items():
-            if val is None or callable(val):       # apex_factor is a function: savemat cannot store it
+            # apex_factor is a function: savemat cannot store it. hybrid holds work tables of the march: the lap
+            # record of the layer is data['hybrid'].
+            if val is None or callable(val) or key == "hybrid":
                 continue
             if key == "info":
                 out[key] = {k: (v if v is not None else "") for k, v in val.items()}
@@ -579,7 +582,7 @@ def build_envelope_cs(ctx, v_grid=None):
     from scipy.interpolate import PchipInterpolator
     from vehModel_cs import C4, DELTA_MAX, FZ_FLOOR, LAT_CAP, drive_scale, gear_envelope_numeric, shift_bumps, _mr, _rubber, _surf, _clean, third_element
     import casadi as ca
-    from functions.chassissim import suspension_curves, bar_ratios
+    from functions.chassissim import suspension_curves, bar_ratios, hybrid_gates
     vp, cs = ctx.vp, ctx.cs
     grip = getattr(ctx, "grip", 1.0)
     curves = suspension_curves(cs)
@@ -767,9 +770,30 @@ def build_envelope_cs(ctx, v_grid=None):
     r_fit = env.F_res(v)
     env.ax_acc = np.minimum((Fx_trac - r_fit) / M, (env.F_mot(v) - r_fit) / M_eff)
     env.ax_brk = np.minimum((Fx_brk + r_fit) / M, (env.F_brk(v) + r_fit) / M_eff)
+    if hybrid_gates(cs)[0]:
+        env.hybrid = _hybrid_tables(cs, env, Rr, bias, split, axle, Fz_f, Fz_r, h_x, L, hv_f, hv_r)
     env.info = dict(car=True, shift_bands=bands, drive="rear" if not split else "split", brake="front bias", rh_f=rh_f, rh_r=rh_r, F_res_exact=res,
                     res_fit_err=float(np.max(np.abs(r_fit - res))), phi_f=float(phi_f), hRC=(hrc_f, hrc_r), h_x=h_x)
     return env
+
+
+def _hybrid_tables(cs, env, Rr, bias, split, axle, Fz_f, Fz_r, h_x, L, hv_f, hv_r):
+    """Return the tables and scales of the hybrid layer for the march (ChassisSim rule, D39), all on env.v_grid.
+    P_dep: deploy power cap S k_dep map(engine speed) [W]. cap_f, cap_r: axle traction capacities at the traction limit [N].
+    k: the regen force factor (regen force = k x brake force). The scales and shares are floats."""
+    from vehModel_cs import deploy_factor_numeric, engine_speed_numeric, regen_share, hybrid_params
+    from functions.chassissim import hybrid_gates
+    h, v = cs.hybrid, env.v_grid
+    _, brk, pad = hybrid_gates(cs)
+    s_dep, f_regen, kd, kr, e_free = hybrid_params(cs, split)
+    P_dep = float(h.scale_deploy) * kd * deploy_factor_numeric(cs, engine_speed_numeric(cs, Rr, v))
+    F = env.Fx_trac
+    cap_r = axle("r", np.clip(Fz_r + F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False, hv_r, hv_r)
+    cap_f = axle("f", np.clip(Fz_f - F * h_x / L, 0.0, Fz_f + Fz_r), 0.0, False, hv_f, hv_f)
+    # ponytail: the QSS has no paddle decision, so the paddle takes the friction share of the driven axles
+    ks = [regen_share(bias, f_regen)] * bool(brk) + [regen_share(bias, split)] * bool(pad)
+    return dict(P_dep=P_dep, cap_f=cap_f, cap_r=cap_r, k=max(ks) if ks else 0.0, e=float(split), s=float(s_dep),
+                clamp=float(h.clamp_regen) if ks else 0.0, k_regen=kr, e_cap=float(h.e_cap), e_free=e_free, mode=int(h.mode or 0))
 
 
 # ============================================================================
@@ -885,6 +909,141 @@ def _heun_pass(v_start, kl, vl, ds, accel, reverse):
     return out
 
 
+def _hybrid_harvest(env, v, v_fwd, v_bwd, ds):
+    """Return the harvest E_harv [J] of a profile: braking segments only (the backward pass binds and v falls).
+    P_harv = min(clamp, k B v) x k_regen. B is the brake torque force, as the NLP harvests it: M_eff a - resistance,
+    with a the deceleration of the segment. That is the ground brake force + (M_eff - M) a."""
+    hy = env.hybrid
+    vi, vj = v[:-1], v[1:]
+    vm, dt = 0.5 * (vi + vj), 2.0 * ds / (vi + vj)
+    brk = (vj < vi - 1e-9) & (v_bwd[:-1] <= v_fwd[:-1] + 1e-9)
+    B = np.maximum(env.M_eff * (vi * vi - vj * vj) / (2.0 * ds) - env.F_res(vm), 0.0)
+    P = np.minimum(hy["clamp"], hy["k"] * B * vm) * hy["k_regen"]
+    return float(np.sum(np.where(brk, P, 0.0) * dt))
+
+
+def _hybrid_zones(v_fwd, v_bwd):
+    """Return the accel zones as (first, last + 1) segment pairs: maximal runs of segments where the forward pass binds."""
+    up = np.r_[False, v_fwd[:-1] <= v_bwd[:-1] + 1e-9, False]
+    d = np.diff(up.astype(int))
+    return list(zip(np.nonzero(d == 1)[0].tolist(), np.nonzero(d == -1)[0].tolist()))
+
+
+def _hybrid_pass(env, lut, kl, vl, v0, ds, zones, E, v_bwd):
+    """Forward Heun pass with deploy. Return (v_fwd, E_dep [J]).
+    The engine force that the tyres allow comes first. The deploy force F_dep = P_dep(v) / v then fills the room that
+    each axle has left (engine front share e, deploy front share s). The store E goes to the last zone (mode 0) or to
+    the zones by length (mode 1). A zone deploys at full power until it spends its budget. The pass does not deploy
+    where the backward pass binds (v above v_bwd).
+    ponytail: a budget that a zone does not spend goes on to the next zone. This is a choice (ChassisSim decode U).
+    A step that ends on the apex cap spends no energy.
+    ponytail: the deploy uses the map at full throttle, also where the tyres limit the engine. ChassisSim scales the
+    deploy by the throttle through the maps. So a car with an engine split and a deploy on one axle can spend budget at
+    corner exits (split 0.5, deploy rear, mode 1: 0.06 s less gain). Upgrade: read the map at the throttle that the
+    tyres allow."""
+    hy = env.hybrid
+    plain = _make_accel(env, lut, False)
+    vlo, inv_dv, jmax, AY, dAY = lut[:5]
+    c0, c2, Me, cv = env.c_res0, env.c_res2, env.M_eff, env.M_eff / env.M
+    e, s = hy["e"], hy["s"]
+    grid = vlo + np.arange(jmax + 1) / inv_dv
+    tab = lambda y: np.interp(grid, env.v_grid, y).tolist() + [0.0]
+    PD, CF, CR = tab(hy["P_dep"]), tab(hy["cap_f"] * cv), tab(hy["cap_r"] * cv)      # axle caps in the basis of M_eff
+    sqrt = math.sqrt
+
+    def accel(v, kab, lam):
+        """Return (a, fd): the acceleration and the deploy force that it used [N]."""
+        a = plain(v, kab)
+        if lam <= 0.0:
+            return a, 0.0
+        x = (v - vlo) * inv_dv
+        j, f = (0, 0.0) if x <= 0.0 else ((jmax, 0.0) if int(x) >= jmax else (int(x), x - int(x)))
+        vv = v * v
+        ay_lim = AY[j] + f * dAY[j]
+        r = vv * kab / (ay_lim if ay_lim > _AY_FLOOR else _AY_FLOOR)
+        el = 1.0 - r * r
+        el = sqrt(el) if el > 0.0 else 0.0
+        res = c0 + c2 * vv
+        fe = a * Me + res                   # the engine force in use: the gear envelope or the tyre limit
+        lost = (cv - 1.0) * res             # an axle cap in the basis of M_eff: cap M_eff / M - share (M_eff / M - 1) res
+        fd = (PD[j] + f * (PD[j + 1] - PD[j])) / max(v, 1e-3)
+        if s > 0.0:
+            fd = min(fd, ((CF[j] + f * (CF[j + 1] - CF[j])) * el - e * fe) / s - lost)
+        if s < 1.0:
+            fd = min(fd, ((CR[j] + f * (CR[j + 1] - CR[j])) * el - (1.0 - e) * fe) / (1.0 - s) - lost)
+        fd = max(fd, 0.0) * lam
+        return a + fd / Me, fd
+
+    n = len(kl)
+    two_ds, wmin = 2.0 * ds, _V_FLOOR ** 2
+
+    def step(v, i, lam):
+        j, w = i + 1, v * v
+        a1, d1 = accel(v, kl[i], lam)
+        wp = w + two_ds * a1
+        vp = min(sqrt(wp) if wp > wmin else _V_FLOOR, vl[j])
+        a2, d2 = accel(vp, kl[j], lam)
+        w = w + ds * (a1 + a2)
+        vn = min(sqrt(w) if w > wmin else _V_FLOOR, vl[j])
+        return vn, (0.5 * (d1 + d2) * ds if vn < vl[j] else 0.0)     # v dt = ds, so the energy is the force x ds
+
+    start = {}          # zone start segment -> budget [J]
+    if zones and E > 0.0:
+        if hy["mode"] == 0:
+            start[zones[-1][0]] = E
+        else:
+            tot = float(sum(b - a for a, b in zones))
+            start = {a: E * (b - a) / tot for a, b in zones}
+    ends = {b for _, b in zones}
+    on, rem, spent_all = False, 0.0, 0.0
+    out, vb = [0.0] * n, v_bwd.tolist()
+    v = out[0] = v0
+    for i in range(n - 1):
+        if i in start:
+            on, rem = True, rem + start[i]
+        elif i in ends:
+            on = False
+        lam = 1.0 if on and rem > 0.0 and v <= vb[i] + 1e-9 else 0.0
+        vn, sp = step(v, i, lam)
+        if lam and sp > rem:        # the budget ends inside this step: scale the deploy force
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                if step(v, i, mid)[1] <= rem:
+                    lo = mid
+                else:
+                    hi = mid
+            vn, sp = step(v, i, lo)
+            rem = 0.0
+        else:
+            rem -= sp
+        spent_all += sp
+        v = out[i + 1] = vn
+    return out, spent_all
+
+
+def _hybrid_march(env, lut, kl, vl, v0, ds, v_fwd, v_bwd):
+    """Return (v_fwd, v, info) of a car with the hybrid layer. info = dict(E_harv, E_store, E_dep [J], mode, zones, sweeps).
+    The zones come from the passes without deploy, so they do not move between sweeps. The fixed point has at most
+    5 sweeps, and it stops when the store changes by less than 1 J. Each sweep takes the harvest from the profile. The
+    store follows: min(E_harv, cid 181) + cid 836. The next forward pass deploys the store.
+    ponytail: zones from each new profile gave a 2-sweep cycle (9 and 10 zones on the GP3 copy)."""
+    hy = env.hybrid
+    store = lambda e_h: min(e_h, hy["e_cap"]) + hy["e_free"]
+    v = np.minimum(v_fwd, v_bwd)
+    E = store(_hybrid_harvest(env, v, v_fwd, v_bwd, ds))
+    zones = _hybrid_zones(v_fwd, v_bwd)
+    for sweeps in range(1, 6):
+        fw, E_dep = _hybrid_pass(env, lut, kl, vl, v0, ds, zones, E, v_bwd)
+        v_fwd = np.array(fw)
+        v = np.minimum(v_fwd, v_bwd)
+        E_used, E_h = E, _hybrid_harvest(env, v, v_fwd, v_bwd, ds)
+        E = store(E_h)
+        if abs(E - E_used) < 1.0:
+            break
+    return v_fwd, v, dict(E_harv=float(E_h), E_store=float(E_used), E_dep=float(E_dep), mode=hy["mode"], zones=len(zones), sweeps=sweeps)
+
+
 def march(env, s, k, vi, ds_fine=None, s_out=None):
     """Forward/backward QSS speed march on the centreline (n = 0).
 
@@ -897,6 +1056,7 @@ def march(env, s, k, vi, ds_fine=None, s_out=None):
 
     Returns a dict: s, k, v, v_apex, v_fwd, v_bwd, t, ax, ay, lap_time, ds,
     vi_feasible (+ s_out, v_out, t_out, ax_out, ay_out, v_apex_out if s_out).
+    A car with the hybrid layer (env.hybrid) adds the key 'hybrid': E_harv, E_store, E_dep [J], mode, zones, sweeps.
     Both passes integrate w = v^2 with Heun's method (lap-time error ~2e-4 at
     ds = 1 m); the segment time 2*ds/(v_i + v_i+1) is exact for a constant
     acceleration within the step.
@@ -919,6 +1079,9 @@ def march(env, s, k, vi, ds_fine=None, s_out=None):
     v_fwd = np.array(_heun_pass(v0, kl, vapl, ds, _make_accel(env, lut, False), False))
     v_bwd = np.array(_heun_pass(vapl[-1], kl, vapl, ds, _make_accel(env, lut, True), True))
     v = np.minimum(v_fwd, v_bwd)
+    hyb = None
+    if env.hybrid is not None:      # a car with the hybrid layer: deploy in the accel zones, from the harvest of the braking
+        v_fwd, v, hyb = _hybrid_march(env, lut, kl, vapl, v0, ds, v_fwd, v_bwd)
 
     t = np.concatenate(([0.0], np.cumsum(2.0 * ds / (v[:-1] + v[1:]))))
     ax = 0.5 * np.gradient(v * v, s_f)
@@ -926,6 +1089,8 @@ def march(env, s, k, vi, ds_fine=None, s_out=None):
     out = dict(s=s_f, k=k_f, v=v, v_apex=v_apex, v_fwd=v_fwd, v_bwd=v_bwd, t=t,
                ax=ax, ay=ay, lap_time=float(t[-1]), ds=ds,
                vi_feasible=bool(v[0] >= float(vi) - 1e-9))
+    if hyb is not None:
+        out["hybrid"] = hyb
     if s_out is not None:
         so = np.asarray(s_out, dtype=float).reshape(-1)
         out.update(s_out=so, v_out=np.interp(so, s_f, v), t_out=np.interp(so, s_f, t),

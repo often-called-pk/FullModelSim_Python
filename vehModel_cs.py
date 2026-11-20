@@ -320,6 +320,41 @@ def gear_envelope_numeric(cs, R, v, bands):
     return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
 
 
+def engine_speed_numeric(cs, R, v):
+    """Return the engine speed om_engine [rad/s] of the gear envelope at the wheel speeds v [m/s] (numpy array)."""
+    x = ca.SX.sym("v")
+    fn = ca.Function("om_eng", [x], [_env_raw(cs, R, x)[1]]).map(int(np.size(v)))
+    return np.asarray(fn(np.asarray(v, float).reshape(1, -1))).reshape(np.shape(v))
+
+
+def deploy_factor_numeric(cs, om):
+    """Return the deploy map factor (deploy_map) at the engine speeds om [rad/s] (numpy array). The factor is 1 without a map."""
+    mapf = deploy_map(cs)
+    if mapf is None:
+        return np.ones(np.shape(om))
+    x = ca.SX.sym("om")
+    fn = ca.Function("dep_map", [x], [mapf(x)]).map(int(np.size(om)))
+    return np.asarray(fn(np.asarray(om, float).reshape(1, -1))).reshape(np.shape(om))
+
+
+def regen_share(bias, f):
+    """Return the largest force factor k of a regen axle set: the regen force is k times the friction brake force.
+    bias is the front brake share and f the front share of the regen force (0: rear axle only)."""
+    return min(bias / f if f > 0 else np.inf, (1 - bias) / (1 - f) if f < 1 else np.inf)
+
+
+def hybrid_params(cs, split):
+    """Return (s_dep, f_regen, kd, kr, e_free) of the hybrid layer. The NLP and the QSS both read them here.
+    s_dep: front share of the deploy force (cid 465 when cid 464 is set, else the engine split). f_regen: front share of
+    the brake regen force (cid 871 when cid 870 is set, else 0). kd, kr: deploy and regen scales (cids 183, 182).
+    e_free: free energy offset [J] (cid 836)."""
+    h = cs.hybrid
+    f = 0.55 if h.regen_front_share is None else float(h.regen_front_share)
+    return (float(h.blend or 0.0) if flag_on(h.blend_on) else split, f if flag_on(h.regen_front_on) else 0.0,
+            1.0 if h.k_deploy is None else float(h.k_deploy), 1.0 if h.k_regen is None else float(h.k_regen),
+            0.0 if h.e_free is None else float(h.e_free))
+
+
 def _static_defl(su, vp, c, what):
     """Return (d, mr0): the static compression d of the spring of corner c at the damper [m], F0 / (mr0 k) - preload,
     and the motion ratio mr0 at static. what names the gap in the error message."""
@@ -720,7 +755,7 @@ def vehModel_cs(ctx):
         h = cs.hybrid
         F_dep = F_ref * hsym[0]
         F_pad = F_ref * hsym[1] if len(hsym) > 1 else 0.0
-        s_dep = float(h.blend or 0.0) if flag_on(h.blend_on) else split
+        s_dep, f_regen, kd, kr, e_free = hybrid_params(cs, split)
         P_f = split * (T_drive - F_pad) + s_dep * F_dep
         P_r = (1 - split) * (T_drive - F_pad) + (1 - s_dep) * F_dep
         T_fl, T_fr = axle_drive(P_f, "f") if (split > 0 or s_dep > 0) else (0.0, 0.0)
@@ -757,8 +792,6 @@ def vehModel_cs(ctx):
     if hyb:
         h = cs.hybrid
         _, brk_on, pad_on = hybrid_gates(cs)        # ChassisSim gates: 535 and 590 (brake), 573 and 589 (paddle)
-        kd = 1.0 if h.k_deploy is None else float(h.k_deploy)
-        kr = 1.0 if h.k_regen is None else float(h.k_regen)
         S = float(h.scale_deploy)
         mapf = deploy_map(cs)
         v_f = 0.5 * (Om_fl + Om_fr) * Rw["f"]
@@ -777,11 +810,8 @@ def vehModel_cs(ctx):
         if brk_on or pad_on:
             clamp = float(h.clamp_regen)
         if brk_on:
-            f = 0.55 if h.regen_front_share is None else float(h.regen_front_share)
-            front = flag_on(h.regen_front_on)
-            k_axle = min(bias / f if f > 0 else np.inf, (1 - bias) / (1 - f) if f < 1 else np.inf) if front else (1 - bias)
             F_net = _spos(-T_brake - D, w_net)
-            P_hb0 = _smin(clamp, k_axle * F_net * v_mix(f if front else 0.0), 1e-3 * clamp)       # before the regen scale
+            P_hb0 = _smin(clamp, regen_share(bias, f_regen) * F_net * v_mix(f_regen), 1e-3 * clamp)       # before the regen scale
             P_hb = P_hb0 * kr
         if pad_on:
             v_pad = v_mix(split)
@@ -789,7 +819,6 @@ def vehModel_cs(ctx):
             hyb_rows.append(("paddle_pw", (clamp - P_hb0 - F_pad * v_pad) / clamp, 0.0, np.inf))
             hyb_rows.append(("paddle_drv", hsym[1] * (T_drive_n + hsym[0]) / 1e-3, -1.0, 1.0))   # no drive under the paddle
         P_harv = P_hb + P_hp
-        e_free = 0.0 if h.e_free is None else float(h.e_free)
         lap_terms = [(P_dep - P_harv, -np.inf, e_free / E_S), (P_dep, -np.inf, (float(h.e_cap) + e_free) / E_S)]
 
     # ===================== chassis ==========================================
@@ -854,11 +883,18 @@ def cs_path_constraints(ca, m, ctx):
 def cs_seed_inputs(ctx, m, prof, s):
     """Scaled seed of the inputs at the stations s [m] from the QSS profile: the tyre force that holds the
     profile acceleration (mass and resistance of the car envelope prof['env']) goes to T_drive or T_brake. delta and
-    the hybrid forces are 0."""
+    the paddle force are 0. A car with the hybrid layer: T_drive stays under the gear envelope, and F_dep takes the
+    force above it, within the deploy power cap."""
     env = prof["env"]
     s = np.asarray(s, float).reshape(-1)
     v, ax = np.interp(s, prof["s"], prof["v"]), np.interp(s, prof["s"], prof["ax"])
     F = env.M * ax + env.F_res(v)
     z = np.zeros_like(v)     # delta and the hybrid forces (after delta) start at 0
-    u = np.vstack([np.maximum(F, 0.0), np.minimum(F, 0.0)] + [z] * (m.nu - 2)) / np.asarray(m.u_s, float)[:, None]
+    rows = [np.maximum(F, 0.0), np.minimum(F, 0.0)] + [z] * (m.nu - 2)
+    hy = getattr(env, "hybrid", None)
+    if hy is not None:       # the inputs are T_drive, T_brake, delta, F_dep
+        F_env = np.interp(v, env.v_grid, env.F_drive_tab)
+        rows[0] = np.minimum(rows[0], F_env)
+        rows[3] = np.clip(F - F_env, 0.0, np.interp(v, env.v_grid, hy["P_dep"]) / np.maximum(v, 1e-3))
+    u = np.vstack(rows) / np.asarray(m.u_s, float)[:, None]
     return np.clip(u, np.asarray(m.u_min)[:, None], np.asarray(m.u_max)[:, None])

@@ -12,6 +12,9 @@ set goes through MLTP with a fake IPOPT (no solve). The checks are:
   h. warm starts across the hybrid switch,
   i. sensitivity.nlp_index and limit_prices on a hybrid result,
   j. data['hybrid'] and the channels P_dep and P_harv.
+  k. the hybrid layer in the QSS (MLTP_screen, task P5): the skip rule, the harvest against a scalar loop, the store,
+     the mode 0 / mode 1 runs, one deploy step by hand (e = s and e != s), the cid edges, the ValueErrors, the NLP seed,
+     data['hybrid'] and its .mat round trip, and the 4EM Sturn screen with casadi blocked.
 The vendor section (last) runs only when CHASSISSIM_DIR names the ChassisSim install folder (SKIP otherwise).
 It checks that every shipped car has cid 177 off, and it builds a hybrid copy of the GP3 car in a temp dir.
 Nothing is written into the vendor folders. Results go to a temp dir.
@@ -25,21 +28,28 @@ import glob
 import hashlib
 import io
 import itertools
+import math
 import os
+import subprocess
+import sys
 import tempfile
 import warnings
 from pathlib import Path
 
 import casadi as ca
 import numpy as np
+from scipy.io import loadmat
 
+import functions.ggv as G
 import functions.transcription as T
 from functions import carfile, chassissim as C
 from functions.context import Ctx
 from functions.sensitivity import limit_prices, nlp_index
 from MLTP import MLTP
+from MLTP_screen import MLTP_screen
 from userOpts import userOpts
 from vehModel import vehModel
+from vehModel_cs import regen_share
 
 PASS = 0
 TMP = tempfile.TemporaryDirectory()
@@ -540,6 +550,250 @@ ok("the channels P_dep and P_harv are in vehicle_full and their knot slice is in
    "P_dep" in vf and "P_harv" in vf and np.array_equal(np.asarray(vk["P_dep"]), np.asarray(vf["P_dep"])[::d1])
    and np.array_equal(np.asarray(vk["P_harv"]), np.asarray(vf["P_harv"])[::d1]))
 
+# ---- QSS layer (P5): the hybrid layer in the lap estimate of MLTP_screen -----------------------------
+VI_QSS = 60.0                                         # MLTP_screen default vi [m/s]
+BASE_LAP = {}
+
+
+def qss(path, circ=CIRC, install=None, **kw):
+    """MLTP_screen on a car file (the synthetic install by default). Returns ctx."""
+    opts = dict(car=f"chassissim:{path}", circuit=f"chassissim:{circ}", chassissim_dir=install or INST,
+                physics="corrected", save=False, verbose=False)
+    opts.update(kw)
+    return quiet(MLTP_screen, **opts)
+
+
+def qss_shape(recs, peak=1.0):
+    """The shape of the QSS car records (as test_cs_qss.shape): positive tyre peaks, a slip curve from 0 to 1, camber
+    factor 1 and flat aero maps. Only the values change, the tables keep their shapes."""
+    out = []
+    for t, cid, v in recs:
+        if t == 9 and cid in (127, 131, 135):              # CLA, CDA and balance maps: flat
+            x, z, d = v
+            v = (x, z, np.full(len(d), {127: 2.5, 131: 0.95, 135: 0.45}[cid]))
+        elif t == 13:
+            dims, sc, tabs = v
+            tabs = [np.array(a, float) for a in tabs]
+            d1, d2, d3, _, _, d6, _ = (int(d) for d in dims)
+            load = tabs[3][:d1]
+            grid = np.outer(load, np.linspace(1.0, 1.1, d2)) * 1.2 * peak
+            tabs[3] = np.concatenate([load, tabs[3][d1:d1 + d2], grid.ravel()])
+            tabs[0][d3:] = np.linspace(0.0, 1.0, d3)
+            tabs[5][d6:] = 1.0
+            v = (dims, sc, tabs)
+        out.append((t, cid, v))
+    return out
+
+
+def qss_car_path(cids=None):
+    """Write the synthetic car in the QSS shape with the cid overrides (cid -> value), flags tagged 6. Return the path."""
+    cids = dict(cids or {})
+    body = [r for r in qss_shape(build_records()) if r[1] not in cids]
+    extra = [(6 if c in FLAG_CIDS else 1, c, v) for c, v in cids.items()]
+    path = os.path.join(CARS_DIR, f"qss_{next(COUNT)}.car")
+    carfile.write(body + extra + [(carfile.END_TAG, carfile.END_CID, None)], path)
+    return path
+
+
+def hy_car(over=None):
+    """QSS-shaped synthetic car with the hybrid records HYB and the cid overrides over (cid -> value)."""
+    return qss_car_path({**HYB, **(over or {})})
+
+
+def base_lap():
+    """QSS lap of the synthetic car with cid 177 off (the layer skipped)."""
+    if "lap" not in BASE_LAP:
+        BASE_LAP["lap"] = float(qss(qss_car_path({177: 0})).data.lap_time)
+    return BASE_LAP["lap"]
+
+
+def raised(fn, *a, **kw):
+    """Return the ValueError message of fn(*a, **kw), or None when it does not raise."""
+    try:
+        fn(*a, **kw)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def interp_at(env, y, v):
+    return float(np.interp(v, env.v_grid, y))
+
+
+def hand_accel(env, hy, v, kap, e, s):
+    """Return (a, fd) of the deploy at speed v and curvature kap, written from the law: the engine force comes
+    first (tyre or gear envelope), then the deploy force P_dep / v fills the room of each axle."""
+    res = env.c_res0 + env.c_res2 * v * v
+    r = v * v * kap / max(interp_at(env, env.ay_max, v), 1e-9)
+    el = math.sqrt(max(1.0 - r * r, 0.0))
+    a_pl = min((interp_at(env, env.Fx_trac, v) * el - res) / env.M, (interp_at(env, env.F_drive_tab, v) - res) / env.M_eff)
+    fe = a_pl * env.M_eff + res
+    cv = env.M_eff / env.M
+    rooms = []
+    if s > 0.0:
+        rooms.append((interp_at(env, hy["cap_f"], v) * cv * el - e * fe) / s - (cv - 1.0) * res)
+    if s < 1.0:
+        rooms.append((interp_at(env, hy["cap_r"], v) * cv * el - (1.0 - e) * fe) / (1.0 - s) - (cv - 1.0) * res)
+    fd = max(min([interp_at(env, hy["P_dep"], v) / max(v, 1e-3)] + rooms), 0.0)
+    return a_pl + fd / env.M_eff, fd
+
+
+def hand_next(env, hy, v, ka, kb, apex_b, ds):
+    """Heun step of the deploy pass in w = v^2, from v (curvature ka) to the next station (curvature kb, apex apex_b)."""
+    a1 = hand_accel(env, hy, v, ka, hy["e"], hy["s"])[0]
+    vp = min(math.sqrt(v * v + 2.0 * ds * a1), apex_b)
+    a2 = hand_accel(env, hy, vp, kb, hy["e"], hy["s"])[0]
+    return min(math.sqrt(v * v + ds * (a1 + a2)), apex_b)
+
+
+def last_accel_run(env, s, k):
+    """First segment and last segment + 1 of the last zone (forward pass binds) of the profile without deploy."""
+    saved, env.hybrid = env.hybrid, None
+    try:
+        q = G.march(env, s, k, VI_QSS)
+    finally:
+        env.hybrid = saved
+    up = np.nonzero(q["v_fwd"][:-1] <= q["v_bwd"][:-1] + 1e-9)[0]
+    cut = np.nonzero(np.diff(up) > 1)[0]
+    lo = up[cut[-1] + 1] if cut.size else up[0]
+    return int(lo), int(up[-1]) + 1
+
+
+def deploy_steps(q, label, e_want, s_want):
+    """Check the split and the deploy share of the car, then the Heun step of three deploy stations by hand."""
+    env, hy = q.envelope, q.envelope.hybrid
+    ok(f"{label}: split e {hy['e']:g} and deploy front share s {hy['s']:.6f} as set",
+       abs(hy["e"] - e_want) < 1e-12 and abs(hy["s"] - s_want) < 1e-6)
+    s, kk = np.asarray(q.track.s, float), np.asarray(q.track.k, float)
+    p = G.march(env, s, kk, VI_QSS)
+    lo, hi = last_accel_run(env, s, kk)
+    kabs = np.abs(p["k"])
+    picks = []                                          # the first three stations of the zone where the hand deploy is above 1 N
+    for i in range(lo + 5, hi - 1, 5):
+        if hand_accel(env, hy, p["v_fwd"][i], kabs[i], hy["e"], hy["s"])[1] > 1.0:
+            picks.append(i)
+        if len(picks) == 3:
+            break
+    ok(f"{label}: {len(picks)} stations of the zone deploy by hand (fd above 1 N)", len(picks) >= 2)
+    for i in picks:
+        fd = hand_accel(env, hy, p["v_fwd"][i], kabs[i], hy["e"], hy["s"])[1]
+        vn = hand_next(env, hy, p["v_fwd"][i], kabs[i], kabs[i + 1], p["v_apex"][i + 1], p["ds"])
+        ok(f"{label}: station {i} (v {p['v_fwd'][i]:.4f} m/s, hand fd {fd:.2f} N) Heun step equals the march "
+           f"(rel {rel(vn, p['v_fwd'][i + 1]):.1e})", rel(vn, p["v_fwd"][i + 1]) < 1e-12)
+
+
+print("[cs_hybrid] k. the hybrid layer in the QSS (MLTP_screen)")
+# (a) skip rule: cid 177 = 0 gives the lap of the car without the hybrid cids, and no record
+q_none = qss(qss_car_path({}))
+q_off = qss(qss_car_path({177: 0, 535: 1, 590: 1, 573: 1, 589: 1, 178: 1, 181: 1000.0}))
+ok(f"177 = 0 (other hybrid cids on): the QSS lap equals the car without them ({q_off.data.lap_time!r})",
+   q_off.data.lap_time == q_none.data.lap_time and "hybrid" not in vars(q_off.data) and q_off.envelope.hybrid is None)
+
+# (b) harvest against a scalar loop over the braking segments, store, deploy energy and the lap
+q0 = qss(hy_car({178: 0}))
+env0, cs0 = q0.envelope, q0.cs
+hy0, h0 = env0.hybrid, q0.data.hybrid
+s0, k0 = np.asarray(q0.track.s, float), np.asarray(q0.track.k, float)
+p0 = G.march(env0, s0, k0, VI_QSS)
+k_hand = regen_share(float(cs0.brake.front_bias), 0.0)
+v, vf, vb, ds = p0["v"], p0["v_fwd"], p0["v_bwd"], p0["ds"]
+E_hand, n_brk = 0.0, 0
+for i in range(v.size - 1):
+    vi_, vj = v[i], v[i + 1]
+    if not (vj < vi_ - 1e-9 and vb[i] <= vf[i] + 1e-9):
+        continue
+    vm, dt = 0.5 * (vi_ + vj), 2.0 * ds / (vi_ + vj)
+    B = max(env0.M_eff * (vi_ * vi_ - vj * vj) / (2.0 * ds) - (env0.c_res0 + env0.c_res2 * vm * vm), 0.0)
+    E_hand += min(CLAMP, k_hand * B * vm) * KR * dt
+    n_brk += 1
+ok(f"E_harv equals the scalar loop over {n_brk} braking segments ({E_hand:.4f} J, rel {rel(h0['E_harv'], E_hand):.1e})",
+   n_brk > 0 and rel(h0["E_harv"], E_hand) < 1e-9 and abs(hy0["k"] - k_hand) < 1e-12
+   and hy0["k_regen"] == KR and hy0["clamp"] == CLAMP)
+ok(f"E_store = min(E_harv, cid 181) + cid 836 ({h0['E_store']:.3f} J, within 1 J)",
+   abs(h0["E_store"] - min(h0["E_harv"], 400000.0)) < 1.0)
+ok(f"E_dep <= E_store + 1 J ({h0['E_dep']:.3f} J)", h0["E_dep"] <= h0["E_store"] + 1.0)
+ok(f"mode 0: the lap below the cid-177-off lap ({q0.data.lap_time:.5f} s, base {base_lap():.5f} s)",
+   q0.data.lap_time < base_lap())
+
+# (c) mode 1 runs, zones, sweeps
+q1 = qss(hy_car({178: 1}))
+h1 = q1.data.hybrid
+ok(f"mode 0 and mode 1 both run: zones {h0['zones']} and {h1['zones']} (> 0), sweeps {h0['sweeps']} and "
+   f"{h1['sweeps']} (<= 5), modes {h0['mode']} and {h1['mode']}",
+   h0["zones"] > 0 and h1["zones"] > 0 and max(h0["sweeps"], h1["sweeps"]) <= 5 and (h0["mode"], h1["mode"]) == (0, 1))
+ok(f"mode 1: store fixed point (E_store {h1['E_store']:.3f} J vs min(E_harv, 181) {min(h1['E_harv'], 400000.0):.3f} J) "
+   f"and lap {q1.data.lap_time:.5f} s below the base lap", abs(h1["E_store"] - min(h1["E_harv"], 400000.0)) < 1.0
+   and q1.data.lap_time < base_lap())
+
+# (d) one deploy step by hand, e = s and e != s
+deploy_steps(qss(hy_car({111: 0.5, 464: 0, 178: 0})), "e = s = 0.5", 0.5, 0.5)
+deploy_steps(qss(hy_car({111: 0.5, 178: 0})), "e = 0.5, s = 0.3", 0.5, 0.3)
+
+# (e) cid edges
+q_1k = qss(hy_car({178: 1, 181: 1000.0}))
+ok(f"181 = 1000 J caps the store (E_store {q_1k.data.hybrid['E_store']:.6f} J, E_dep {q_1k.data.hybrid['E_dep']:.6f} J)",
+   abs(q_1k.data.hybrid["E_store"] - 1000.0) < 1e-6 and q_1k.data.hybrid["E_dep"] <= 1001.0)
+q_50k = qss(hy_car({178: 1, 836: 50000.0}))
+ok(f"836 = 50000 J adds to the store (E_store {q_50k.data.hybrid['E_store']:.3f} J)",
+   abs(q_50k.data.hybrid["E_store"] - (min(q_50k.data.hybrid["E_harv"], 400000.0) + 50000.0)) < 1.0)
+q_z = qss(hy_car({178: 0, 181: 0.0}))
+ok(f"181 = 0: no store, no deploy, the base lap ({q_z.data.lap_time:.9f} s)",
+   q_z.data.hybrid["E_store"] == 0.0 and q_z.data.hybrid["E_dep"] == 0.0 and abs(q_z.data.lap_time - base_lap()) < 1e-9)
+q_nh = qss(hy_car({178: 0, 590: 0}))
+ok(f"590 = 0 (no paddle): E_harv 0 and the base lap ({q_nh.data.lap_time:.9f} s)",
+   q_nh.data.hybrid["E_harv"] == 0.0 and abs(q_nh.data.lap_time - base_lap()) < 1e-9)
+
+# (f) ValueErrors name the cid; a car with 177 off is silent
+m178 = raised(qss, hy_car({178: 2}))
+ok(f"178 = 2 with 177 on: ValueError naming cid 178 ({m178!r:.70})", m178 is not None and "cid 178" in m178)
+m836 = raised(qss, hy_car({836: 0.5}))
+ok(f"836 = 0.5 with 177 on: ValueError naming cid 836 ({m836!r:.70})", m836 is not None and "cid 836" in m836)
+ok("178 = 2 and 836 = 0.5 with 177 off: silent", raised(qss, qss_car_path({177: 0, 178: 2, 836: 0.5})) is None)
+ok("836 = 1.0 with 177 on: no error", raised(qss, hy_car({836: 1.0})) is None)
+
+# (g) NLP seed of a hybrid car (fake IPOPT, qss23 ladder): drive_env and the F_dep seed
+SEED.clear()
+cb = build(hy_car({178: 0}), ladder="qss23")
+nlp, x0 = cb.cap["nlp"], np.asarray(cb.cap["x"], float)
+ix = nlp_index(cb.data["nlp"]["structure"])
+gv = np.array(ca.Function("g", [nlp["x"]], [nlp["g"]])(x0)).ravel()
+drv = gv[ix["h"][0]]                                   # row 0 of the path rows: drive_env (lower bound 0)
+ok(f"drive_env holds at the start point (min {drv.min():.2e}, no row below -1e-6)", drv.min() >= -1e-6)
+jF = cb.input_keys.index("F_dep")
+d_c = int(cb.data["OPT_d"])
+s_knot = np.asarray(cb.data["s_full"], float).ravel()[:: d_c + 1]
+v_k = np.interp(s_knot, p0["s"], p0["v"])
+F_k = env0.M * np.interp(s_knot, p0["s"], p0["ax"]) + env0.c_res0 + env0.c_res2 * v_k * v_k
+F_env = np.interp(v_k, env0.v_grid, env0.F_drive_tab)
+exp_fd = np.clip(F_k - F_env, 0.0, np.interp(v_k, env0.v_grid, hy0["P_dep"]) / np.maximum(v_k, 1e-3))
+seed_fd = x0[ix["U"][jF]] * float(cb.m23.u_s[jF])
+seed_fd = seed_fd.ravel()
+err = float(np.max(np.abs(seed_fd - exp_fd)))
+n_pos = int(np.sum(exp_fd > 1.0))
+ok(f"F_dep seed equals F - F_env clipped to the deploy cap at the knots (max err {err:.1e} N)",
+   err <= 1e-6 * max(1.0, float(np.max(exp_fd))))
+ok(f"F_dep is seeded where the QSS deploys ({n_pos} knots above 1 N, all carry the seed)",
+   n_pos > 0 and bool(np.all(seed_fd[exp_fd > 1.0] > 0.0)))
+
+# (h) data['hybrid'] and the .mat round trip
+mat_dir = os.path.join(TMP.name, "qss_mat")
+os.makedirs(mat_dir)
+qs = qss(hy_car({178: 1}), save=True, results_dir=mat_dir)
+KEYS = ("E_harv", "E_store", "E_dep", "mode", "zones", "sweeps")
+rt = loadmat(qs.out_path, squeeze_me=True, struct_as_record=False)["data"].hybrid
+ok("data['hybrid'] holds E_harv, E_store, E_dep (J), mode, zones and sweeps", set(KEYS) <= set(qs.data.hybrid))
+ok("data['hybrid'] survives the .mat round trip exactly",
+   all(float(getattr(rt, k)) == float(qs.data.hybrid[k]) for k in KEYS))
+
+# 4EM Sturn screen with casadi blocked (a child process)
+code = ('import sys\nsys.modules["casadi"] = None\nfrom MLTP_screen import MLTP_screen\n'
+        'ctx = MLTP_screen(circuit="Sturn", save=False, verbose=False)\n'
+        'print("LAP %r" % float(ctx.data.lap_time))\n')
+r = subprocess.run([sys.executable, "-c", code], cwd=os.getcwd(), capture_output=True, text=True, timeout=600)
+lap4 = float(r.stdout.split("LAP ")[1].split()[0]) if "LAP " in r.stdout else float("nan")
+ok(f"4EM Sturn screen with casadi blocked: {lap4!r} (18.743926140324547)",
+   r.returncode == 0 and abs(lap4 - 18.743926140324547) < 1e-9)
+
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
     print("[cs_hybrid] vendor: shipped cars and a hybrid GP3 copy")
@@ -572,9 +826,37 @@ def vendor(cs_dir):
        rel(o["P_dep"], hand) < 1e-9)
 
 
+def vendor_qss(cs_dir):
+    print("[cs_hybrid] vendor QSS: GP3, GT3 and Formula 2 laps unchanged, a hybrid GP3 copy")
+    models = Path(cs_dir).parent / "Models"
+    gp3 = sorted(models.glob("GP3*/*Eastern*/def*.car"))
+    gt3 = [p for p in sorted(models.glob("GT3/*/*.car")) if any(p.parent.glob("*.ld"))]
+    f2 = sorted(models.glob("Formula 2/*/*.car"))
+    ok("GP3, GT3 and Formula 2 car files found by folder globs", bool(gp3) and bool(gt3) and bool(f2))
+    base = float(qss(gp3[0], circ="Eastern Creek", install=cs_dir).data.lap_time)
+    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 74.05494989625016),
+                                    ("GT3", gt3[0], "Adelaide", 73.05236704024435),
+                                    ("Formula 2", f2[0], "Adelaide", 59.5239241129469)):
+        lap = float(qss(path, circ=circ, install=cs_dir).data.lap_time) if label != "GP3" else base
+        ok(f"{label} QSS lap at {circ} unchanged: {lap!r} (tol 1e-9)", abs(lap - want) < 1e-9)
+    recs = carfile.decode(str(gp3[0]))
+    for mode in (0, 1):
+        body = [r for r in recs if r[1] not in (177, 178, 535, 590) and r[1] != carfile.END_CID]
+        path = os.path.join(CARS_DIR, f"gp3_hyb_m{mode}.car")
+        carfile.write(body + [(6, 177, 1), (6, 178, mode), (6, 535, 1), (6, 590, 1),
+                              (carfile.END_TAG, carfile.END_CID, None)], path)
+        c = qss(path, circ="Eastern Creek", install=cs_dir)
+        h = c.data.hybrid
+        gain = base - float(c.data.lap_time)
+        ok(f"hybrid GP3 copy, mode {mode}: gain {gain:.4f} s in [0.40, 0.65] (E_harv {h['E_harv']:.0f} J, "
+           f"E_dep {h['E_dep']:.0f} J, zones {h['zones']}, sweeps {h['sweeps']})",
+           0.40 <= gain <= 0.65 and h["E_dep"] <= h["E_store"] + 1.0)
+
+
 CS = os.environ.get("CHASSISSIM_DIR")
 if not CS or not os.path.isdir(CS):
     print("SKIP: CHASSISSIM_DIR not set")
 else:
     vendor(CS)
+    vendor_qss(CS)
 print(f"{PASS} checks passed")

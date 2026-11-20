@@ -104,6 +104,8 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
         data["setup_tag"] = setup_tag
     if getattr(ctx, "car", "4em") != "4em":     # a ChassisSim car: path#sha8, as in an MLTP result
         data["car"] = ctx.car
+    if "hybrid" in prof:                        # a car with the hybrid layer: the store of the lap (J), D39
+        data["hybrid"] = prof["hybrid"]
     if getattr(ctx, "car_atmos", 1.0) != 1.0:   # the atmospheric torque factor of the car, only when not 1.0
         data["car_atmos"] = ctx.car_atmos
     ctx.data = SimpleNamespace(**data)

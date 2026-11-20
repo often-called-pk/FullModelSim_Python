@@ -518,6 +518,11 @@ def power_refusals(cs):
         for c, v in ((182, h.k_regen), (183, h.k_deploy), (836, h.e_free)):     # None keeps 1, 1 and 0
             if v is not None and not (np.isfinite(v) and v >= 0):
                 raise ValueError(f"The car file {cs.path} holds {v} in cid {c}. The value must be 0 or more.")
+        if h.mode not in (None, 0, 1):
+            raise ValueError(f"The car file {cs.path} holds a deploy mode (cid 178) of {h.mode}. The mode must be 0 or 1.")
+        if h.e_free is not None and 0 < h.e_free < 1:
+            raise ValueError(f"The car file {cs.path} holds {h.e_free} in cid 836. ChassisSim reads a value between 0 and 1 "
+                             "as an early stop of the deploy. The model does not build that stop. Use 0, or a value of 1 or more.")
         if h.k_regen is not None and h.k_regen > 1:     # the blend keeps the axle forces, so a scale above 1 makes energy
             raise ValueError(f"The car file {cs.path} holds a regen scale (cid 182) of {h.k_regen}. "
                              "The model harvests the brake force that the car applies. A scale above 1 makes energy.")
