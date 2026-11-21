@@ -178,6 +178,7 @@ def build_records(omit=(), over=None):
     for cid in (104, 105, 106, 179, 180, 181, 182, 183, 465, 836, 871):
         add(1, cid, 0.0)
     add(1, 160, 0.5)                                                     # brake left share, even split
+    add(1, 572, 0.1)                                                     # brake ramp time [s], read when 571 is on
     add(7, 161, (ENGINE_RPM, np.zeros(len(ENGINE_RPM))))                  # engine-brake table, zero in y
     for cid in (177, 178, 464, 466, 535, 573, 589, 590, 870, 876, 877, 878, 879, 419, 423, 426, 428, 520, 571, 598, 649,
                 973, 853):
@@ -235,6 +236,8 @@ ok("ride heights 117-120 read as m (17, 18.5, 20, 21.5 mm)",
 ok("brake force 107 N, bias 108, delay 109 s",
    abs(car.brake.force - 14000.0) < 1e-9 and abs(car.brake.front_bias - 0.6) < 1e-12
    and abs(car.brake.delay - 0.05) < 1e-12)
+ok("brake ramp time 572 reads 0.1 s, and the ramp enable 571 reads 0 (off)",
+   car.brake.ramp_time == 0.1 and car.brake.ramp_on == 0)
 ok("idle rpm 102 and limit rpm 103 read as rad/s",
    abs(car.engine.rpm_idle - 1000.0 * RPM_T) < 1e-12 and abs(car.engine.rpm_limit - 9000.0 * RPM_T) < 1e-12)
 ok("aero CLA 121, CDA 122, offset 123, rho 125 as stored",
@@ -318,8 +321,8 @@ ok("engine torque curve: rpm axis in rad/s, torque in N m",
 ok("gears read as stored (6)", len(car.engine.gears) == 6 and np.allclose(car.engine.gears, GEARS, rtol=0, atol=0))
 ok("P1 cids read as stored: cut delay 104, brake left share 160 (0.5), regen front share 871 (0)",
    car.engine.cut_delay == 0.0 and car.brake.left_share == 0.5 and car.hybrid.regen_front_share == 0.0)
-ok("P1 flags and text read as stored: 571 and 897 off (0 and empty bytes), 870 flag 0",
-   car.refused.c571 == 0 and car.refused.c897 == b"" and car.hybrid.regen_front_on == 0)
+ok("P1 flags and text read as stored: ramp 571 off (0), 897 off (empty bytes), 870 flag 0",
+   car.brake.ramp_on == 0 and car.refused.c897 == b"" and car.hybrid.regen_front_on == 0)
 ok("hybrid deploy maps 467 (front) and 468 (rear): rpm axis in rad/s (3000 rpm -> 314.159), throttle z, zero data",
    abs(car.hybrid.map_front["x"][1] - 314.159) < 1e-3 and abs(car.hybrid.map_rear["x"][2] - 6000 * RPM_T) < 1e-9
    and np.allclose(car.hybrid.map_front["z"], [0.0, 1.0], rtol=0, atol=0)

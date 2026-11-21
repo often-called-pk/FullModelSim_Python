@@ -265,10 +265,12 @@ CAR_FIELDS = {
                                              (464, "blend_on"), (465, "blend"), (466, "map_on"),
                                              (870, "regen_front_on"), (871, "regen_front_share"))},
     467: ("hybrid.map_front", (RPM, 1.0, 1.0)), 468: ("hybrid.map_rear", (RPM, 1.0, 1.0)),
-    # Features that the model refuses when on: brake ramp 571, split recompute 598, push-to-pass 649, torque
+    # Brake ramp: 571 = enable, 572 = ramp time [s]. The NLP limits the rate of the brake force.
+    571: ("brake.ramp_on", 1.0), 572: ("brake.ramp_time", 1.0),
+    # Features that the model refuses when on: split recompute 598, push-to-pass 649, torque
     # multiplier maps 520, throttle trims 419 / 423 / 426 / 428, battery plugin 897 / 906, wake map flags 876 to 879.
     # 853 = brake split by the tyre limit of each wheel (ChassisSim then ignores cid 160).
-    **{c: (f"refused.c{c}", 1.0) for c in (571, 598, 853, 649, 520, 419, 423, 426, 428, 897, 906, *range(876, 880))},
+    **{c: (f"refused.c{c}", 1.0) for c in (598, 853, 649, 520, 419, 423, 426, 428, 897, 906, *range(876, 880))},
     112: ("diff.front_type", 1.0), 113: ("diff.rear_type", 1.0), 114: ("diff.front_map", 1.0),
     116: ("diff.rear_map", 1.0),
     107: ("brake.force", 1.0), 108: ("brake.front_bias", 1.0), 109: ("brake.delay", 1.0),
@@ -547,8 +549,15 @@ def hybrid_inputs(cs):
 
 
 def power_refusals(cs):
-    """Raise ValueError for a powertrain feature of the car that the model does not build."""
+    """Raise ValueError for a powertrain feature of the car that the model does not build.
+    The model builds the brake ramp (cid 571) as a limit on the rate of the brake force (vehModel_cs).
+    The ramp time (cid 572) must be above 0."""
     r, e, h = cs.refused, cs.engine, cs.hybrid
+    T = cs.brake.ramp_time
+    if flag_on(cs.brake.ramp_on) and not (T is not None and np.ndim(T) == 0 and np.isfinite(T) and T > 0):
+        raise ValueError(f"The car file {cs.path} sets the brake ramp (cid 571). "
+                         + ("The file does not hold cid 572. " if T is None else f"Cid 572 is {T}. ")
+                         + "The ramp time (cid 572) must be one number above 0.")
     s = e.torque_split
     if s is not None and not 0 <= s <= 1:       # NaN fails the comparison too
         raise ValueError(f"The car file {cs.path} holds a torque split (cid 111) of {s}. The split must be from 0 to 1.")
@@ -592,7 +601,6 @@ def power_refusals(cs):
                          f"(cid 182) of {h.k_regen}. ChassisSim scales the paddle force and its energy together. "
                          "The car model does not build that. Use a regen scale of 1.")
     for what, c, hit in (
-            ("the brake ramp", 571, on(r.c571)),
             ("the per-step torque split recompute", 598, on(r.c598)),
             ("the brake split by the tyre limit of each wheel", 853, on(r.c853)),
             *(("a battery plugin", c, _text_live(getattr(r, f"c{c}"))) for c in (897, 906)),

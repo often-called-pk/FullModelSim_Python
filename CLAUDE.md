@@ -535,7 +535,8 @@ ChassisSim. Atmospheric correction: ChassisSim reads `<parent of the install fol
 path is a bug of ChassisSim, and the loader copies it. With `Eng Corr` not 0, the engine torque gets the factor sqrt(Teng / Tcur)
 x the dry-pressure ratio. The defaults are 1.013 bar, water 0 and 15 degC. The factor multiplies the engine efficiency. A factor
 other than 1 is the knob `car_atmos` and goes into `data['car_atmos']`. No install on disk has the file (factor 1).
-`chassissim.power_refusals` raises ValueError for these cids: the brake ramp (571), the per-step torque split recompute (598) and
+Brake ramp (cid 571 on, `tests/test_cs_power.py`): the brake force may grow by at most cid 107 / T per second, with T = cid 572. In the NLP that is the rate bound -1 / T of the normalised brake input. Release keeps its bound. ChassisSim ramps each wheel to its capped force at the brake onset, once per braking zone. So the NLP can apply the brake faster, by cid 107 / onset force (about 1.25 in the hardest GP3 zone). The bound acts only where a mesh interval lasts less than T. Cid 571 is off in every shipped car. The QSS ignores the ramp, as the apex search of ChassisSim does. GP3 on Sturn (cold, MUMPS) with T = 2 s: 16.313 s against 16.150 s, and the fastest brake application sits at the bound.
+`chassissim.power_refusals` raises ValueError for these cids: the per-step torque split recompute (598) and
 a battery plugin (897, 906). It also raises for push-to-pass (649), the engine torque multiplier maps (520), a throttle trim (419,
 423, 426, 428) and a non-zero engine-brake table (161). It also raises for a brake left share other than 0.5 (cid 160). A brake split by the tyre limit of each wheel
 (cid 853 not 0) raises too. The wake maps raise too (872 to 875 live, or flags 876 to 879 not 0). A

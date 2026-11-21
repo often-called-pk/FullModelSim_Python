@@ -3,11 +3,13 @@
 A synthetic car file (arbitrary values, written with carfile.write; the cids and record tags are literal numbers
 here) and a synthetic ChassisSim folder layout go through load_car, power_refusals, aero_refusals, userOpts,
 vehModel and MLTP (fake IPOPT, no solve). Checks:
-  1. each refusal cid that is on raises ValueError naming the cid; off, absent and NUL text load,
+  1. each refusal cid that is on raises ValueError naming the cid; off, absent and NUL text load. The brake ramp
+     (571 on) needs one valid ramp time (572 above 0), else it raises naming cid 572,
   2. the wake gate: maps 872 to 875 live or flags 876 to 879 not 0 raise; cid 870 alone loads,
   3. the atmospheric factor of Atmos_Cond.ini: the hand value, the file name rule, the defaults, the errors,
-  4. the knob (setup tag, data['car_atmos']) and the NLP graph (factor 1.0 changes nothing),
-  5. the shipped car files (SKIP without CHASSISSIM_DIR): 27 load, the factor is 1.0 for each.
+  4. the knob (setup tag, data['car_atmos']), the NLP graph (factor 1.0 changes nothing) and the brake ramp
+     bound (571 = 1 with 572 = 0.2: the lower rate bound of the brake on N rows is -1 / 0.2),
+  5. the shipped car files (SKIP without CHASSISSIM_DIR): 28 load and 3 refuse, the factor is 1.0 for each.
 Nothing is written into the vendor folders.
 
     python tests/test_cs_power.py
@@ -66,9 +68,13 @@ def rel(a, b):
     return abs(a - b) / abs(b)
 
 
+CAP = {}     # the last call of the fake solver: its keyword arguments (lbg, ubg, ...)
+
+
 def fake(ca_, nlp, opts, info=None):
     """Stand-in for functions.transcription._make_solver: returns the start point, no iterations."""
     def solver(**k):
+        CAP.update(k=dict(k))
         return {"x": k["x0"], "f": 0.0, "lam_g": np.zeros(nlp["g"].numel()), "lam_x": np.zeros(nlp["x"].numel())}
     solver.stats = lambda: {"iter_count": 0, "return_status": "Fake"}
     if info is not None:
@@ -261,12 +267,25 @@ INST = build_install(os.path.join(TMP.name, "ChassisSim_v3_41"))   # a plain ins
 
 print("[cs_power] refusals by cid")
 # flags: on (1 and 2) raise naming the cid, off (0) loads
-for cid in (571, 598, 649, 520, 419, 423, 426, 428):
+for cid in (598, 649, 520, 419, 423, 426, 428):
     for v in (1, 2):
         msg = power_msg(write_car([(6, cid, v)]), INST)
         ok(f"cid {cid} = {v} raises ValueError naming the cid", msg != "silent" and raises_cid(msg, cid))
     ok(f"cid {cid} = 0 loads", power_msg(write_car([(6, cid, 0)]), INST) == "silent")
 ok("the flags absent load", power_msg(write_car(), INST) == "silent")
+
+print("[cs_power] brake ramp: 571 needs a valid 572")
+BAD_572 = (("absent", []), ("NaN", [(1, 572, float("nan"))]), ("0", [(1, 572, 0.0)]), ("-1", [(1, 572, -1.0)]),
+           ("inf", [(1, 572, float("inf"))]), ("two values", [(2, 572, np.array([0.1, 0.2]))]))
+for v in (1, 2):
+    for name, extra in BAD_572:
+        msg = power_msg(write_car([(6, 571, v)] + extra), INST)
+        ok(f"ramp 571 = {v} with 572 {name} raises ValueError naming cid 572 (no Python None)",
+           msg != "silent" and "cid 572" in msg and "None" not in msg)
+ok("ramp 571 = 1 with 572 = 0.1 loads", power_msg(write_car([(6, 571, 1), (1, 572, 0.1)]), INST) == "silent")
+for name, extra in (("absent", []), ("NaN", [(1, 572, float("nan"))]), ("-1", [(1, 572, -1.0)])):
+    ok(f"ramp 571 = 0 with 572 {name} loads", power_msg(write_car([(6, 571, 0)] + extra), INST) == "silent")
+    ok(f"ramp 571 absent with 572 {name} loads", power_msg(write_car(extra), INST) == "silent")
 HYB_VALID = [(6, 177, 1), (6, 535, 1), (6, 590, 1), (1, 179, 60000.0), (1, 180, 60000.0), (1, 181, 400000.0),
              (1, 182, 1.0), (1, 183, 1.0), (1, 836, 0.0)]
 ok("a car with 177 = 1 and valid hybrid values loads (cids 177, 535, 573 are no refusal)",
@@ -433,6 +452,43 @@ ok(f"(g) continue_from auto with car_atmos: the plain default seeds full+duals (
 ok("(g) the source is the plain default file, the car_atmos run is saved under its own tag",
    c_cont.data.provenance["run"]["source"] == os.path.basename(c_plain.out_path)
    and knob_tag(k_on) in os.path.basename(c_cont.out_path))
+
+print("[cs_power] brake ramp in the NLP")
+
+
+def ramp_build(extra):
+    """MLTP on the synthetic car with the extra records, fake IPOPT. Return (ctx, lbg, ubg, graph hash, N)."""
+    res = quiet(MLTP, chassissim_dir=INST, circuit=f"chassissim:{CIRC}", car=f"chassissim:{write_car(extra)}",
+                physics="corrected", save=False, plot=False, linear_solver="mumps")
+    mm = res.m23
+    h = hashlib.sha256(ca.Function("d", [mm.x, mm.u, mm.pv], [mm.dx, mm.sf]).serialize().encode()).hexdigest()
+    k = CAP["k"]
+    return res, np.ravel(np.asarray(k["lbg"], float)), np.ravel(np.asarray(k["ubg"], float)), h, int(dget(res.data, "N"))
+
+
+R0, lbg0, ubg0, h0, N = ramp_build([])                                     # no 571 and no 572: the reference
+R1, lbg1, ubg1, h1, _ = ramp_build([(6, 571, 1), (1, 572, 0.2)])
+R2, lbg2, _, _, _ = ramp_build([(6, 571, 1), (1, 572, 0.01)])
+R3, lbg3, ubg3, h3, _ = ramp_build([(6, 571, 0), (1, 572, 0.2)])
+nu = R1.m23.nu
+lb0 = np.ravel(R0.m23.duk_lb)
+lb1 = np.ravel(R1.m23.duk_lb)
+ok(f"571 = 1 with 572 = 0.2: the brake rate lower bound is -1 / 0.2 = -5.0 (got {lb1[1]:.6g})",
+   lb1[1] == -1.0 / 0.2)
+ok(f"the brake rate upper bound does not change ({np.ravel(R1.m23.duk_ub)[1]:.6g})",
+   np.array_equal(np.ravel(R1.m23.duk_ub), np.ravel(R0.m23.duk_ub)))
+ok("the other input rate bounds do not change", np.array_equal(np.delete(lb1, 1), np.delete(lb0, 1)))
+diff = np.flatnonzero(lbg1 != lbg0)
+ok(f"exactly N = {N} lower bound rows change, one per interval, stride nu = {nu}",
+   diff.size == N and np.all(np.diff(diff) == nu) and np.all(lbg1[diff] == -1.0 / 0.2)
+   and np.all(lbg0[diff] == lb0[1]))
+ok("no upper bound row changes (0 ubg rows)", np.array_equal(ubg1, ubg0))
+ok("the ramp changes the bounds only: the graph (dx, sf) equals the car without the cids", h1 == h0)
+ok("572 = 0.01 keeps the 571 = 0 bound (a looser ramp does not loosen it): all lower bounds equal",
+   np.array_equal(lbg2, lbg0) and lb0[1] == np.ravel(R2.m23.duk_lb)[1])
+ok("571 = 0 with 572 = 0.2 gives the graph of the car without the cids", h3 == h0)
+ok("571 = 0 with 572 = 0.2 gives the NLP bounds of the car without the cids",
+   np.array_equal(lbg3, lbg0) and np.array_equal(ubg3, ubg0) and np.array_equal(np.ravel(R3.m23.duk_lb), lb0))
 
 
 # ---- vendor -----------------------------------------------------------------------------------------

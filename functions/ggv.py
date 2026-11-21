@@ -568,7 +568,8 @@ def build_envelope_cs(ctx, v_grid=None):
     """Return the Envelope of a ChassisSim car (ctx.cs), on the speed grid v_grid (default: 0.1 m/s steps from 2 m/s
     to the top speed, so the gear steps of the drive force stay sharp).
 
-    It mirrors vehModel_cs quasi-statically. The tyre peak force is F'(Fz) x tyre grip x ctx.grip, with the
+    It mirrors vehModel_cs quasi-statically, except the brake ramp (cids 571, 572): the apex search of ChassisSim
+    ignores it too. The tyre peak force is F'(Fz) x tyre grip x ctx.grip, with the
     load floor, the camber factor at the dynamic camber and the peak of the slip curve. The aero maps are read at the
     ride heights that the aero load gives (a fixed point). The camber of the traction and brake limits uses the heave
     travel only (no pitch). The lateral load transfer follows the roll

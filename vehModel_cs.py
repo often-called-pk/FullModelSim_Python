@@ -554,6 +554,12 @@ def vehModel_cs(ctx):
     duk_ub = np.asarray(ctx.duk_ub, float).reshape(-1) / u_s
     duk_lb = np.asarray(ctx.duk_lb, float).reshape(-1) / u_s
     assert nu == duk_ub.size == duk_lb.size, "Rate limits (ctx.input_keys) do not match the inputs"
+    # ponytail: the row acts only where a mesh interval lasts less than T (interval time = dsk sf_k: 30 m at 60 m/s
+    # is 0.5 s). At T = 0.1 s on the default meshes it is not active, and the lap does not change. ChassisSim ramps
+    # each wheel force to its capped value at the start of a braking zone, for the first T of the zone only. The row
+    # limits each rise, at cid 107 / T. So the force can rise faster than in ChassisSim (about 1.25 x, GP3 peak zone).
+    if flag_on(cs.brake.ramp_on):     # brake ramp: the brake force grows by F_brk / T per second at most (T_brake_n falls)
+        duk_lb[1] = max(duk_lb[1], -1.0 / cs.brake.ramp_time)      # a tighter existing bound stays
 
     kappa = SX.sym("kappa")
     drs = getattr(ctx.track, "drs", None) is not None       # userOpts builds the gate when the car has a DRS
