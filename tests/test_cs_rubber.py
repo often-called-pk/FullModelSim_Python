@@ -116,6 +116,9 @@ EXPLICIT = {
 }
 EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0})   # third gaps 0: no third element
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -167,6 +170,8 @@ def build_records(over=None, omit=()):
     vals[113] = 1.0                                       # open rear differential
     for cid, v in vals.items():
         add(1, cid, v)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -656,6 +661,12 @@ def find_car(folder, pattern):
     return Path(hits[0]) if hits else Path(folder) / "missing.car"
 
 
+def quiet_screen(car_path, cs_dir):
+    """MLTP_screen on a car (no solve, the QSS only)."""
+    return quiet(MLTP_screen, car=f"chassissim:{car_path}", circuit="chassissim:Adelaide", chassissim_dir=cs_dir,
+                 physics="corrected", save=False, verbose=False)
+
+
 def vendor(cs_dir):
     models = Path(cs_dir).parent / "Models"
     print("[cs_rubber] vendor: GP3 2013, F2, GT3, F3")
@@ -694,10 +705,14 @@ def vendor(cs_dir):
     err = float(np.max(np.abs(ld - wt) / wt))
     ok(f"GT3 static loads equal the corner weights within 0.5 %: max {100 * err:.4f} %", err < 0.005)
 
-    # The F3 car stops at its front axle datum (kinematics), before the third element is read.
+    # The F3 front geometry solves. The NLP build stops at the front left damper (no table in the file), and the
+    # QSS at the front left spring (no rate), before the third element is read.
     hit, msg = refusal(build, str(f3), circuit="Adelaide", chassis_dir=cs_dir)
-    ok(f"F3 raises ValueError naming the front axle ground datum: {msg[:60]!r}",
-       hit and "ground datum of the front axle" in msg)
+    ok(f"F3 NLP build raises ValueError naming the front left damper table: {msg[:60]!r}",
+       hit and msg == "The damper of corner fl has no table. The car model needs one.")
+    hit_q, msg_q = refusal(quiet_screen, str(f3), cs_dir)
+    ok(f"F3 QSS raises ValueError naming the front left spring rate: {msg_q[:60]!r}",
+       hit_q and msg_q.startswith("The spring of corner fl has no rate"))
 
 
 def vendor_hysteresis(cs_dir):

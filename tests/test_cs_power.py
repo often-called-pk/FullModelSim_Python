@@ -9,7 +9,7 @@ vehModel and MLTP (fake IPOPT, no solve). Checks:
   3. the atmospheric factor of Atmos_Cond.ini: the hand value, the file name rule, the defaults, the errors,
   4. the knob (setup tag, data['car_atmos']), the NLP graph (factor 1.0 changes nothing) and the brake ramp
      bound (571 = 1 with 572 = 0.2: the lower rate bound of the brake on N rows is -1 / 0.2),
-  5. the shipped car files (SKIP without CHASSISSIM_DIR): 28 load and 3 refuse, the factor is 1.0 for each.
+  5. the shipped car files (SKIP without CHASSISSIM_DIR): 29 load and 2 refuse, the factor is 1.0 for each.
 Nothing is written into the vendor folders.
 
     python tests/test_cs_power.py
@@ -123,6 +123,9 @@ EXPLICIT = {
     7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0,   # rubber ground gaps, m
 }
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -179,6 +182,8 @@ def build_records():
         R.append((tag, FILE_CID.get(cid, cid), v))
     for cid, v in EXPLICIT.items():
         add(1, cid, v)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -513,8 +518,11 @@ def vendor(cs_dir):
             loaded += 1
         except ValueError:
             refused += 1
-    ok(f"28 shipped car files load and 3 refuse (FSAE loads, WRX refuses) ({loaded} load, {refused} refuse)",
-       loaded == 28 and refused == 3)
+    # Formula Renault 2L lacks the gap flags of the rear corners (cids 206, 207), default_car lacks the third
+    # gap flag (cid 208); both refuse in check_car. The WRX (struts) loads since K1.
+    ok(f"29 shipped car files load and 2 refuse (Formula Renault 2L: no rear gap flags; default_car: no third "
+       f"gap flag; the WRX loads) ({loaded} load, {refused} refuse)",
+       loaded == 29 and refused == 2)
     ok("the atmospheric factor is 1.0 for every car that loads", bool(factors) and all(f == 1.0 for f in factors))
 
 

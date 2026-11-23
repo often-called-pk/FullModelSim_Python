@@ -201,6 +201,9 @@ EXPLICIT = {
     7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0,   # rubber ground gaps, m
 }
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -257,6 +260,8 @@ def build_records():
         R.append((tag, FILE_CID.get(cid, cid), v))
     for cid, v in EXPLICIT.items():
         add(1, cid, v)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -939,11 +944,12 @@ def vendor_qss(cs_dir):
     f2 = sorted(models.glob("Formula 2/*/*.car"))
     ok("GP3, GT3 and Formula 2 car files found by folder globs", bool(gp3) and bool(gt3) and bool(f2))
     base = float(qss(gp3[0], circ="Eastern Creek", install=cs_dir).data.lap_time)
-    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 74.05494989625016),
-                                    ("GT3", gt3[0], "Adelaide", 73.05236704024435),
-                                    ("Formula 2", f2[0], "Adelaide", 59.5239241129469)):
+    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 74.12461931861725),
+                                    ("GT3", gt3[0], "Adelaide", 73.05236704025761),
+                                    ("Formula 2", f2[0], "Adelaide", 59.52389545490832)):
         lap = float(qss(path, circ=circ, install=cs_dir).data.lap_time) if label != "GP3" else base
-        ok(f"{label} QSS lap at {circ} unchanged: {lap!r} (tol 1e-9)", abs(lap - want) < 1e-9)
+        ok(f"{label} QSS lap at {circ} moved with the roll-centre fix (ground z = 0): {lap!r} (tol 1e-9)",
+           abs(lap - want) < 1e-9)
     recs = carfile.decode(str(gp3[0]))
     for mode in (0, 1):
         body = [r for r in recs if r[1] not in (177, 178, 535, 590, 973) and r[1] != carfile.END_CID]

@@ -116,6 +116,9 @@ EXPLICIT = {
 }
 EXPLICIT.update({7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0})   # third gaps 0: no third element
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -170,6 +173,8 @@ def build_records(rear_type, omit=(), over=None):
     vals[113] = rear_type
     for cid, v in vals.items():
         add(1, cid, v)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -544,12 +549,15 @@ def vendor_split(cs_dir):
     wrx = glob.glob(os.path.join(cs_dir, "*WRX*.car"))
     ok("WRX car file found in the install folder", len(wrx) == 1)
     msg = ""
+    wrx_cs = load_car(wrx[0])
     try:
-        check_car(load_car(wrx[0]))
+        check_car(wrx_cs)
     except ValueError as e:
         msg = str(e)
-    ok(f"WRX car: strut hardpoint refusal naming 4 points ({msg[:60]!r})",
-       "strut" in msg and "with 4 points" in msg)
+    hp = wrx_cs.hardpoints
+    ok(f"WRX car loads: the gate passes its MacPherson strut blocks (type 1, 4 points) ({msg[:60]!r})",
+       msg == "" and all(getattr(hp, f"{n}_type") == 1 and getattr(hp, n).shape == (4, 3)
+                         for n in ("front_r", "front_l", "rear_r", "rear_l")))
     fsae = glob.glob(os.path.join(cs_dir, "*FSAE*.car"))
     ok("FSAE car file found in the install folder", len(fsae) == 1)
     cs = load_car(fsae[0])

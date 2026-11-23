@@ -25,6 +25,7 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from functions import carfile
+from functions.chassissim import list_cars, load_car
 from functions.ggv import build_envelope
 from MLTP_screen import MLTP_screen
 import vehModel_cs as VCS
@@ -121,6 +122,9 @@ EXPLICIT = {
 EXPLICIT.update({c: 0.003 + 0.0005 * (c - 7) for c in range(7, 11)})  # ground gaps at the dampers, 3-4.5 mm
 EXPLICIT.update({c: 0.5 + 0.01 * c for c in range(11, 13)})          # third-element gaps
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -204,6 +208,8 @@ def build_records(cda_scalar=0.95, peak_scale=1.0, mr_fl=None, bias=None):
         add(1, cid, v)
     for cid in (204, 205, 206, 207):                                  # rubber gaps are ground gaps (flag 1)
         add(6, cid, 1)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -497,6 +503,37 @@ def vendor(cs_dir):
     ok("GP3 envelope carries the drive table", c.envelope.F_drive_tab is not None)
     ok(f"GP3 QSS lap finite and within 15 % of 76.742 s: {gl:.3f} s "
        f"({100 * (gl / 76.742 - 1):+.1f} %)", bool(np.isfinite(gl)) and abs(gl / 76.742 - 1) < 0.15)
+    # The three cars that build now (strut, live axle, mode-1 roll centres), picked by content from every shipped
+    # car. Pins measured after the roll-centre fix.
+    cars = {p: load_car(p) for p in list_cars(cs_dir)}
+
+    def pick(pred, what):
+        hits = [p for p, c in cars.items() if pred(c)]
+        ok(f"exactly one shipped car is {what} ({len(hits)} found)", len(hits) == 1)
+        return hits[0]
+
+    def lap_at(path):
+        return float(quiet(MLTP_screen, car=f"chassissim:{path}", circuit="chassissim:Eastern Creek",
+                           chassissim_dir=cs_dir, physics="corrected", save=False, verbose=False).data.lap_time)
+
+    def builds(path):
+        try:
+            lap_at(path)
+            return True
+        except ValueError:
+            return False
+
+    strut = pick(lambda c: c.hardpoints.front_l_type == 1, "a strut car (front type byte 1)")
+    live = pick(lambda c: c.susp.live_axle == 1 and c.hardpoints.rear_r_type == 2 and c.hardpoints.rear_l_type == 2,
+                "a live-axle car (cid 69 = 1, rear type byte 2)")
+    mode1 = pick(lambda c: c.geom.mode_f == 1 and c.geom.mode_r == 1 and builds(c.path),
+                 "a mode-1 car whose QSS builds (both axle modes 1)")
+    for label, path, pin, why in (
+            ("strut car", strut, 105.9035829848024, "builds now: MacPherson struts (type 1) on both axles"),
+            ("live-axle car", live, 87.21416056902375, "builds now: rear live axle (type 2, cid 69 = 1)"),
+            ("mode-1 car", mode1, 83.2006122733129, "builds now: mode-1 roll centres on both axles")):
+        lap = lap_at(path)
+        ok(f"{label} QSS lap at Eastern Creek {lap:.9f} s, pin {pin}, tol 1e-6 ({why})", abs(lap - pin) < 1e-6)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

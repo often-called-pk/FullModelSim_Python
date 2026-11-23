@@ -94,6 +94,9 @@ EXPLICIT = {  # tag 1 cids with a literal value
 }
 EXPLICIT.update({c: 0.5 + 0.01 * c for c in range(7, 13)})            # suspension gaps, no unit
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})        # DRS
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -141,6 +144,8 @@ def build_records(omit=(), over=None):
             R.append((tag, cid, over.get(cid, v)))
     for cid, v in EXPLICIT.items():
         add(1, cid, v)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -254,12 +259,20 @@ ok("track temperature 390 read as stored", abs(car.env.track_temp - TRACK_TEMP) 
 ok("engine efficiency 100, torque split 111 (0), diff types 112 and 113 as stored",
    abs(car.engine.efficiency - 0.9) < 1e-12 and car.engine.torque_split == 0.0
    and car.diff.front_type == 1.0 and car.diff.rear_type == 0.0)
-ok("roll-centre heights 55, 59, 63, 67 (fr, fl, rr, rl) read in m as stored",
-   abs(car.geom.rc_height_fr - 0.050) < 1e-12 and abs(car.geom.rc_height_fl - 0.052) < 1e-12
-   and abs(car.geom.rc_height_rr - 0.061) < 1e-12 and abs(car.geom.rc_height_rl - 0.063) < 1e-12)
+ok("side-view heights under brake 55, 59, 63, 67 (fr, fl, rr, rl) read in m as stored",
+   abs(car.geom.anti_brake_fr - 0.050) < 1e-12 and abs(car.geom.anti_brake_fl - 0.052) < 1e-12
+   and abs(car.geom.anti_brake_rr - 0.061) < 1e-12 and abs(car.geom.anti_brake_rl - 0.063) < 1e-12)
 ok("RC heights at the hardpoint datum 54, 58, 62, 66 (fr, fl, rr, rl) read in m as stored",
    abs(car.geom.rc_datum0_fr - 0.045) < 1e-12 and abs(car.geom.rc_datum0_fl - 0.047) < 1e-12
    and abs(car.geom.rc_datum0_rr - 0.058) < 1e-12 and abs(car.geom.rc_datum0_rl - 0.060) < 1e-12)
+
+# hardpoint type byte (the first value of the tag 10 record): 1 = MacPherson strut with 4 points
+strut_path = write_car("strut_fr.car", over={49: (1, np.concatenate([HP_RIGHT[:4, 0], HP_RIGHT[:4, 1], HP_RIGHT[:4, 2]]))})[0]
+strut = load_car(strut_path)
+ok("a strut block (type byte 1, 4 points) decodes into hardpoints.front_r_type 1 with shape (4, 3); "
+   "the other blocks stay type 0 with shape (6, 3)",
+   strut.hardpoints.front_r_type == 1 and strut.hardpoints.front_r.shape == (4, 3)
+   and strut.hardpoints.front_l_type == 0 and strut.hardpoints.front_l.shape == (6, 3))
 
 # groups: one decoded value per group
 print("  -- groups")
@@ -402,7 +415,8 @@ ok("suspension_curves accepts a live bump steer table (the refusal was removed i
    suspension_curves(bump_fl) is not None)
 curves = suspension_curves(load_car(SYN))
 ok("the synthetic car with zero bump steer gives front and rear curves (physical hardpoints)",
-   np.isfinite(curves.f.zg) and np.isfinite(curves.r.zg) and curves.f.lo < 0 < curves.f.hi)
+   np.isfinite(curves.f.rc_datum) and np.isfinite(curves.r.rc_datum)
+   and curves.f.lo < curves.f.w0 < curves.f.hi and curves.r.lo < curves.r.w0 < curves.r.hi)
 t4_rec = tyre_record(1, "fl")[0]            # file cid 81 = the front left tyre
 t4_dims, t4_sc, t4_tabs = t4_rec[2]
 t4_tabs = list(t4_tabs)
@@ -494,8 +508,8 @@ def vendor(cs):
     ok("spring rates: fl and fr 1200 lbf/in, rl and rr 800 lbf/in, in N/m (1e-3 relative)",
        all(rel(getattr(c.susp, f"spring_{k}")["rate"], lbf * LBF_IN) < 1e-3
            for k, lbf in (("fl", 1200.0), ("fr", 1200.0), ("rl", 800.0), ("rr", 800.0))))
-    fr_rc, rr_rc = c.geom.rc_height_fl, c.geom.rc_height_rl
-    ok(f"roll-centre heights: front {fr_rc:.4f} m < rear {rr_rc:.4f} m, both in (0, 0.2)",
+    fr_rc, rr_rc = c.geom.anti_brake_fl, c.geom.anti_brake_rl     # side-view heights under brake (cids 59, 67), m
+    ok(f"side-view heights under brake: front {fr_rc:.4f} m < rear {rr_rc:.4f} m, both in (0, 0.2)",
        0.0 < fr_rc < rr_rc < 0.2)
     ok(f"6 gears ({len(c.engine.gears)} read)", len(c.engine.gears) == 6)
     ok("aero maps are 7 x 5 (cla, cda, balance)",

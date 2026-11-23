@@ -32,6 +32,7 @@ D_ALPHA = np.pi / 18000.0     # slip angle step of the cornering stiffness in th
 # The clipped point stays within 5e-4 of the plateau start (0.07 % of the GP3 value). The index is not in the NLP,
 # so a sharp corner costs no iterations.
 W_SC = 1e-3
+F_SW = 100.0        # N, width of the drive / brake switch of the anti-dive and anti-squat height (about 1 % of the car weight)
 DELTA_MAX = 35.0 * (np.pi / 180.0)     # rad, road-wheel steer at the input bound (delta_n = 1)
 LAT_CAP = 0.9       # the lateral force of a wheel stays under this share of its pure lateral capacity
 B_GEAR = 80.0       # sharpness of the smooth maximum over the gears
@@ -686,7 +687,15 @@ def vehModel_cs(ctx):
         # Camber against the ground = static + the curve at the wheel travel (against the body) + the body roll.
         # phi > 0 is the right side down (xs_fr > xs_fl). A left wheel then leans its top inward (camber +phi),
         # a right wheel outward (-phi). So the outer wheel of a turn loses negative camber and the inner one gains it.
-        dyn = T["camber"] + poly_sx(kc.camber, xs[c], kc.lo, kc.hi) + (phi if c[1] == "l" else -phi)
+        if kc.live:     # live axle: the camber follows the tilt of the axle, d = (hub height left - right) / track
+            # The hub height is the tyre radius less the deflection, so its change from static is -(d_tyre - d0).
+            # The left wheel gains negative camber by d, the right wheel loses it (the sign of phi: right side down).
+            d_ax = ((d_tyre["rr"] - d0["rr"]) - (d_tyre["rl"] - d0["rl"])) / t_r
+            dyn = T["camber"] + (d_ax if c[1] == "l" else -d_ax)
+        elif kc.manual:     # manual roll centre (mode 1): the static camber only, as ChassisSim
+            dyn = ca.SX(T["camber"])
+        else:
+            dyn = T["camber"] + poly_sx(kc.camber, xs[c], kc.lo, kc.hi) + (phi if c[1] == "l" else -phi)
         if c[0] == "f" and curves.k1:    # camber from steer: delta > 0 is a left turn, whose outer (right) wheel gains negative camber
             dyn = dyn + curves.k1 * delta * (1.0 if c[1] == "r" else -1.0)
         cam = _curve(T["camber_x"], T["camber_y"])(dyn)
@@ -713,12 +722,30 @@ def vehModel_cs(ctx):
            "rl": fx["rl"], "rr": fx["rr"]}
     fyg = {"fl": fy["fl"]*ca.cos(delta) + fx["fl"]*ca.sin(delta), "fr": fy["fr"]*ca.cos(delta) + fx["fr"]*ca.sin(delta),
            "rl": fy["rl"], "rr": fy["rr"]}
-    # roll centres: the curve of the axle at the mean wheel travel (rc_h(0) = the stored height minus the ground datum zg: the height above the contact patches). Jacking and Mx as vehModel.
+    # roll centres: the curve of the axle at the mean wheel travel (rc_h = the height above the contact patches). Jacking and Mx as vehModel.
     hRC = {a: poly_sx(k.rc_h, 0.5 * (xs[a + "l"] + xs[a + "r"]), k.lo, k.hi) for a, k in (("f", curves.f), ("r", curves.r))}
     fj = {"fl": -fyg["fl"] * (2*hRC["f"]/t_f), "fr": +fyg["fr"] * (2*hRC["f"]/t_f),
           "rl": -fyg["rl"] * (2*hRC["r"]/t_r), "rr": +fyg["rr"] * (2*hRC["r"]/t_r)}
     Mx = {c: fyg[c] * (vp.hcg - hRC[c[0]]) for c in C4}
-    My = {c: -(fxg[c] * (vp.hcg - (d_tyre[c] - d0[c]) - xs[c])) for c in C4}
+    # Anti-dive / anti-squat: the tyre forces of an axle act on the body at the height h_axle, so the pitch arm is
+    # (hcg - h_axle). h is the drive value when the axle force sum is positive, else the brake value (cids 56 / 55 front,
+    # 64 / 63 rear). ChassisSim switches sharply at 0. The model uses a tanh of width F_SW.
+    # ponytail: the tanh blend is not the sharp switch. The pitch moment differs by at most 0.139 F_SW |h_drive - h_brake|
+    # (GP3: 1.4 N m front, 1.1 N m rear). Use a sharp switch if a car needs it.
+    # ponytail: the vertical jacking force (cids 800-807) is not built, add it when a car sets a gate. The mode 0
+    # ride-height shift of h (divisor not decoded) is skipped. Add it when the divisor is decoded.
+    # ponytail: arm-only law (owner ruling 2026-11-23). It cuts the steady tyre load transfer by (S_f h_f + S_r h_r) / L.
+    # For the GP3 that is about 29 % of the braking transfer at 2.4 g. The decode says that ChassisSim does the same with
+    # cids 800-807 off. The link force is not built. It is a vertical force S h / l on the body at each axle, and the
+    # opposite force on the wheels. Add it when the owner logs show the full transfer.
+    h_ax = {}
+    for a in "fr":
+        hb, hd = getattr(cs.geom, f"anti_brake_{a}r"), getattr(cs.geom, f"anti_drive_{a}r")
+        if hb == hd:
+            h_ax[a] = hb
+        else:
+            h_ax[a] = hb + (hd - hb) * 0.5 * (1 + ca.tanh((fxg[a + "l"] + fxg[a + "r"]) / F_SW))
+    My = {c: -(fxg[c] * (vp.hcg - (d_tyre[c] - d0[c]) - xs[c] - h_ax[c[0]])) for c in C4}
 
     # ===================== powertrain =======================================
     bias = cs.brake.front_bias

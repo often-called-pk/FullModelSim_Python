@@ -146,6 +146,9 @@ EXPLICIT = {
 GAP = {7: 0.008, 8: 0.009, 9: 0.0085, 10: 0.0095, 11: 0.0, 12: 0.0}
 EXPLICIT.update(GAP)
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -202,6 +205,8 @@ def build_records(cut=None):
     ex.update(cut or {})
     for cid, v in ex.items():
         add(1, cid, v)
+    for cid in (53, 61, 69):
+        add(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         add(11, cid, (1, pre, rate, np.array([0.0, 0.05]), np.array([0.0, 500.0])))
     for cid, (rate, pre) in RUBBER.items():
@@ -396,14 +401,16 @@ def vendor(cs_dir):
     c_gp3 = quiet(MLTP_screen, car=f"chassissim:{gp3[0]}", circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir,
                   physics="corrected", save=False, verbose=False)
     lap_gp3 = float(c_gp3.data.lap_time)
-    ok(f"GP3 no band and QSS lap unchanged 74.05494989625016 s: {lap_gp3:.10f} s",
-       c_gp3.envelope.info["shift_bands"] == [] and abs(lap_gp3 - 74.05494989625016) < 1e-6)
+    ok(f"GP3 no band and QSS lap moved with the roll-centre fix (ground z = 0) to 74.12461931861725 s: "
+       f"{lap_gp3:.10f} s",
+       c_gp3.envelope.info["shift_bands"] == [] and abs(lap_gp3 - 74.12461931861725) < 1e-6)
     f2 = sorted(glob.glob(os.path.join(models, "Formula 2", "*", "*.car")))
     ok("F2 car found by glob", len(f2) == 1)
     c_f2 = quiet(MLTP_screen, car=f"chassissim:{f2[0]}", **kw)
     lap_f2 = float(c_f2.data.lap_time)
-    ok(f"F2 no band and QSS lap unchanged 59.5239241129469 s: {lap_f2:.10f} s",
-       c_f2.envelope.info["shift_bands"] == [] and abs(lap_f2 - 59.5239241129469) < 1e-6)
+    ok(f"F2 no band and QSS lap moved with the roll-centre fix (ground z = 0) to 59.52389545490832 s: "
+       f"{lap_f2:.10f} s",
+       c_f2.envelope.info["shift_bands"] == [] and abs(lap_f2 - 59.52389545490832) < 1e-6)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

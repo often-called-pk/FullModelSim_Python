@@ -88,6 +88,9 @@ EXPLICIT = {
     11: 0.0, 12: 0.0,                                 # third gaps: 0, no third rubber
 }
 EXPLICIT.update({c: 0.2 + 0.001 * c for c in range(336, 342)})
+EXPLICIT.update({142: 0.5 * (EXPLICIT[117] + EXPLICIT[118]) * 1e-3,
+                 144: 0.5 * (EXPLICIT[119] + EXPLICIT[120]) * 1e-3, 56: 0.0, 60: 0.0, 64: 0.0, 68: 0.0})
+EXPLICIT.update({c: 0.0 for c in (55, 59, 63, 67) if c not in EXPLICIT})
 ENGINE_RPM = np.array([1000.0, 3000.0, 6000.0, 9000.0])
 ENGINE_NM = np.array([200.0, 250.0, 240.0, 150.0])
 GEARS = np.array([3.2, 2.5, 1.9, 1.5, 1.25, 1.05])
@@ -179,6 +182,8 @@ def build_records(rear_scale=1.0, over=None):
         rec[cid] = (tag, v)
     for cid, v in EXPLICIT.items():
         put(1, cid, v)
+    for cid in (53, 61, 69):
+        put(6, cid, 0)                                   # geometry mode 0 (53, 61), no live axle (69)
     for cid, (rate, pre) in SPRING.items():
         put(11, cid, table_rec(1, pre, rate, [0.0, 0.05], [0.0, 500.0]))
     put(11, 5, table_rec(1, 0.0, 0.0, [0.0, 0.05], [0.0, 500.0]))

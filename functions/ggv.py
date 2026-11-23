@@ -576,6 +576,7 @@ def build_envelope_cs(ctx, v_grid=None):
     stiffness split of the springs and bars, with the tyre in series, and the roll centres of the curves at the heave travel.
     The camber of a front wheel at the apex adds the steer camber -K1 L ay / v^2, with the steer clipped at the NLP bound.
     The QSS skips bump steer, because it has no slip angles.
+    The QSS ignores the side-view anti-dive and anti-squat heights, as the apex search of ChassisSim does.
     The drive force is the gear envelope (the same smooth maximum as the NLP). Brakes: the brake force and
     the front bias, limited by the tyres. The drag and the rolling drag fit c_res0 + c_res2 v^2 on the grid.
     A car with the stability index flag (cid 655 = 1) and a live map (cid 656) gets env.apex_factor (_apex_factor).
@@ -714,6 +715,12 @@ def build_envelope_cs(ctx, v_grid=None):
         ro_f = ro_r = Mx / (Kf + Kr)    # the camber follows the body roll vs the ground: suspension and tyres (state phi of the NLP)
         if curves.k1:       # camber from steer: the apex steer is L kappa = L ay / v^2, at most the steer bound of the NLP.
             ro_f = ro_f - curves.k1 * np.clip(L * ay / v ** 2, -DELTA_MAX, DELTA_MAX)     # the outer wheel gains negative camber
+        if curves.f.manual:     # manual roll centre (mode 1): the static camber only, as ChassisSim (K1 is 0 there)
+            ro_f = np.zeros_like(ro_f)
+        if curves.r.manual:
+            ro_r = np.zeros_like(ro_r)
+        if curves.r.live:       # live axle: the camber is the tilt of the axle, from the hub heights (tyre deflections)
+            ro_r = dF_r * (1.0 / ty["rl"]["kz"] + 1.0 / ty["rr"]["kz"]) / t_r      # the outer hub is lower, as the roll
         return dF_f, dF_r, rf, rr, ro_f, ro_r
 
     def lat_capacity(ay):

@@ -178,6 +178,8 @@ def _corners(group, base, prefix="", f=1.0):
     return {base + i: (f"{group}.{prefix}{c}", f) for i, c in enumerate(_C4)}
 
 
+# The hardpoint blocks in cid order 49-52. load_car also sets hardpoints.<name>_type, the type byte of the block.
+_HP_NAMES = ("front_r", "front_l", "rear_r", "rear_l")
 # (right cid, left cid) of the records that ChassisSim copies from right to left when the left one is empty.
 # The groups: springs, rubber air gaps, rubber tables, corner motion ratios, dampers, tyres, bar motion ratios.
 _SIDES = [(b + i, b + i + 1) for b in (1, 7, 13, 23, 31, 80) for i in (0, 2)] + [(27, 170), (28, 171)]
@@ -202,18 +204,22 @@ def table_live(v):
 #   tag 4 (x, force)   tag 7 (x, y)   tag 9 (x, z, data)   tag 11 (preload, rate, x, y)   tag 12 (unused, force)
 # The file stores springs, bars and dampers in SI, so no field needs lbf/in. It stores a ride height in mm
 # and a damper velocity in mm/s.
-# ponytail: skipped the cids that the sheet leaves unnamed (56, 60, 64, 68, 94, 95, 97, 126, 150-153).
+# ponytail: skipped the cids that the sheet leaves unnamed (57, 65, 94, 95, 97, 126, 150-153).
 # Add one when a task needs it.
 CAR_FIELDS = {
     84: ("mass.total", 1.0), 85: ("mass.unsprung_front", 1.0), 86: ("mass.unsprung_rear", 1.0),
     87: ("mass.Ix", 1.0), 88: ("mass.Iy", 1.0), 89: ("mass.Iz", 1.0), 96: ("mass.front_share", 1.0),
     90: ("geom.wheelbase", 1.0), 91: ("geom.track_front", 1.0), 92: ("geom.track_rear", 1.0),
     93: ("geom.cg_height", 1.0),
-    # A stored geometry block is a flag and a triple per corner: FR flag 53, triple 54-56. FL 57, 58-60.
-    # RR 61, 62-64. RL 65, 66-68. Cid 69 is a trailing flag. The second value of a triple is the roll-centre height.
-    **{55 + 4 * i: (f"geom.rc_height_{c}", 1.0) for i, c in enumerate(_C4)},
-    # The first value of a triple (cids 54, 58, 62, 66): the RC height at the hardpoint datum. That is the height
-    # with the contact patch on z = 0 of the hardpoint frame.
+    # A stored geometry block is a mode and a triple per corner: FR mode 53, triple 54-56. FL 57, 58-60. RR 61, 62-64.
+    # RL 65, 66-68. ChassisSim reads only the modes 53 (front axle) and 61 (rear axle): the axle geometry mode.
+    # A triple is (front-view RC height at the datum ride height with the contact patch at z = 0 of the hardpoint
+    # frame, side-view height under brake or coast, side-view height under drive).
+    # 142 and 144 are the datum ride heights of the hardpoints, front and rear (m, as stored).
+    53: ("geom.mode_f", 1.0), 61: ("geom.mode_r", 1.0), 142: ("geom.datum_rh_f", 1.0), 144: ("geom.datum_rh_r", 1.0),
+    69: ("susp.live_axle", 1.0),
+    **{55 + 4 * i: (f"geom.anti_brake_{c}", 1.0) for i, c in enumerate(_C4)},
+    **{56 + 4 * i: (f"geom.anti_drive_{c}", 1.0) for i, c in enumerate(_C4)},
     **{54 + 4 * i: (f"geom.rc_datum0_{c}", 1.0) for i, c in enumerate(_C4)},
     **_corners("geom", 117, "ride_height_", MM),
     **_corners("susp", 1, "spring_"), 5: ("susp.spring_third_f", 1.0), 6: ("susp.spring_third_r", 1.0),
@@ -227,7 +233,7 @@ CAR_FIELDS = {
     28: ("susp.mr_arb_rr", 1.0), 171: ("susp.mr_arb_rl", 1.0),
     29: ("susp.mr_third_f", 1.0), 30: ("susp.mr_third_r", 1.0),
     **_corners("susp", 31, "damper_"), 35: ("susp.damper_third_f", 1.0), 36: ("susp.damper_third_r", 1.0),
-    **{49 + i: (f"hardpoints.{n}", 1.0) for i, n in enumerate(("front_r", "front_l", "rear_r", "rear_l"))},
+    **{49 + i: (f"hardpoints.{n}", 1.0) for i, n in enumerate(_HP_NAMES)},
     **_corners("tyre", 80),
     # Bump rubber hysteresis per corner: the enable flag (tag 6) and the curve (tag 4: x, loading force, unloading force).
     # x is the compression past the rubber air gap [m].
@@ -436,8 +442,11 @@ def load_car(path, chassissim_dir=None):
     Brake force is the total in N, bias is the front share, delay is in s.
     A tyre is a dict. It holds the peak lateral force over the load at its background temperature,
     the slip and camber curves, the peak slip angle and ratio, the radius and the vertical rate.
-    A hardpoint block has shape (6, 3), in the car frame of ChassisSim. The rows are lower inner front,
-    lower inner aft, lower outer, upper inner front, upper inner aft and upper outer.
+    A hardpoint block is in the car frame of ChassisSim, and hardpoints.<n>_type holds its type byte.
+    Type 0, double wishbone, has shape (6, 3). The rows are lower inner front, lower inner aft, lower outer,
+    upper inner front, upper inner aft and upper outer. Type 1, MacPherson strut, has shape (4, 3). The rows are
+    lower inner front, lower inner aft, lower ball joint and top mount. Type 2, live axle, holds 6 link points.
+    The car model does not read them.
     susp.hyst_<c> is the bump rubber hysteresis curve of corner c: a dict with x in m and the load and unload
     forces in N. With the flag susp.hyst_flag_<c> at 1, a curve that cannot give a rubber law raises ValueError.
     The file stores the right wheel first: the lowest cid of four corner records is FR, then FL, RR, RL.
@@ -457,6 +466,8 @@ def load_car(path, chassissim_dir=None):
     for name, _ in CAR_FIELDS.values():
         g, a = name.split(".")
         setattr(groups.setdefault(g, SimpleNamespace()), a, None)
+    for n in _HP_NAMES:
+        setattr(groups["hardpoints"], f"{n}_type", None)
     for cid, (name, f) in CAR_FIELDS.items():
         if cid in recs:
             g, a = name.split(".")
@@ -466,6 +477,9 @@ def load_car(path, chassissim_dir=None):
                 raise ValueError(f"The car file {path} holds the rubber hysteresis record {cid} with tag {t}. "
                                  f"The model expects tag {want}.")
             setattr(groups[g], a, _tyre_decode(v) if t == 13 else _conv(t, v, f))
+            # ponytail: the hardpoints stay float64. ChassisSim computes the geometry in float32 (below 0.01 mm).
+            if t == 10:                             # the type byte of a hardpoint block
+                setattr(groups[g], f"{a}_type", int(v[0]))
     su = groups["susp"]
     for cid, a in ((638, "f"), (639, "r")):
         if getattr(su, f"hyst_flag_third_{a}") not in (None, 0):
@@ -612,19 +626,59 @@ def power_refusals(cs):
             raise ValueError(f"The car file {cs.path} uses {what} (cid {c}). The car model does not build it.")
 
 
+_TYPE_NAMES = {0: "a double wishbone", 1: "a MacPherson strut", 2: "a live axle"}
+
+
+def _hardpoint_gate(cs):
+    """Raise ValueError for a hardpoint block, axle mode or live-axle flag that the car model does not build.
+    Allowed per corner (type, points, axle mode): (0, 6, 0 or 1), (1, 4, 0 or 1) and (2, 6, 1) on a rear corner
+    with cid 69 = 1. The two corners of an axle hold one type."""
+    hp, g = cs.hardpoints, cs.geom
+    live = cs.susp.live_axle
+    for ax, cids, modecid in (("front", (49, 50), 53), ("rear", (51, 52), 61)):
+        mode = getattr(g, f"mode_{ax[0]}")
+        names = _HP_NAMES[:2] if ax == "front" else _HP_NAMES[2:]
+        types, shown = [], []
+        for cid, n in zip(cids, names):
+            ty, b = getattr(hp, f"{n}_type"), getattr(hp, n)
+            if b is None:
+                continue
+            types.append(ty)
+            tn = _TYPE_NAMES.get(ty, f"type {ty}")
+            shown.append(f"{tn} with {len(b)} points (cid {cid})")
+            what = (f"The car file {cs.path} holds a hardpoint block (cid {cid}) of {tn} with {len(b)} points "
+                    f"and the {ax} axle geometry mode {mode} (cid {modecid}).")
+            if (ty, len(b)) not in ((0, 6), (1, 4), (2, 6)):
+                raise ValueError(what + " The car model builds only a double wishbone with 6 points, a MacPherson "
+                                 "strut with 4 points and a rear live axle with 6 points.")
+            if ty == 2 and (ax == "front" or not live):
+                raise ValueError(what + " The car model builds a live axle only on the rear axle with cid 69 = 1.")
+            if mode not in (None, 0, 1) or (ty == 2 and mode != 1):
+                raise ValueError(what + " The car model builds the modes 0 and 1 only"
+                                 + (", and a live axle needs mode 1." if ty == 2 else "."))
+        if len(set(types)) > 1:
+            raise ValueError(f"The car file {cs.path} holds two different hardpoint types on the {ax} axle: "
+                             f"{shown[0]} and {shown[1]}, with the {ax} axle geometry mode {mode} (cid {modecid}). "
+                             f"The car model needs one type per axle.")
+    if live and (hp.rear_r_type != 2 or hp.rear_l_type != 2):
+        rear = [f"{_TYPE_NAMES.get(getattr(hp, f'{n}_type'), 'type ' + str(getattr(hp, f'{n}_type')))} with "
+                f"{'no' if getattr(hp, n) is None else len(getattr(hp, n))} points (cid {cid})"
+                for cid, n in zip((51, 52), _HP_NAMES[2:])]
+        raise ValueError(f"The car file {cs.path} sets the live axle flag (cid 69), but the rear hardpoint blocks hold "
+                         f"{rear[0]} and {rear[1]}, with the rear axle geometry mode {g.mode_r} (cid 61). "
+                         f"The car model needs a live axle with 6 points on both rear corners.")
+
+
 def check_car(cs):
     """Raise one ValueError that lists every field the car model or the QSS reads and the car file lacks.
     An aero map correction, a DRS value or a speed table counts only when its enable is 1."""
     C = ("fl", "fr", "rl", "rr")
-    for cid, n in zip(range(49, 53), ("front_r", "front_l", "rear_r", "rear_l")):
-        hp = getattr(cs.hardpoints, n)
-        if hp is not None and len(hp) != 6:
-            raise ValueError(f"The car file {cs.path} holds a hardpoint block (cid {cid}) with {len(hp)} points. "
-                             f"The car model needs 6 points (two wishbones). A strut suspension is not built yet.")
+    _hardpoint_gate(cs)
     need = {f"mass.{n}": getattr(cs.mass, n) for n in ("total", "unsprung_front", "unsprung_rear", "Ix", "Iy", "Iz", "front_share")}
     for grp, obj, names in (
-            ("geom", cs.geom, ("wheelbase", "track_front", "track_rear", "cg_height", *(f"rc_height_{c}" for c in C),
-                               *(f"ride_height_{c}" for c in C))),
+            ("geom", cs.geom, ("wheelbase", "track_front", "track_rear", "cg_height", "anti_brake_fr", "anti_brake_rr", "anti_drive_fr", "anti_drive_rr",
+                               *(f"ride_height_{c}" for c in C), "mode_f", "mode_r", "datum_rh_f", "datum_rh_r",
+                               *(f"rc_datum0_{ax}r" for ax in "fr" if getattr(cs.geom, f"mode_{ax}") == 1))),
             ("hardpoints", cs.hardpoints, ("front_l", "rear_l")),
             ("susp", cs.susp, (*(f"{p}_{c}" for p in ("spring", "mr", "gap", "damper") for c in C),
                                "arb_f", "arb_r", "mr_arb_fr", "mr_arb_rr", "spring_third_f", "spring_third_r")),
@@ -734,115 +788,181 @@ def _line_hit(a, b, c, d):
     return a + t[0] * (b - a)
 
 
-def axle_kinematics(hp, track, rc_static, travel=TRAVEL, n=21, name="", rc_datum0=None, radius=None):
-    """Solve the front view of one double wishbone and fit the curves. hp has shape (6, 3): the rows of the car
-    file (lower inner front, lower inner aft, lower outer, upper inner front, upper inner aft, upper outer).
-    The inner points of each wishbone are projected to one pivot (the mean of the two). The upright is rigid and
-    the contact patch (y = track / 2) is fixed to it. The wheel moves by w, bump positive.
-    The ground height of ChassisSim is a reference z that no file field holds. It is found here: the z of the
-    ground at which the static roll centre equals rc_static. The result holds the datum, the curves as poly1d in
-    w [m]: rc_h [m] above the contact patches and camber [rad]. The camber is the change of the negative camber
-    against the body: positive when the top leans in. The result also holds the range lo, hi [m].
-    With radius, zg must lie in [LO_z - radius, LO_z]: the contact patch is below the lower outer ball joint by at
-    most the tyre radius. If the datum from rc_static fails this check, or rc_static is exactly 0.0 (not set),
-    zg = 0 is the fallback. The fallback needs
-    rc_datum0 (the stored RC height at the hardpoint datum) to equal the roll-centre height of this geometry at
-    zg = 0 within 1 mm. Then the geometry agrees with the file, and the stored height rc_static is not usable."""
-    li, lo, ui, uo = hp[:2, 1:].mean(0), hp[2, 1:], hp[3:5, 1:].mean(0), hp[5, 1:]
-    L1, L2, Lu = np.hypot(*(lo - li)), np.hypot(*(uo - ui)), np.hypot(*(uo - lo))
+def _plane_z(p0, p1, p2, xq, yq):
+    """Return the height z at (xq, yq) of the plane through the 3 points p0, p1, p2 (rows x, y, z).
+    As the ChassisSim loader: a degenerate plane gives the z of p2."""
+    (x0, y0, z0), (x1, y1, z1), (x2, y2, z2) = p0, p1, p2
+    d = (y2 - y0) * x1 + (y1 - y2) * x0 + (y0 - y1) * x2
+    if d == 0.0:
+        return float(z2)
+    n0 = (z0 * y2 - y0 * z2) * x1 + (y1 * z2 - z1 * y2) * x0 + (y0 * z1 - z0 * y1) * x2
+    n1 = (x2 - x0) * z1 + (x1 - x2) * z0 + (x0 - x1) * z2
+    n2 = (z2 - z0) * y1 + (z1 - z2) * y0 + (z0 - z1) * y2
+    return float(-(-n0 + n1 * yq + n2 * xq) / d)
+
+
+def front_view(hp, xd, name=""):
+    """Return the front view (y, z) of the points of one suspension corner at the axle plane x = xd.
+    hp has the rows of the car file. Double wishbone (6 rows): the rows 0, 1 are the lower inner pair, 2 the lower
+    outer ball joint, 3, 4 the upper inner pair and 5 the upper outer ball joint. Strut (4 rows): the rows 0, 1 are
+    the lower inner pair, 2 the lower ball joint and 3 the top mount.
+    As the ChassisSim loader, each inner pair is cut at the plane by a straight line, and the z of an outer point is
+    the height of the plane of its arm at (xd, y). The top mount of a strut is taken as stored.
+    Return (li, lo, ui, uo) for a wishbone and (li, lo, top) for a strut. Raise ValueError for an inner pair
+    with equal x."""
+    def cut(p, q):
+        if p[0] == q[0]:
+            raise ValueError(f"The inner hardpoints of the {name} have the same x. The axle plane cannot cut them.")
+        t = (xd - p[0]) / (q[0] - p[0])
+        return np.array([p[1] + t * (q[1] - p[1]), p[2] + t * (q[2] - p[2])])
+    li = cut(hp[0], hp[1])
+    lo = np.array([hp[2, 1], _plane_z(hp[0], hp[1], hp[2], xd, hp[2, 1])])
+    if len(hp) == 4:
+        return li, lo, hp[3, 1:].copy()
+    return li, lo, cut(hp[3], hp[4]), np.array([hp[5, 1], _plane_z(hp[3], hp[4], hp[5], xd, hp[5, 1])])
+
+
+def axle_kinematics(hp, track, xd, w0, travel=TRAVEL, n=21, name=""):
+    """Solve the front view of one suspension corner (mode 0) and fit the curves.
+    hp has the rows of the car file (see front_view). xd is the x of the axle plane (front 0, rear the wheelbase).
+    The ground is at z = 0 of the hardpoint frame, and the hardpoints describe the axle at the datum ride height.
+    w0 [m] is the datum ride height less the static ride height of the axle (bump positive): the static pose
+    lies w0 above the datum pose. The curves use the wheel travel w from the static pose (w = 0, bump positive),
+    so the geometry is solved at w + w0 from the datum pose.
+    Double wishbone: the inner points are the pivots, and the upright is rigid. Strut: the lower ball joint swings on
+    the circle of the lower arm, the top mount is fixed to the body, and the upright follows the strut axis. The
+    contact patch (y = track / 2) is fixed to the upright. Instant centre: the wishbone lines, or the lower-arm line
+    with the line through the top mount perpendicular to the strut axis. The roll centre is the height at y = 0 of the
+    line from the contact patch to the instant centre.
+    Return SimpleNamespace(lo, hi, w0, rc_h, camber, rc_datum, live, manual). rc_h [m] is the roll-centre height
+    above the contact patches (poly1d in w). camber [rad] is the camber change from the datum pose, as ChassisSim:
+    positive when the top leans in (poly1d in w). At w = 0 (static) the curve gives camber(w0), which the model adds
+    to the static camber of the tyre record. rc_datum is the height at the datum pose (w = -w0). Raise ValueError when the geometry has no
+    solution within +-travel."""
+    strut = len(hp) == 4
+    pts = front_view(hp, xd, name)
+    li, lo = pts[0], pts[1]
+    top = pts[2] if strut else None
+    ui, uo = (None, None) if strut else pts[2:]
+    L1 = np.hypot(*(lo - li))
     th0 = np.arctan2(*(lo - li)[::-1])
+    if not strut:
+        L2, Lu = np.hypot(*(uo - ui)), np.hypot(*(uo - lo))
     yc = track / 2
+    no_sol = (f"The suspension geometry of the {name} has no solution for a wheel travel of "
+              f"+-{travel * 1e3:.0f} mm. Check the hardpoints in the car file.")
 
     def pose(dl):
+        """Return (lower ball joint, upper end of the upright axis, miss)."""
         LO = li + L1 * np.array([np.cos(th0 + dl), np.sin(th0 + dl)])
+        if strut:
+            return LO, top, 0.0
         UO, miss = _circ_hit(ui, L2, LO, Lu, uo)
         return LO, UO, miss
 
     def ang(LO, UO):
         u = UO - LO
         return np.arctan2(-u[0], u[1])
-    a0 = ang(lo, uo)
+    a0 = ang(lo, top if strut else uo)
 
-    def rc_line(zg, dl):
-        """Return (contact patch, travel w, instant centre, camber) of the pose dl."""
+    def rc_line(dl):
+        """Return (contact patch, instant centre, camber angle change) of the pose dl."""
         LO, UO, _ = pose(dl)
         da = ang(LO, UO) - a0
-        c0 = np.array([yc, zg]) - lo
-        cp = LO + np.array([[np.cos(da), -np.sin(da)], [np.sin(da), np.cos(da)]]) @ c0
+        cp = LO + np.array([[np.cos(da), -np.sin(da)], [np.sin(da), np.cos(da)]]) @ (np.array([yc, 0.0]) - lo)
         u = (LO - li) / L1
-        v = (UO - ui) / L2
-        if abs(u[0] * v[1] - u[1] * v[0]) < 1e-12:     # parallel wishbones: the instant centre is at infinity
+        if strut:
+            s = (UO - LO) / np.hypot(*(UO - LO))
+            v = np.array([s[1], -s[0]])
+        else:
+            v = (UO - ui) / L2
+        if abs(u[0] * v[1] - u[1] * v[0]) < 1e-12:      # parallel lines: the instant centre is at infinity
             ic = cp + 1e6 * u       # ponytail: a far point on the arm direction gives the parallel RC line, exact slope
         else:
-            ic = _line_hit(li, LO, ui, UO)
-        return cp, cp[1] - zg, ic, da
+            ic = _line_hit(li, LO, UO, UO + v) if strut else _line_hit(li, LO, ui, UO)
+        return cp, ic, da
 
     def height(cp, ic):             # height at y = 0 of the line from the contact patch to the instant centre
         return cp[1] + (0.0 - cp[0]) * (ic[1] - cp[1]) / (ic[0] - cp[0])
-    cp, _, ic, _ = rc_line(0.0, 0.0)
-    h0 = height(cp, ic)             # linear in zg: h(zg) = zg (1 - k) + k ic_z
-    k = (height(*rc_line(1.0, 0.0)[::2]) - h0)
-    if abs(k) < 1e-9:
-        raise ValueError(f"The stored roll-centre height of the {name} axle cannot set the ground datum, "
-                         "because the roll centre of this geometry does not depend on the ground height.")
-    ok = lambda z: radius is None or lo[1] - radius <= z <= lo[1]
-    # ponytail: a stored height of exactly 0.0 counts as not set (one shipped car). A car with a true roll centre
-    # at 0.0 of the chassis frame takes the fallback too. Add a flag when a car needs that height.
-    zg = None if rc_static == 0.0 else (rc_static - h0) / k
-    if (zg is None or not ok(zg)) and rc_datum0 is not None and abs(h0 - rc_datum0) <= 1e-3:
-        zg = 0.0
-    if zg is None or not ok(zg):
-        raise ValueError(f"The ground datum of the {name} axle is not plausible. The contact patch must lie "
-                         "below the lower outer ball joint by at most the tyre radius.")
+
+    def solve(wd):
+        d = brentq(lambda x: rc_line(x)[0][1] - wd, -0.6, 0.6)
+        if pose(d)[2] > 1e-6:       # the wishbones and the upright must close
+            raise ValueError(no_sol)
+        return d
     w = np.linspace(-travel, travel, n)
-    dls = []
     try:
-        for wi in w:
-            dls.append(brentq(lambda d: rc_line(zg, d)[1] - wi, -0.6, 0.6))
+        dls = [solve(wi + w0) for wi in w]
+        d0 = solve(0.0)
     except (ValueError, np.linalg.LinAlgError) as e:
-        raise ValueError(f"The suspension geometry of the {name} axle has no solution for a wheel travel of "
-                         f"+-{travel * 1e3:.0f} mm. Check the hardpoints in the car file.") from e
-    if any(pose(d)[2] > 1e-6 for d in dls):        # the wishbones and the upright must close at every root
-        raise ValueError(f"The suspension geometry of the {name} axle has no solution for a wheel travel of "
-                         f"+-{travel * 1e3:.0f} mm. Check the hardpoints in the car file.")
-    rows = [rc_line(zg, d) for d in dls]
-    rc_h = np.array([height(r[0], r[2]) - (zg + wi) for r, wi in zip(rows, w)])     # above the contact patch
-    cam = np.array([r[3] for r in rows])
-    return SimpleNamespace(zg=zg, lo=-travel, hi=travel, rc_h=np.poly1d(np.polyfit(w, rc_h, 6)),
-                           camber=np.poly1d(np.polyfit(w, cam - cam[n // 2], 3)))
+        raise ValueError(no_sol) from e
+    rows = [rc_line(d) for d in dls]
+    rc_h = np.array([height(r[0], r[1]) - r[0][1] for r in rows])       # above the contact patch
+    cam = np.array([r[2] for r in rows])
+    cp0, ic0, _ = rc_line(d0)
+    return SimpleNamespace(lo=-travel, hi=travel, w0=w0, rc_h=np.poly1d(np.polyfit(w, rc_h, 6)),
+                           camber=np.poly1d(np.polyfit(w, cam, 3)), rc_datum=float(height(cp0, ic0)),
+                           live=False, manual=False)
+
+
+def manual_axle(rc0, shift, travel=TRAVEL):
+    """Return the curves of an axle with a manual roll centre (mode 1). rc0 [m] is the stored roll-centre height at the
+    datum ride height. shift [m] is the static ride height less the datum ride height. The roll centre is fixed to
+    the body, so it falls by the wheel travel: rc_h(w) = rc0 + shift - w (above the contact patches, bump positive).
+    The camber is the static camber only, as ChassisSim: manual is True, and the car model and the QSS add no
+    kinematic curve and no body roll."""
+    return SimpleNamespace(lo=-travel, hi=travel, w0=-shift, rc_h=np.poly1d([-1.0, rc0 + shift]),
+                           camber=np.poly1d([0.0]), rc_datum=rc0, live=False, manual=True)
 
 
 def suspension_curves(car):
-    """Return SimpleNamespace(f, r) of axle_kinematics for a car record. Cached on the record.
-    The stored roll-centre height (cids 55, 59, 63, 67) is the chassis-frame height at w = 0: rc_h(0) + zg.
-    rc_h itself is the height above the contact patches. The result also holds k1: the camber change of a steered
-    front wheel per radian of steer."""
+    """Return SimpleNamespace(f, r, k1) for a car record. Cached on the record.
+    f and r are the curves of the axles (see axle_kinematics). The axle geometry mode of the file decides: mode 0
+    solves the hardpoints (double wishbone or strut). Mode 1 uses the stored roll-centre height of the right wheel
+    (cid 54 front, cid 62 rear), as ChassisSim does (manual_axle).
+    A rear live axle (type 2, cid 69 = 1) has a manual roll centre and no camber curve. Its r.live is True, and
+    the car model sets the camber of each wheel from the tilt of the axle.
+    k1 [rad per rad] is the camber change of a steered front wheel per radian of steer. It is 0 when the front axle
+    has mode 1. Raise ValueError when a field is missing or a geometry has no solution."""
     if getattr(car, "_curves", None) is None:
-        g, h = car.geom, car.hardpoints
-        need = (g.rc_height_fl, g.rc_height_fr, g.rc_height_rl, g.rc_height_rr, h.front_l, h.rear_l)
-        if any(v is None for v in need):
-            raise ValueError("The car file lacks the roll-centre heights (cids 55, 59, 63, 67) or the hardpoints (cids 49-52).")
-        def datum0(a, b):
-            v = (getattr(g, f"rc_datum0_{a}", None), getattr(g, f"rc_datum0_{b}", None))
-            return None if None in v else 0.5 * (v[0] + v[1])
-        ty, hf = car.tyre, np.asarray(h.front_l, float)
-        car._curves = SimpleNamespace(
-            f=axle_kinematics(hf, g.track_front, 0.5 * (g.rc_height_fl + g.rc_height_fr), name="front",
-                              rc_datum0=datum0("fl", "fr"), radius=ty.fl["radius"] if ty.fl else None),
-            r=axle_kinematics(np.asarray(h.rear_l, float), g.track_rear, 0.5 * (g.rc_height_rl + g.rc_height_rr), name="rear",
-                              rc_datum0=datum0("rl", "rr"), radius=ty.rl["radius"] if ty.rl else None))
+        g, h, C = car.geom, car.hardpoints, ("fl", "fr", "rl", "rr")
+        need = {"geom.mode_f": g.mode_f, "geom.mode_r": g.mode_r,
+                "geom.datum_rh_f": g.datum_rh_f, "geom.datum_rh_r": g.datum_rh_r, "hardpoints.front_l": h.front_l,
+                "hardpoints.rear_l": h.rear_l, **{f"geom.ride_height_{c}": getattr(g, f"ride_height_{c}") for c in C}}
+        if any(v is None for v in need.values()):
+            raise ValueError("The car file lacks the hardpoints (cids 49-52), an axle geometry mode (cids 53, 61), "
+                             "a datum ride height (cids 142, 144) or a static ride height (cids 117-120).")
+
+        def axle(a, c2, track, xd, cids):
+            """Curves of axle a (f or r) with the corners c2 and the plane x = xd."""
+            shift = 0.5 * sum(getattr(g, f"ride_height_{c}") for c in c2) - getattr(g, f"datum_rh_{a}")
+            hp = np.asarray(getattr(h, "front_l" if a == "f" else "rear_l"), float)
+            if getattr(g, f"mode_{a}") == 1:
+                v = getattr(g, f"rc_datum0_{a}r", None)       # the right wheel, as ChassisSim
+                if v is None:
+                    raise ValueError(f"The car file lacks the roll-centre height of the {'front' if a == 'f' else 'rear'} axle "
+                                     f"(cid {54 if a == 'f' else 62}).")
+                ax = manual_axle(v, shift)
+                ax.live = a == "r" and h.rear_l_type == 2
+                return ax
+            return axle_kinematics(hp, track, xd, -shift, name=f"{'front' if a == 'f' else 'rear'} axle (cids {cids})")
+        f = axle("f", ("fl", "fr"), g.track_front, 0.0, "49, 50")
+        r = axle("r", ("rl", "rr"), g.track_rear, g.wheelbase, "51, 52")
+        car._curves = SimpleNamespace(f=f, r=r)
         # K1 = x component of the kingpin unit vector: castor c (tyre scalar), inclination sigma (front view of the
-        # line from the lower to the upper outer ball joint). No castor or no front tyre gives 0.
+        # line from the lower to the upper ball joint: wishbone rows 2 and 5, strut rows 2 and 3 as stored).
+        # A front axle with mode 1 has no steer camber, and no castor gives 0.
         # ponytail: K1 is the camber rate per rad of kingpin rotation. Per rad of road-wheel yaw, small-angle
         # kinematics give tan(castor) (GP3 0.158, +5 % against the log). K1 fits the GP3 log within 0.7 %.
         # The quadratic term of the kingpin inclination is not in the model (about 11 % of the linear term at 8 deg
         # of steer). Add it when a log of a car with more steer shows the curve.
-        castor = ty.fl["castor"] if ty.fl else 0.0
+        castor = car.tyre.fl["castor"] if car.tyre.fl else 0.0
         if not np.isfinite(castor):
             raise ValueError(f"The castor scalar of the front left tyre is not finite ({castor}). Correct the car file.")
-        d = hf[5, 1:] - hf[2, 1:]
+        hf = np.asarray(h.front_l, float)
+        d = hf[3 if len(hf) == 4 else 5, 1:] - hf[2, 1:]
         tc, ts = np.tan(castor), d[0] / d[1]
-        car._curves.k1 = float(tc / np.sqrt(1 + tc ** 2 + ts ** 2))
+        car._curves.k1 = 0.0 if g.mode_f == 1 else float(tc / np.sqrt(1 + tc ** 2 + ts ** 2))
     return car._curves
 
 
