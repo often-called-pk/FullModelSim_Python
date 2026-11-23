@@ -99,10 +99,11 @@ def qss_profile(ctx, load_model="vehModel", ds_fine=1.0):
     ctx.track.k, ctx.vi, ds_fine) on the fine grid. Returns the march dict (s, k, v,
     ax, ay, t, lap_time, ...) plus 'env'. ctx must be past userOpts (pt.EM4 / pt.ATD,
     ctx.aero); the envelope follows ctx.physics. Sample it at any station with
-    np.interp on prof['s']."""
-    from functions.ggv import build_envelope, march
+    np.interp on prof['s']. A periodic start (ctx.periodic) is a flying lap: the profile starts at its own
+    end speed, not at ctx.vi (ggv.march_lap)."""
+    from functions.ggv import build_envelope, march_lap
     env = build_envelope(ctx, load_model=load_model)
-    prof = march(env, ctx.track.s, ctx.track.k, float(ctx.vi), ds_fine=ds_fine)
+    prof = march_lap(env, ctx.track.s, ctx.track.k, float(ctx.vi), getattr(ctx, "periodic", False), ds_fine=ds_fine)
     prof["env"] = env
     return prof
 

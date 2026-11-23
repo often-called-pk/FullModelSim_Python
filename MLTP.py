@@ -373,10 +373,13 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     step's result (full + duals); refine, save and plot apply to the last step only,
     which is exactly the caller's problem. data['homotopy'] records each step.
 
-    ``start_state`` (a userOpts kwarg) sets the lap start. 'matlab' (default) keeps the MATLAB
-    start box. 'rolling' puts a narrow chassis box around the straight-line coast equilibrium
-    of the model at vi (vehModel.rolling_start). 'periodic' frees the start state and makes the
-    end state and input equal the start, for closed circuits. These two save as
+    ``start_state`` (a userOpts kwarg, default None) sets the lap start. None lets
+    userOpts.resolve_start_state pick: 'periodic' for a ChassisSim car on a ChassisSim circuit
+    that joins at the line, else 'matlab'. 'matlab' keeps the MATLAB start box. 'rolling' puts
+    a narrow chassis box around the straight-line coast equilibrium of the model at vi
+    (vehModel.rolling_start). 'periodic' frees the start state and makes the end state and
+    input equal the start. It needs a closed circuit or a ChassisSim circuit whose curvature
+    joins at the line. These two save as
     <stem>_startRolling and <stem>_startPeriodic. data['start_state'] and data['Xi'] record it.
 
     ``n_bounds`` (a userOpts kwarg, default None) replaces the model's +-4 m bound on the lateral

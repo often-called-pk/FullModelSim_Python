@@ -82,6 +82,7 @@ Speed     v <= pt.Vmax (the NLP's vx state bound).
 """
 
 import math
+import warnings
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -1105,3 +1106,22 @@ def march(env, s, k, vi, ds_fine=None, s_out=None):
                    ax_out=np.interp(so, s_f, ax), ay_out=np.interp(so, s_f, ay),
                    v_apex_out=np.interp(so, s_f, v_apex))
     return out
+
+
+def march_lap(env, s, k, vi, periodic=False, **kw):
+    """march(env, s, k, vi, **kw). periodic=False returns it unchanged. periodic=True is a flying lap: the lap
+    starts at its own end speed. Each new march starts at the end speed of the march before it. It stops when
+    |v_start - v_end| <= 0.01 m/s, after 3 marches at most, and warns when the lap does not close. A hybrid car
+    runs its store sweeps inside each march, from that start speed.
+    ponytail: the backward pass does not wrap, so a lap that brakes over the line cannot close. Wrap it then."""
+    prof = march(env, s, k, vi, **kw)
+    if not periodic:
+        return prof
+    for _ in range(2):
+        if abs(prof["v"][0] - prof["v"][-1]) <= 0.01:
+            break
+        prof = march(env, s, k, float(prof["v"][-1]), **kw)
+    if abs(prof["v"][0] - prof["v"][-1]) > 0.01:
+        warnings.warn(f"[QSS] The flying lap does not close: it starts at {prof['v'][0]:.2f} m/s and ends at "
+                      f"{prof['v'][-1]:.2f} m/s.")
+    return prof

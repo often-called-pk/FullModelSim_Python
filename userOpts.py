@@ -170,15 +170,23 @@ STEERING = ("NA", "Ackermann")
 CAMBER_GAIN = ("Off", "Linear", "Table")
 
 # userOpts(start_state=...) sets how the lap starts. The check is case-sensitive.
-#   'matlab'   (default) the MATLAB start box: vx = vi, vy = 0, heave / pitch / roll = 0,
-#              the rest free.
+#   None       (default) resolve_start_state picks one. A ChassisSim car on a ChassisSim circuit
+#              (that joins at the line) starts 'periodic', like the flying lap of ChassisSim. Every
+#              other run starts 'matlab'. The 4EM car keeps 'matlab' by default: the MATLAB parity
+#              gate needs that start box bit for bit.
+#   'matlab'   the MATLAB start box: vx = vi, vy = 0, heave / pitch / roll = 0, the rest free.
+#              A ChassisSim car also holds its four wheel speeds at vi / R (R = tyre radius of the
+#              axle, as in the slip ratio), so it does not start with free spin energy.
 #   'rolling'  r = 0 and a narrow box (ROLL_TOL) around the straight-line coast
 #              equilibrium on rows 9-22. MLTP fills the rows from the model.
 #   'periodic' free start. The end state and input equal the start (flying lap).
-#              Closed circuits only (CLOSED_CIRCUITS).
+#              Closed circuits (CLOSED_CIRCUITS) and ChassisSim circuits whose curvature joins at
+#              the line (K_JOIN_MAX).
 START_STATES = ("matlab", "rolling", "periodic")
 ROLL_TOL = 1e-3  # ponytail: fixed chassis start-box half-width, promote to a kwarg when tuning matters
 CLOSED_CIRCUITS = ("BCN", "Jarama", "Spa", "NBR", "Circle")
+K_JOIN_MAX = 1e-3   # ponytail: max |k(L) - k(0)| [1/m] of a ChassisSim circuit for a periodic start. 15 of 16 shipped
+#                     circuits are within 7.2e-4 (Eastern Creek 1.0e-4). The FSAE sample is 4e-3. Add a kwarg when needed.
 
 # userOpts(between_knots=...) sets what the 23-state NLP does between two knots (B3). The check is case-sensitive.
 #   'matlab'       (default) MATLAB's arithmetic. The dynamics at the collocation points see U_k + duk * tau.
@@ -300,7 +308,6 @@ def car_id(car):
 def car_refusal(kw):
     """Return the reason why a ChassisSim car refuses the userOpts keyword values kw, or None.
     A key that kw lacks has its userOpts default. userOpts and the GUI (at Run) call this function."""
-    from functions import chassissim
     if kw.get("physics", "matlab") != "corrected":
         return "A ChassisSim car needs physics='corrected'."
     if kw.get("Electric_4Motors", "Off") == "On":
@@ -322,6 +329,30 @@ def car_refusal(kw):
     except ValueError as exc:
         return str(exc)
     return None
+
+
+def resolve_start_state(start_state, circuit, car, chassissim_dir=None):
+    """Return the start state that a run uses ('matlab', 'rolling' or 'periodic').
+    start_state=None gives 'periodic' for a ChassisSim car on a ChassisSim circuit whose curvature joins at the line.
+    Every other run with None gives 'matlab', with one warning if only the join fails. An explicit value wins.
+    An explicit 'periodic' on a ChassisSim circuit that does not join raises ValueError.
+    userOpts and the GUI result path call this function."""
+    on_cs = isinstance(circuit, str) and circuit.startswith(chassissim.PREFIX)
+    if start_state is None and not (car is not None and on_cs):
+        return "matlab"
+    if start_state not in (None, "periodic") or not on_cs:
+        return start_state          # an explicit value. userOpts checks the value and the closed circuit
+    tr = _load_track(circuit, "Circuits", chassissim_dir)
+    k = np.asarray(tr.k, dtype=float).reshape(-1)
+    gap = abs(float(k[-1]) - float(k[0]))
+    if gap <= K_JOIN_MAX:
+        return "periodic"
+    msg = (f"The curvature of {circuit!r} does not join at the line: k(0) = {k[0]:.3e} 1/m, k(L) = {k[-1]:.3e} 1/m. "
+           f"The limit for a periodic start is {K_JOIN_MAX:g} 1/m.")
+    if start_state == "periodic":
+        raise ValueError(msg)
+    warnings.warn(msg + " The lap starts with start_state='matlab'.")
+    return "matlab"
 
 
 def car_atmos(chassissim_dir=None):
@@ -512,7 +543,7 @@ def userOpts(ctx,
              physics="matlab",             # 'matlab' (default) | 'corrected' (opt-in fixes A1-A6)
              Steering="NA",                # 'NA' | 'Ackermann': front steering geometry (vehModel)
              CamberGain="Off",             # 'Off' | 'Linear' | 'Table': dynamic camber model (vehModel)
-             start_state="matlab",         # 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
+             start_state=None,             # None (resolve_start_state) | 'matlab' | 'rolling' | 'periodic': lap start (START_STATES)
              n_bounds=None,                # None | W | (lo, hi): CG-path lateral band [m], see _parse_n_bounds
              between_knots="matlab",       # 'matlab' | 'linear' | 'linear+power': inputs and power rows between the knots (BETWEEN_KNOTS)
              collocation="legendre",       # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
@@ -529,7 +560,6 @@ def userOpts(ctx,
     ctx.cs = None
     ctx.car = "4em"
     if car is not None:
-        from functions import chassissim
         if not (isinstance(car, str) and car.startswith(chassissim.PREFIX)):
             raise ValueError(f"car must be None or '{chassissim.PREFIX}<path of a .car file>', got {car!r}")
         why = car_refusal(dict(
@@ -550,9 +580,10 @@ def userOpts(ctx,
         vp_overrides = {**chassissim.car_vp(ctx.cs), **(vp_overrides or {})}
 
     # ---- start state: checked before any work, like the physics flag
-    if start_state not in START_STATES:
+    if start_state is not None and start_state not in START_STATES:
         raise ValueError(f"start_state must be one of {list(START_STATES)}, got {start_state!r}")
-    if start_state == "periodic" and circuit not in CLOSED_CIRCUITS:
+    start_state = resolve_start_state(start_state, circuit, car, chassissim_dir)
+    if start_state == "periodic" and circuit not in CLOSED_CIRCUITS and not circuit.startswith(chassissim.PREFIX):
         raise ValueError(f"start_state='periodic' needs a closed circuit, one of "
                          f"{list(CLOSED_CIRCUITS)}, got {circuit!r}")
     ctx.start_state, ctx.periodic = start_state, start_state == "periodic"
@@ -688,6 +719,14 @@ def userOpts(ctx,
         ctx.Xi[2] = ctx.Xi_init[2] = 0.0
         ctx.Xi_init[5], ctx.Xi_init[6] = vi / vp.Rw_f, vi / vp.Rw_r
         ctx.Xi_tol = np.r_[np.full(9, OPT_e), np.full(14, ROLL_TOL)]
+    elif start_state == "matlab" and ctx.cs is not None:
+        # the car starts with rolling wheels (box +-OPT_e scaled = +-1 m/s of wheel speed), not with free spin energy
+        ctx.Xi[5:9] = vi / np.array([vp.Rw_f, vp.Rw_f, vp.Rw_r, vp.Rw_r])
+        # ponytail: one speed per axle. On a curved start the inner and outer wheels need different rolling
+        # speeds. Add per-wheel speeds from k(0) when a circuit other than the FSAE sample has a curved start.
+        k0 = float(ctx.track.k[0])
+        if abs(k0) > 1e-3:
+            warnings.warn(f"The wheel-speed start box of a car assumes a straight start. Track k(0) = {k0:.2e} 1/m.")
     elif start_state == "periodic":
         # free start (only n if given): the NLP closes the lap with equality rows instead
         ctx.Xi[:] = ctx.Xi_init[:] = nan

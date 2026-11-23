@@ -434,15 +434,15 @@ ok("... and disables each of them",
 ok("a car sets Tyre model CombinedSlip and Tyre set MF205, both disabled",
    h.tyre.currentText() == "CombinedSlip" and not h.tyre.isEnabled()
    and h.tyre_set.currentText() == "MF205" and not h.tyre_set.isEnabled())
-ok("a car moves the start state off rolling and disables the rolling item",
-   st.currentText() == "matlab" and not st.model().item(1).isEnabled())
+ok("a car moves the start state off rolling to auto and disables the rolling item",
+   st.currentText() == "auto" and not st.model().item(2).isEnabled())
 h.car.setCurrentIndex(0)
 ok("the 4EM car restores physics, aero, ATD, Homotopy, tyre and tyre set",
    h.opt_combos["physics"].currentText() == "matlab" and h.aero.currentText() == "Active"
    and h.atd.isChecked() and h.homotopy.isChecked() and h.tyre.currentText() == "PureSlip"
    and h.tyre_set.currentText() == "CopyB" and h.tyre.isEnabled() and h.atd.isEnabled())
 ok("... the rolling start comes back, and the Setup sections are enabled again",
-   st.currentText() == "rolling" and st.model().item(1).isEnabled()
+   st.currentText() == "rolling" and st.model().item(2).isEnabled()
    and all(s.isEnabled() for s in h._sections.values()))
 
 # (b5) a car with a changed mb row: the captured cfg has no vp_overrides and the car path. 4EM keeps the row
@@ -547,11 +547,31 @@ res_files = os.listdir(os.path.dirname(mat_qss))
 ok("headless_solve.main exits 0 on the GUI cfg of the car", code_qss == 0)
 ok("the file that result_paths names is the only file in Results",
    os.path.isfile(mat_qss) and res_files == [os.path.basename(mat_qss)])
-ok("its name holds the car part, the physics part, the setup tag and _qss",
-   re.search(r"_car_gui_base_physCorrected_[0-9a-f]{8}_qss\.mat$", os.path.basename(mat_qss)) is not None)
+# the car runs on the synthetic ring, which joins at the line: start_state auto resolves to periodic (lane S)
+ok("its name holds the car part, the physics part, the periodic start, the setup tag and _qss",
+   re.search(r"_car_gui_base_physCorrected_startPeriodic_[0-9a-f]{8}_qss\.mat$", os.path.basename(mat_qss)) is not None)
 ok("the qss plot folder is empty", pdir_qss == "")
 lap_qss = results.parse_summary(mat_qss)["lap_time_s"]
 ok("the file holds a finite qss lap value", lap_qss == lap_qss and lap_qss > 0.0)
+
+# (c2) the NLP cfg of the car (lane S). start_state auto sends no key and names the periodic stem. An explicit
+# matlab sends the key and names the plain stem (no start suffix)
+hc.opt_combos["mode"].setCurrentText("nlp")
+hc.opt_combos["start_state"].setCurrentText("auto")
+with open(run_capture(hc)) as fh:
+    cfg_auto = json.load(fh)
+kw_auto = headless_solve.build_solve_kwargs(cfg_auto, TMP.name)
+ok("auto: the solve kwargs hold no start_state key", "start_state" not in kw_auto)
+mat_auto, _ = results.result_paths(hc._active_rc)
+ok("auto: result_paths names the periodic start (the synthetic ring joins at the line)",
+   "_startPeriodic_" in os.path.basename(mat_auto))
+hc.opt_combos["start_state"].setCurrentText("matlab")
+with open(run_capture(hc)) as fh:
+    cfg_mat = json.load(fh)
+kw_mat = headless_solve.build_solve_kwargs(cfg_mat, TMP.name)
+ok("matlab: the solve kwargs carry start_state matlab", kw_mat.get("start_state") == "matlab")
+mat_m, _ = results.result_paths(hc._active_rc)
+ok("matlab: result_paths gives no start suffix", "_start" not in os.path.basename(mat_m))
 
 # ---------------------------------------------------------------- (d) refusals with a car
 print("(d) refusals: userOpts and MLTP with a car, and the 4EM car accepts the same values")
@@ -635,8 +655,8 @@ else:
     hv._on_finished(1)
     mat_v, _ = results.result_paths(hv._active_rc)
     lap_v = results.parse_summary(mat_v)["lap_time_s"]
-    ok(f"vendor: GP3 car at Eastern Creek, GUI qss cfg, moved with the roll-centre fix (ground z = 0) "
-       f"to 74.124619 s: lap {lap_v:.3f} s", code_v == 0 and abs(lap_v - 74.124619) < 5e-4)
+    ok(f"vendor: GP3 car at Eastern Creek, GUI qss cfg, a flying lap (QSS march starts at the end speed) "
+       f"to 73.68216264679694 s: lap {lap_v!r} s", code_v == 0 and abs(lap_v - 73.68216264679694) < 1e-9)
     ok("vendor: the written file equals result_paths(rc)",
        os.path.isfile(mat_v) and os.listdir(os.path.dirname(mat_v)) == [os.path.basename(mat_v)])
 

@@ -121,7 +121,7 @@ from functions.refine import refine_options
 from headless_solve import FORWARD, run_mode
 
 FORWARD_DEFAULTS = {"ladder": "auto", "homotopy": None, "refine": None, "continue_from": None,
-                    "ipopt_overrides": None, "physics": "matlab", "start_state": "matlab", "n_bounds": None,
+                    "ipopt_overrides": None, "physics": "matlab", "start_state": "auto", "n_bounds": None,
                     "Steering": "NA", "CamberGain": "Off", "hsl_dir": None, "between_knots": "matlab",
                     "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,
                     "chassissim_dir": None, "car": None}
@@ -199,8 +199,9 @@ ok("the qss call drops every NLP-only key, and TyreModel (MLTP_screen ignores it
    not (NLP_ONLY_KEYS & set(kq)) and "TyreModel" not in kq and "TyreModel" in kwn)
 mltp_def = sig_defaults("MLTP.py", "MLTP")
 uo_def = {k: p.default for k, p in inspect.signature(userOpts).parameters.items()}
-ok("FORWARD defaults equal the MLTP / userOpts signature defaults",
-   all(mltp_def.get(k, uo_def.get(k, "missing")) == d for k, d in FORWARD.items()))
+ok("FORWARD defaults equal the MLTP / userOpts signature defaults (FORWARD auto = userOpts None)",
+   all(mltp_def.get(k, uo_def.get(k, "missing")) == (None if (k, d) == ("start_state", "auto") else d)
+       for k, d in FORWARD.items()))
 ok("MLTP's own checks accept the forwarded ladder, homotopy and refine",
    resolve_ladder(kwf["ladder"])[0] == "qss23" and homotopy_schedule(kwf["homotopy"]) == (1.2, 1.1, 1.0)
    and refine_options(kwf["refine"], kwf["OPT_ds"])["passes"] == 1)

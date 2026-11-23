@@ -11,8 +11,9 @@ keys absent from vp.
 
 The F2 options are top-level cfg fields too: mode, physics, start_state, n_bounds, Steering,
 CamberGain, between_knots, collocation, state_scaling, atd_tbr, ladder, homotopy, refine,
-continue_from and ipopt_overrides. Each default is the MLTP or userOpts default. So a cfg without
-them makes the same call as before. `pt_overrides` (the A5 powertrain keys) is not a cfg key.
+continue_from and ipopt_overrides. Each default is the MLTP or userOpts default. For start_state, "auto"
+is the GUI token for the userOpts default None. So a cfg without them makes the same call as before.
+`pt_overrides` (the A5 powertrain keys) is not a cfg key.
 `write_cfg` adds it to `vp_overrides`, where vehParams reads it.
 
 `car` and `chassissim_dir` are top-level cfg fields too (default None = the 4EM car, the folder of the
@@ -58,7 +59,7 @@ class RunConfig:
     # F2 options (top-level cfg fields). headless_solve forwards a value only when it differs from the default.
     mode: str = "nlp"                       # 'nlp' (MLTP) | 'qss' (MLTP_screen: a lap ESTIMATE, no NLP)
     physics: str = "matlab"                 # 'matlab' | 'corrected' (the A1-A6 changes)
-    start_state: str = "matlab"             # 'matlab' | 'rolling' | 'periodic' (closed circuits)
+    start_state: str = "auto"               # 'auto' (userOpts resolves it) | 'matlab' | 'rolling' | 'periodic'
     n_bounds: Optional[Union[float, list]] = None   # None (model +-4 m) | half-width W [m] | [lo, hi]
     Steering: str = "NA"                    # 'NA' | 'Ackermann'
     CamberGain: str = "Off"                 # 'Off' | 'Linear' | 'Table'

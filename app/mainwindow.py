@@ -44,9 +44,11 @@ OPTION_COMBOS = [
      "matlab = the MATLAB model, bit for bit (default). corrected = the opt-in changes A1 to A6 (mass "
      "bookkeeping, damper, frame, aero load path, 4-motor speed, toe). The result file name gets the "
      "suffix _physCorrected."),
-    ("start_state", "Start state", ["matlab", "rolling", "periodic"],
-     "matlab = the MATLAB start box (default). rolling = the wheels and the chassis start at the coast "
-     "equilibrium. periodic = free start, and the end state equals the start state (closed circuits only)."),
+    ("start_state", "Start state", ["auto", "matlab", "rolling", "periodic"],
+     "auto = periodic for a ChassisSim car on a ChassisSim circuit that joins at the line, else matlab "
+     "(default). matlab = the MATLAB start box (a car also holds its wheel speeds at rolling speed). "
+     "rolling = the wheels and the chassis start at the coast equilibrium. periodic = free start, and the "
+     "end state equals the start state (closed circuits and ChassisSim circuits)."),
 ]
 # RunConfig fields that the "More options" JSON box may set (they have no widget). refine is not one of them:
 # an accepted refinement pass saves as <stem>_meshAdaptive, a file that the Output tab does not look for.
@@ -885,7 +887,7 @@ class MainWindow(QMainWindow):
     def _on_car_changed(self, _i=None):
         """A ChassisSim car sets and locks the controls that its model needs. The 4EM car restores them."""
         start = self.opt_combos["start_state"]
-        rolling = start.model().item(1)     # items: matlab, rolling, periodic
+        rolling = start.model().item(2)     # items: auto, matlab, rolling, periodic
         # widget, value with a car, tooltip without a car
         locked = [(self.opt_combos["physics"], "corrected", OPTION_COMBOS[1][3]), (self.aero, "Static", ""),
                   (self.em4, False, ""), (self.atd, False, ""), (self.homotopy, False, HOMOTOPY_TIP),
@@ -905,7 +907,7 @@ class MainWindow(QMainWindow):
                 w.setEnabled(False)
                 w.setToolTip(CAR_LOCK_TIP)
             if self._pre_car[-1]:
-                start.setCurrentText("matlab")
+                start.setCurrentText("auto")
             rolling.setEnabled(False)
             rolling.setToolTip(CAR_LOCK_TIP)
         elif not car and self._pre_car is not None:
@@ -918,7 +920,7 @@ class MainWindow(QMainWindow):
                     put(w, v)
             rolling.setEnabled(True)
             rolling.setToolTip("")
-            if pre[-1] and start.currentText() == "matlab":     # only the lock moved it. A later choice stays
+            if pre[-1] and start.currentText() == "auto":       # only the lock moved it. A later choice stays
                 start.setCurrentText("rolling")
         for sec in self._sections.values():     # the 4EM values stay in the table for the 4EM car
             sec.setVisible(not car)

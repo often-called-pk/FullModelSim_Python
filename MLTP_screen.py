@@ -30,7 +30,7 @@ import scipy.io as sio
 from types import SimpleNamespace
 
 from functions.context import Ctx
-from functions.ggv import build_envelope, march
+from functions.ggv import build_envelope, march, march_lap
 from functions.importfile import result_stem
 from functions.mesh import mesh_opts_record
 from functions.transcription import discretise, reconstruct_track
@@ -66,10 +66,11 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
                       mesh=getattr(ctx, "mesh", "uniform"),
                       mesh_opts=getattr(ctx, "mesh_opts", None), scheme=ctx.collocation)
     t3 = time.perf_counter()
-    prof = march(env, ctx.track.s, ctx.track.k, vi, ds_fine=ds_fine, s_out=disc["s_full"])
+    # a periodic start is a flying lap: the march starts at its own end speed, not at vi
+    prof = march_lap(env, ctx.track.s, ctx.track.k, vi, ctx.periodic, ds_fine=ds_fine, s_out=disc["s_full"])
     t4 = time.perf_counter()
 
-    if not prof["vi_feasible"]:
+    if not ctx.periodic and not prof["vi_feasible"]:
         warnings.warn(f"[MLTP_screen] vi={vi} m/s cannot be held at s=0 (the first corner "
                       f"needs braking before the start); the QSS profile starts at "
                       f"{prof['v'][0]:.2f} m/s.")
@@ -150,7 +151,7 @@ def screen_sweep(circuit, overrides_list, vi=60.0, AeroConfig="Static", ATD="On"
         userOpts(ctx, circuit=circuit, vi=vi, AeroConfig=AeroConfig, ATD=ATD,
                  Electric_4Motors=Electric_4Motors, vp_overrides=merged, **useropts_kwargs)
         env = build_envelope(ctx, load_model=load_model)
-        prof = march(env, ctx.track.s, ctx.track.k, vi, ds_fine=ds_fine)
+        prof = march_lap(env, ctx.track.s, ctx.track.k, vi, ctx.periodic, ds_fine=ds_fine)
         results.append({"lap_time": prof["lap_time"], "overrides": dict(ov or {})})
     return results
 
@@ -182,7 +183,7 @@ def _screen_rows(args):
                 userOpts(ctx, circuit=circuit, vi=vi, AeroConfig=call["AeroConfig"], ATD=call["ATD"],
                          Electric_4Motors=call["Electric_4Motors"], vp_overrides=merged, **kw)
                 env = build_envelope(ctx, load_model=call["load_model"])
-                prof = march(env, ctx.track.s, ctx.track.k, vi, ds_fine=call["ds_fine"])
+                prof = march_lap(env, ctx.track.s, ctx.track.k, vi, ctx.periodic, ds_fine=call["ds_fine"])
                 lap, feasible = prof["lap_time"], bool(prof["vi_feasible"])
                 if not np.isfinite(lap):
                     err = f"non-finite QSS lap time {lap!r}"

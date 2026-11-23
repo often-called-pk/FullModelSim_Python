@@ -180,8 +180,8 @@ combos = win.opt_combos
 ok("combos: Run, Physics and Start state (the OPTION_COMBOS widgets)", set(combos) == {"mode", "physics", "start_state"})
 ok("Run combo lists nlp (default) then qss", items(combos["mode"]) == ["nlp", "qss"])
 ok("Physics combo lists matlab (default) then corrected", items(combos["physics"]) == ["matlab", "corrected"])
-ok("Start state combo lists matlab (default), rolling, periodic",
-   items(combos["start_state"]) == ["matlab", "rolling", "periodic"])
+ok("Start state combo lists auto (default), matlab, rolling, periodic",
+   items(combos["start_state"]) == ["auto", "matlab", "rolling", "periodic"])
 
 
 def accepts(circuit="Sturn", **kw):
@@ -196,7 +196,7 @@ def accepts(circuit="Sturn", **kw):
 
 ok("every Physics and Start state item is accepted by userOpts (periodic on a closed circuit)",
    all(accepts(physics=v) for v in items(combos["physics"]))
-   and all(accepts(circuit="Circle" if v == "periodic" else "Sturn", start_state=v)
+   and all(accepts(circuit="Circle" if v == "periodic" else "Sturn", start_state=None if v == "auto" else v)
            for v in items(combos["start_state"])))
 ok("that acceptance check can fail", not accepts(physics="bogus") and not accepts(start_state="periodic"))
 

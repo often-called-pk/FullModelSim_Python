@@ -529,11 +529,12 @@ def vendor(cs_dir):
     mode1 = pick(lambda c: c.geom.mode_f == 1 and c.geom.mode_r == 1 and builds(c.path),
                  "a mode-1 car whose QSS builds (both axle modes 1)")
     for label, path, pin, why in (
-            ("strut car", strut, 105.9035829848024, "builds now: MacPherson struts (type 1) on both axles"),
-            ("live-axle car", live, 87.21416056902375, "builds now: rear live axle (type 2, cid 69 = 1)"),
-            ("mode-1 car", mode1, 83.2006122733129, "builds now: mode-1 roll centres on both axles")):
+            ("strut car", strut, 106.17590670033012, "builds now: MacPherson struts (type 1) on both axles"),
+            ("live-axle car", live, 86.90817625719671, "builds now: rear live axle (type 2, cid 69 = 1)"),
+            ("mode-1 car", mode1, 82.80907922650854, "builds now: mode-1 roll centres on both axles")):
         lap = lap_at(path)
-        ok(f"{label} QSS lap at Eastern Creek {lap:.9f} s, pin {pin}, tol 1e-6 ({why})", abs(lap - pin) < 1e-6)
+        ok(f"{label} flying-lap QSS lap (march starts at the end speed) at Eastern Creek {lap!r} s, pin {pin}, "
+           f"tol 1e-6 ({why})", abs(lap - pin) < 1e-6)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

@@ -12,7 +12,7 @@ numbers here. Checks:
   4. the throttle channel of a fake-IPOPT build stays in [0, 1].
 Vendor section (SKIP without CHASSISSIM_DIR): the GT3 car (found by folder glob) has 4 bands at the upshift speeds
 with no band at the fifth upshift, and its Adelaide QSS lap rises by 0.10 to 0.17 s against the same car with
-delay 0. The GP3 and F2 cars have no band and keep their QSS laps.
+delay 0. The GP3 and F2 cars have no band. Their flying-lap QSS laps (march starts at the end speed) are pinned.
 
     python tests/test_cs_shift.py
     CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_shift.py
@@ -376,7 +376,7 @@ ok(f"throttle finite and in [0, 1] on {thr.size} knots: min {thr.min():.4f}, max
 
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
-    print("[cs_shift] vendor: GT3 bands and Adelaide lap, GP3 and F2 unchanged")
+    print("[cs_shift] vendor: GT3 bands and Adelaide lap, GP3 and F2 laps")
     models = glob.escape(str(Path(cs_dir).parent / "Models"))
     gt3 = sorted(glob.glob(os.path.join(models, "GT3", "*", "*.car")))
     ok("one GT3 car file by glob GT3/*/*.car", len(gt3) == 1)
@@ -394,23 +394,23 @@ def vendor(cs_dir):
     carfile.write(nocut, p0)
     c_0 = quiet(MLTP_screen, car=f"chassissim:{p0}", **kw)
     d_lap = float(c_cut.data.lap_time) - float(c_0.data.lap_time)
-    ok(f"GT3 Adelaide QSS lap rises 0.10 to 0.17 s with the cut: {d_lap:+.4f} s "
-       f"(time-domain reference +0.127 s)", 0.10 <= d_lap <= 0.17)
+    ok(f"GT3 Adelaide flying-lap QSS lap (march starts at the end speed) rises 0.10 to 0.17 s with the cut: "
+       f"{d_lap:+.4f} s (time-domain reference +0.127 s)", 0.10 <= d_lap <= 0.17)
     gp3 = sorted(glob.glob(os.path.join(models, "GP3*", "*Eastern*", "def*.car")))
     ok("GP3 2013 Eastern Creek car found by glob", len(gp3) == 1)
     c_gp3 = quiet(MLTP_screen, car=f"chassissim:{gp3[0]}", circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir,
                   physics="corrected", save=False, verbose=False)
     lap_gp3 = float(c_gp3.data.lap_time)
-    ok(f"GP3 no band and QSS lap moved with the roll-centre fix (ground z = 0) to 74.12461931861725 s: "
-       f"{lap_gp3:.10f} s",
-       c_gp3.envelope.info["shift_bands"] == [] and abs(lap_gp3 - 74.12461931861725) < 1e-6)
+    ok(f"GP3 no band and flying-lap QSS lap (march starts at the end speed) to 73.68216264679694 s: "
+       f"{lap_gp3!r} s",
+       c_gp3.envelope.info["shift_bands"] == [] and abs(lap_gp3 - 73.68216264679694) < 1e-6)
     f2 = sorted(glob.glob(os.path.join(models, "Formula 2", "*", "*.car")))
     ok("F2 car found by glob", len(f2) == 1)
     c_f2 = quiet(MLTP_screen, car=f"chassissim:{f2[0]}", **kw)
     lap_f2 = float(c_f2.data.lap_time)
-    ok(f"F2 no band and QSS lap moved with the roll-centre fix (ground z = 0) to 59.52389545490832 s: "
-       f"{lap_f2:.10f} s",
-       c_f2.envelope.info["shift_bands"] == [] and abs(lap_f2 - 59.52389545490832) < 1e-6)
+    ok(f"F2 no band and flying-lap QSS lap (march starts at the end speed) to 59.398953979608464 s: "
+       f"{lap_f2!r} s",
+       c_f2.envelope.info["shift_bands"] == [] and abs(lap_f2 - 59.398953979608464) < 1e-6)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

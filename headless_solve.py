@@ -9,12 +9,13 @@ import sys
 
 from app.paths import resource_root
 
-# cfg key -> default. Each default is the MLTP or userOpts default. A key that is absent, null or at its
+# cfg key -> default. Each default is the MLTP or userOpts default. For start_state, "auto" is the GUI token
+# for the userOpts default None. A key that is absent, null or at its
 # default adds no argument, so an old cfg.json makes the call that it made before. build_solve_kwargs forwards
 # any other value.
 FORWARD = {
     "ladder": "auto", "homotopy": None, "refine": None, "continue_from": None,        # MLTP
-    "ipopt_overrides": None, "physics": "matlab", "start_state": "matlab",              # userOpts
+    "ipopt_overrides": None, "physics": "matlab", "start_state": "auto",                # userOpts
     "n_bounds": None, "Steering": "NA", "CamberGain": "Off",
     "hsl_dir": None, "chassissim_dir": None, "car": None,
     "between_knots": "matlab", "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,

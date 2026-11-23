@@ -431,10 +431,17 @@ ok("hybrid rows: deploy_pw and deploy_brk, no paddle rows", {"deploy_pw", "deplo
 ok("paddle rows: paddle_pw and paddle_drv join the hybrid rows", {"deploy_pw", "deploy_brk", "paddle_pw", "paddle_drv"} <= rows_p)
 N = int(c_h.data["N"])
 ng_b, ng_h, ng_p = (int(c.data["nlp"]["structure"]["n_g"]) for c in (c_base, c_h, c_p))
-ok(f"n_g grows by 2 (N+1) + N + 2 with the deploy layer (got {ng_h - ng_b}, expect {2 * (N + 1) + N + 2})",
-   ng_h - ng_b == 2 * (N + 1) + N + 2)
-ok(f"n_g grows by 2 (N+1) + N with the paddle (got {ng_p - ng_h}, expect {2 * (N + 1) + N})",
-   ng_p - ng_h == 2 * (N + 1) + N)
+# lane S: the synthetic car on the synthetic ChassisSim ring joins at the line, so it starts periodic
+# (start_state auto). A periodic start adds one row per input (U(N) = U(0)), so each extra input adds one more row.
+# The layer rows: deploy_pw, deploy_brk and the two lap rows; the paddle rows; then one periodic row per input.
+ok(f"n_g grows by 2 (N+1) + N + 2 + 1 with the deploy layer (periodic row for F_dep) (got {ng_h - ng_b}, expect {2 * (N + 1) + N + 3})",
+   ng_h - ng_b == 2 * (N + 1) + N + 3)
+ok(f"n_g grows by 2 (N+1) + N + 1 with the paddle (periodic row for F_pad) (got {ng_p - ng_h}, expect {2 * (N + 1) + N + 1})",
+   ng_p - ng_h == 2 * (N + 1) + N + 1)
+nx_h = int(c_h.m23.nx)
+ok(f"periodic start rows = nx + nu (base {nb}, hybrid {nh_}, paddle {npd}; got "
+   f"{[int(c.data['nlp']['structure']['n_periodic']) for c in (c_base, c_h, c_p)]})",
+   [int(c.data["nlp"]["structure"]["n_periodic"]) for c in (c_base, c_h, c_p)] == [nx_h + nb, nx_h + nh_, nx_h + npd])
 ok("n_lap 2 in the structure of the deploy car, 2 with the paddle too",
    int(c_h.data["nlp"]["structure"]["n_lap"]) == 2 and int(c_p.data["nlp"]["structure"]["n_lap"]) == 2)
 lbg, ubg = (np.asarray(c_h.cap["k"][n]).ravel() for n in ("lbg", "ubg"))
@@ -937,18 +944,18 @@ def vendor(cs_dir):
 
 
 def vendor_qss(cs_dir):
-    print("[cs_hybrid] vendor QSS: GP3, GT3 and Formula 2 laps unchanged, a hybrid GP3 copy")
+    print("[cs_hybrid] vendor QSS: GP3, GT3 and Formula 2 flying laps, a hybrid GP3 copy")
     models = Path(cs_dir).parent / "Models"
     gp3 = sorted(models.glob("GP3*/*Eastern*/def*.car"))
     gt3 = [p for p in sorted(models.glob("GT3/*/*.car")) if any(p.parent.glob("*.ld"))]
     f2 = sorted(models.glob("Formula 2/*/*.car"))
     ok("GP3, GT3 and Formula 2 car files found by folder globs", bool(gp3) and bool(gt3) and bool(f2))
     base = float(qss(gp3[0], circ="Eastern Creek", install=cs_dir).data.lap_time)
-    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 74.12461931861725),
-                                    ("GT3", gt3[0], "Adelaide", 73.05236704025761),
-                                    ("Formula 2", f2[0], "Adelaide", 59.52389545490832)):
+    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 73.68216264679694),
+                                    ("GT3", gt3[0], "Adelaide", 73.44164142852439),
+                                    ("Formula 2", f2[0], "Adelaide", 59.398953979608464)):
         lap = float(qss(path, circ=circ, install=cs_dir).data.lap_time) if label != "GP3" else base
-        ok(f"{label} QSS lap at {circ} moved with the roll-centre fix (ground z = 0): {lap!r} (tol 1e-9)",
+        ok(f"{label} flying-lap QSS lap (march starts at the end speed) at {circ}: {lap!r} (tol 1e-9)",
            abs(lap - want) < 1e-9)
     recs = carfile.decode(str(gp3[0]))
     for mode in (0, 1):
@@ -959,9 +966,9 @@ def vendor_qss(cs_dir):
         c = qss(path, circ="Eastern Creek", install=cs_dir)
         h = c.data.hybrid
         gain = base - float(c.data.lap_time)
-        ok(f"hybrid GP3 copy, mode {mode}: gain {gain:.4f} s in [0.40, 0.65] (E_harv {h['E_harv']:.0f} J, "
+        ok(f"hybrid GP3 copy, mode {mode}, flying-lap base: gain {gain!r} s in [0.55, 0.75] (E_harv {h['E_harv']:.0f} J, "
            f"E_dep {h['E_dep']:.0f} J, zones {h['zones']}, sweeps {h['sweeps']})",
-           0.40 <= gain <= 0.65 and h["E_dep"] <= h["E_store"] + 1.0)
+           0.55 <= gain <= 0.75 and h["E_dep"] <= h["E_store"] + 1.0)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

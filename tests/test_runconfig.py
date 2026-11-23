@@ -130,7 +130,7 @@ ok("unknown vp key raises ValueError not KeyError", raised_vp)
 
 # --- F2 options: top-level cfg fields at the MLTP / userOpts defaults; the A5 keys fold into vp_overrides ---
 from headless_solve import FORWARD
-F2D = {"mode": "nlp", "physics": "matlab", "start_state": "matlab", "n_bounds": None, "Steering": "NA",
+F2D = {"mode": "nlp", "physics": "matlab", "start_state": "auto", "n_bounds": None, "Steering": "NA",
        "CamberGain": "Off", "ladder": "auto", "homotopy": None, "refine": None, "ipopt_overrides": None,
        "between_knots": "matlab", "collocation": "legendre", "state_scaling": "matlab", "atd_tbr": None,
        "continue_from": None}
