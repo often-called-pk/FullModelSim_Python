@@ -1374,7 +1374,7 @@ The column "Section" gives the equations that the parameter enters. The measured
 | Parameter | Default | Unit | Meaning | Section | Note |
 |---|---|---|---|---|---|
 | `l` | 3.0 | m | wheelbase | 3.8 | $l_f = l(1 - w_B)$, $l_r = l\, w_B$ |
-| `wB` | 0.5 | - | part of the wheelbase behind the CG, equal to the front weight share | 3.8 | The app calls it "Weight balance (rear)". Only 0.5 gives the same static state in both modes. |
+| `wB` | 0.5 | - | part of the wheelbase behind the CG, equal to the front weight share | 3.8 | The app calls it "Weight balance (front)". Only 0.5 gives the same static state in both modes. |
 | `t` | 1.8 | m | track width, both axles | 3.3, 3.7, 3.9, 4.1 | - |
 | `hcg` | 0.5 | m | CG height | 3.8, 3.9 | roll arm and pitch arm |
 | `hRCf` | 0.07 | m | front roll-centre height | 3.9 | jacking force and roll arm |

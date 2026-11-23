@@ -75,7 +75,7 @@ META = {
     "A": ParamMeta("Frontal area", "m^2", "Reference frontal area", 0.5, 5.0, 0.05, 3),
     "t": ParamMeta("Track width", "m", "Axle track width", 0.5, 3.0, 0.05, 3),
     "l": ParamMeta("Wheelbase", "m", "Wheelbase", 1.0, 5.0, 0.05, 3),
-    "wB": ParamMeta("Weight balance (rear)", "", "Rear weight fraction", 0.0, 1.0, 0.01, 4),
+    "wB": ParamMeta("Weight balance (front)", "", "Front weight fraction (CG at l*(1-wB) behind the front axle)", 0.0, 1.0, 0.01, 4),
     "hcg": ParamMeta("CoG height", "m", "Centre-of-gravity height", 0.0, 1.5, 0.01, 4),
     "huf": ParamMeta("Unsprung CoG h front", "m", "Front unsprung CoG height", 0.0, 1.0, 0.001, 7),
     "hur": ParamMeta("Unsprung CoG h rear", "m", "Rear unsprung CoG height", 0.0, 1.0, 0.001, 7),
@@ -115,7 +115,7 @@ META = {
     "zeta_rl": ParamMeta("Damping ratio RL", "", "Rear-left damping ratio", 0.0, 2.0, 0.05, 3),
     "zeta_rr": ParamMeta("Damping ratio RR", "", "Rear-right damping ratio", 0.0, 2.0, 0.05, 3),
     # Brakes
-    "Tbrake_max": ParamMeta("Max brake torque", "N*m", "Maximum total brake torque", 0.0, 20000.0, 100.0, 1),
+    "Tbrake_max": ParamMeta("Max brake torque (half of total)", "N*m", "Half of the total brake torque: the four wheels together get twice this value", 0.0, 20000.0, 100.0, 1),
     # Camber & Toe
     "gamma_fl": ParamMeta("Camber front (L)", "deg", "Front camber, left (mirrored to right)", -10.0, 10.0, 0.1, 3),
     "gamma_rl": ParamMeta("Camber rear (L)", "deg", "Rear camber, left (mirrored to right)", -10.0, 10.0, 0.1, 3),
