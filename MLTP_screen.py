@@ -34,6 +34,7 @@ from functions.ggv import build_envelope, march, march_lap
 from functions.importfile import result_stem
 from functions.mesh import mesh_opts_record
 from functions.transcription import discretise, reconstruct_track
+from functions import chassissim
 from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 
 # vehModel hard-codes the lateral-offset bound n in [-4, 4] m (x_lim row 4) and
@@ -52,6 +53,7 @@ def MLTP_screen(circuit="Sturn", vi=60.0, AeroConfig="Static", ATD="On",
     quasi-steady equilibrium, 'nominal' = textbook m*g / Wfl0 split); see
     functions/ggv.py. Returns ctx with ctx.data, ctx.envelope, ctx.elapsed.
     TyreModel and plot are accepted for MLTP() call parity and ignored."""
+    circuit, useropts_kwargs = chassissim.alias(circuit), chassissim.alias_kwargs(useropts_kwargs)   # ext: spelling
     t0 = time.perf_counter()
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vi=vi, AeroConfig=AeroConfig, ATD=ATD,

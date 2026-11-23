@@ -192,6 +192,7 @@ def _model_hash(circuit, circuits_dir="Circuits", data_dir="Data", tyre_set="MF2
         data.append(tyre_set[5:])
     parts = [S.model_hash(_CODE_FILES, root=_REPO), S.model_hash(data, root=os.getcwd())]
     from functions import chassissim
+    circuit = chassissim.alias(circuit)
     if circuit.startswith(chassissim.PREFIX):
         # The files of a ChassisSim circuit, by their names inside the install folder. So the hash does not
         # depend on where the install folder is.
@@ -2059,6 +2060,8 @@ def setup_sweep(param_specs, n_samples=256, circuit="Sturn", *, name=None, vi=60
     **useropts_kwargs  forwarded unchanged to userOpts / screen_batch / MLTP /
                     optimise_design (tyre_set, OPT_ds, mesh, linear_solver, ipopt_overrides,
                     ...); vp_overrides is the BASE setup merged under every row."""
+    from functions import chassissim
+    circuit, useropts_kwargs = chassissim.alias(circuit), chassissim.alias_kwargs(useropts_kwargs)   # ext: spelling
     sw = _Sweep(dict(n_samples=n_samples, circuit=circuit, name=name, vi=vi, ni=ni,
                      AeroConfig=AeroConfig, ATD=ATD, Electric_4Motors=Electric_4Motors,
                      TyreModel=TyreModel, sampler=sampler, seed=seed, top_k=top_k, n_probes=n_probes,

@@ -1,6 +1,6 @@
 """ChassisSim v3.41 input files: readers and the circuit source.
 
-The install folder comes from the argument or from the environment variable CHASSISSIM_DIR.
+The install folder comes from the argument or from the environment variable EXT_SIM_DIR, else CHASSISSIM_DIR.
 A circuit name for userOpts has the form "chassissim:<Circuit name>".
 The readers use only the standard library and numpy.
 """
@@ -8,6 +8,7 @@ import configparser
 import glob
 import hashlib
 import os
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,14 +17,50 @@ from scipy.optimize import brentq
 from functions import carfile
 
 PREFIX = "chassissim:"
+ALIAS = "ext:"          # neutral spelling of PREFIX (ponytail: the old names stay for compatibility)
 ENC = "latin-1"
 
 
-def install_dir(chassissim_dir=None):
-    """Return the install folder: the argument first, then CHASSISSIM_DIR."""
-    p = chassissim_dir or os.environ.get("CHASSISSIM_DIR")
+def alias(name):
+    """'ext:<x>' -> 'chassissim:<x>'. Any other value stays as it is."""
+    return PREFIX + name[len(ALIAS):] if isinstance(name, str) and name.startswith(ALIAS) else name
+
+
+def _norm(p):
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
+def alias_dir(chassissim_dir=None, ext_dir=None):
+    """The install folder argument of the two keywords. Both with different values raise ValueError."""
+    if chassissim_dir and ext_dir and _norm(chassissim_dir) != _norm(ext_dir):
+        raise ValueError(f"ext_dir ('{ext_dir}') and chassissim_dir ('{chassissim_dir}') differ. Pass one of them.")
+    return ext_dir or chassissim_dir
+
+
+def alias_kwargs(kw):
+    """Copy of the userOpts keywords kw with car 'ext:<path>' as 'chassissim:<path>' and ext_dir folded into chassissim_dir."""
+    kw = dict(kw)
+    if kw.get("car") is not None:
+        kw["car"] = alias(kw["car"])
+    d = alias_dir(kw.get("chassissim_dir"), kw.pop("ext_dir", None))
+    if d is not None or "chassissim_dir" in kw:
+        kw["chassissim_dir"] = d
+    return kw
+
+
+def env_dir():
+    """EXT_SIM_DIR, else CHASSISSIM_DIR, else None. Both set and different: EXT_SIM_DIR wins, with one warning."""
+    a, b = os.environ.get("EXT_SIM_DIR"), os.environ.get("CHASSISSIM_DIR")
+    if a and b and _norm(a) != _norm(b):
+        warnings.warn(f"EXT_SIM_DIR ('{a}') and CHASSISSIM_DIR ('{b}') differ. The program uses EXT_SIM_DIR.")
+    return a or b or None
+
+
+def install_dir(chassissim_dir=None, ext_dir=None):
+    """Return the install folder: the argument first, then the environment (EXT_SIM_DIR, CHASSISSIM_DIR)."""
+    p = alias_dir(chassissim_dir, ext_dir) or env_dir()
     if not p:
-        raise ValueError("Set CHASSISSIM_DIR to the ChassisSim install folder, or pass chassissim_dir.")
+        raise ValueError("Set EXT_SIM_DIR to the install folder, or pass ext_dir.")
     if not os.path.isdir(p):
         raise ValueError(f"The folder '{p}' does not exist.")
     return p
@@ -375,12 +412,12 @@ def _atmos(chassissim_dir=None):
     """Return the engine torque factor of the Atmos_Cond.ini file that ChassisSim uses.
     ChassisSim joins the install folder and the file name without a separator. So the file is
     '<install folder name>Atmos_Cond.ini' in the parent of the install folder. A file in the install folder is not read.
-    The folder is the argument, else CHASSISSIM_DIR, as install_dir. The factor is 1.0 when neither is set, without
+    The folder is the argument, else EXT_SIM_DIR, else CHASSISSIM_DIR, as install_dir. The factor is 1.0 when neither is set, without
     the file, or with Eng Corr = 0 (the default). A folder that does not exist raises ValueError.
     Factor = sqrt(T_eng / T_cur) x (P_cur - Pw_cur) / (P_eng - Pw_eng), the temperatures in K, the pressures in bar.
     In the two sections, a missing key takes Atm Press 1.013 bar, Water Press 0 bar and Temperature 15 degC.
     Section and key names ignore case. A value that is not a finite number raises ValueError."""
-    if not (chassissim_dir or os.environ.get("CHASSISSIM_DIR")):
+    if not (chassissim_dir or env_dir()):
         return 1.0
     # ChassisSim joins the install folder and the file name without a separator. We read the same path.
     folder = os.path.abspath(install_dir(chassissim_dir))
@@ -454,7 +491,7 @@ def load_car(path, chassissim_dir=None):
     that record holds a value. This applies to the springs, the rubber air gaps (the gap flag goes with the gap),
     the rubber tables, the corner and bar motion ratios, the dampers and the tyres.
     engine.atmos is the atmospheric torque factor of the Atmos_Cond.ini file of the ChassisSim folder (the argument,
-    else CHASSISSIM_DIR). _atmos gives the path. It is 1.0 when no folder is set, without the file, or with
+    else EXT_SIM_DIR, else CHASSISSIM_DIR). _atmos gives the path. It is 1.0 when no folder is set, without the file, or with
     Eng Corr = 0.
     """
     path = os.path.abspath(path)

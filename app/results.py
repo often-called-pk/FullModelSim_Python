@@ -11,7 +11,7 @@ import numpy as np
 import scipy.io as sio
 
 from functions.importfile import result_stem, n_tag, circuit_slug
-from functions.chassissim import PREFIX
+from functions.chassissim import PREFIX, alias
 from userOpts import resolve_start_state
 
 
@@ -40,11 +40,12 @@ def result_paths(rc):
     physics, start state, track band, car (rc.car) and setup tag. rc.chassissim_dir enters the setup tag of a car run.
     Mode 'qss' writes <stem>_qss.mat and no plots. Its plot folder
     is "", so the Output tab does not show the plots of an NLP run of the same setup."""
-    a = (rc.output_dir, rc.circuit, rc.AeroConfig, rc.ATD, rc.Electric_4Motors, rc.tyre_set, rc.mesh, rc.setup_tag())
-    start = resolve_start_state(None if rc.start_state == "auto" else rc.start_state, rc.circuit, rc.car,
+    circuit, car = alias(rc.circuit), alias(rc.car)
+    a = (rc.output_dir, circuit, rc.AeroConfig, rc.ATD, rc.Electric_4Motors, rc.tyre_set, rc.mesh, rc.setup_tag())
+    start = resolve_start_state(None if rc.start_state == "auto" else rc.start_state, circuit, car,
                                 rc.chassissim_dir)
     kw = dict(physics=rc.physics, start_state=start, n_tag=n_tag(rc.n_bounds),
-              car=rc.car[len(PREFIX):] if rc.car else None)
+              car=car[len(PREFIX):] if car else None)
     qss = rc.mode == "qss"
     return result_mat_path(*a, qss=qss, **kw), "" if qss else plot_dir(*a, **kw)
 

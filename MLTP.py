@@ -46,6 +46,7 @@ from functions.transcription import (discretise, build_and_solve_nlp,
                                       unpack_solution, reconstruct_x_full,
                                       interp_inputs, compute_time, time_at_points,
                                       reconstruct_track, pathcol_points)
+from functions import chassissim
 from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 from vehModel import vehModel, rolling_start, vertical_eigs
 from MLTP_initial import MLTP_initial
@@ -449,6 +450,7 @@ def MLTP(circuit="Sturn", vi=60.0, ni=np.nan, warm_start=None,
     Then solve the default setup first, or pass warm_start. A result saved before E2 has no provenance:
     MLTP trusts its file name. A solve that does not converge gives a warning. The result saves under its
     own setup tag, and data.provenance.run.source names the default file."""
+    circuit, useropts_kwargs = chassissim.alias(circuit), chassissim.alias_kwargs(useropts_kwargs)   # ext: spelling
     t0 = time.time()
     elapsed = {}
     hom_steps = useropts_kwargs.pop("_homotopy_steps", None)    # set by a homotopy's last step

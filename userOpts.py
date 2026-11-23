@@ -271,8 +271,8 @@ def _parse_n_bounds(n_bounds, s):
 # the car's Atmos_Cond.ini (path: chassissim._atmos). The folder is not a knob, but an atmospheric factor other
 # than 1.0 is (car_atmos).
 _NOT_SETUP = frozenset({"circuit", "AeroConfig", "ATD", "Electric_4Motors", "tyre_set", "physics", "start_state",
-                        "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "chassissim_dir", "data_dir",
-                        "ipopt_overrides", "car"})
+                        "mesh", "linear_solver", "hsl_dir", "jit", "cse", "circuits_dir", "chassissim_dir", "ext_dir",
+                        "data_dir", "ipopt_overrides", "car"})
 
 
 def _canon(v):
@@ -298,7 +298,7 @@ def car_id(car):
     """'<absolute path>#<sha8>' of the car file in 'chassissim:<path>': the knob car_file and ctx.car of a car run.
     sha8 = the first 8 hex digits of the sha256 of the file bytes (as chassissim.load_car). An edited file gives
     a new id. Raise ValueError for a file that does not exist."""
-    path = os.path.abspath(str(car)[len("chassissim:"):])
+    path = os.path.abspath(str(chassissim.alias(car))[len(chassissim.PREFIX):])
     try:
         return f"{path}#{chassissim.file_sha8(path)}"
     except OSError as e:
@@ -337,6 +337,7 @@ def resolve_start_state(start_state, circuit, car, chassissim_dir=None):
     Every other run with None gives 'matlab', with one warning if only the join fails. An explicit value wins.
     An explicit 'periodic' on a ChassisSim circuit that does not join raises ValueError.
     userOpts and the GUI result path call this function."""
+    circuit = chassissim.alias(circuit)
     on_cs = isinstance(circuit, str) and circuit.startswith(chassissim.PREFIX)
     if start_state is None and not (car is not None and on_cs):
         return "matlab"
@@ -394,7 +395,7 @@ def setup_knobs(kw):
         out["tyre_file"] = os.path.abspath(ts[5:])
     if kw.get("car") is not None:
         out["car_file"] = car_id(kw["car"])
-        atmos = car_atmos(kw.get("chassissim_dir"))
+        atmos = car_atmos(chassissim.alias_dir(kw.get("chassissim_dir"), kw.get("ext_dir")))
         if atmos != 1.0:
             out["car_atmos"] = atmos
     return out
@@ -522,7 +523,7 @@ def userOpts(ctx,
              vi=60.0,                      # initial velocity [m/s]
              ni=np.nan,                    # initial lateral position [m]
              circuits_dir="Circuits",
-             chassissim_dir=None,          # ChassisSim install folder (else env CHASSISSIM_DIR): the circuits of
+             chassissim_dir=None,          # ChassisSim install folder (else env EXT_SIM_DIR, else CHASSISSIM_DIR): the circuits of
                                            # circuit='chassissim:<name>' and the Atmos_Cond.ini of a car
              data_dir="Data",
              linear_solver="ma57",         # 'ma57'|'ma97'|'ma27'|'mumps'; ma* uses Coin-HSL
@@ -549,7 +550,11 @@ def userOpts(ctx,
              collocation="legendre",       # 'legendre' | 'radau': collocation points of the 23-state NLP (COLLOCATION)
              state_scaling="matlab",       # 'matlab' | 'typical': scales of the 14 chassis states (STATE_SCALINGS)
              atd_tbr=None,                 # None | TBR >= 1: torque-bias ratio of both axle differentials (ATD On only)
-             car=None):                    # None (the 4EM car) | 'chassissim:<path of a .car file>'
+             car=None,                     # None (the 4EM car) | 'ext:<path of a .car file>' ('chassissim:<path>' too)
+             ext_dir=None):                # = chassissim_dir (alias; both with different values raise ValueError)
+
+    circuit, car = chassissim.alias(circuit), chassissim.alias(car)
+    chassissim_dir = chassissim.alias_dir(chassissim_dir, ext_dir)
 
     # ---- physics flag: set first, so Powertrain / vehParams / the models can read it
     if physics not in PHYSICS:
@@ -561,7 +566,7 @@ def userOpts(ctx,
     ctx.car = "4em"
     if car is not None:
         if not (isinstance(car, str) and car.startswith(chassissim.PREFIX)):
-            raise ValueError(f"car must be None or '{chassissim.PREFIX}<path of a .car file>', got {car!r}")
+            raise ValueError(f"car must be None or '{chassissim.ALIAS}<path of a .car file>', got {car!r}")
         why = car_refusal(dict(
             physics=physics, Electric_4Motors=Electric_4Motors, AeroConfig=AeroConfig, start_state=start_state,
             state_scaling=state_scaling, atd_tbr=atd_tbr, between_knots=between_knots, collocation=collocation,

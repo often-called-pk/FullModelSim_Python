@@ -172,11 +172,12 @@ def main():
     print("[5/8] Optional parts (they never stop the setup)")
     run_py(uv, "python", "-c", HSL_PROBE)
     run_py(uv, "python", "-c", GUI_HSL)
-    cs = os.environ.get("CHASSISSIM_DIR")
+    var = "EXT_SIM_DIR" if os.environ.get("EXT_SIM_DIR") else "CHASSISSIM_DIR"
+    cs = os.environ.get(var)
     if not cs:
-        print("CHASSISSIM_DIR: not set (ChassisSim circuits and cars are unavailable)")
+        print("EXT_SIM_DIR: not set (external circuits and cars are unavailable)")
     else:
-        print(f"CHASSISSIM_DIR: {cs}" + ("" if os.path.isdir(cs) else " (not a folder)"))
+        print(f"{var}: {cs}" + ("" if os.path.isdir(cs) else " (not a folder)"))
     cc = [c for c in ("gcc", "clang", "cl") if shutil.which(c)]
     print(f"C compiler: {cc[0]}" if cc else "C compiler: none (jit=True builds without JIT)")
 

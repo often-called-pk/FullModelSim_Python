@@ -15,6 +15,7 @@ import time
 import numpy as np
 from scipy.optimize import brentq
 
+from functions import chassissim
 from functions.context import Ctx
 from functions.ggv import aero_coefficients, build_envelope
 from functions.ladder import lon_model, qss_profile
@@ -360,7 +361,7 @@ def run_stage(stage, log, circuit, ledger=None, link=True, lap=None, tags=None, 
     test of the accelerations. The full model keeps 1 until a study gives its own elasticity."""
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}, got {stage!r}")
-    kw = dict(useropts_kwargs)
+    circuit, kw = chassissim.alias(circuit), chassissim.alias_kwargs(useropts_kwargs)   # ext: spelling, one ledger key
     base = {**(kw.pop("vp_overrides", None) or {}), **_frozen(ledger, stage)}
     ctx = Ctx()
     userOpts(ctx, circuit=circuit, vp_overrides=base, **kw)

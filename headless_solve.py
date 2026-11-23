@@ -71,6 +71,8 @@ def build_solve_kwargs(cfg, resource_root_dir):
     for key, default in FORWARD.items():
         if cfg.get(key) is not None and cfg[key] != default:
             kwargs[key] = cfg[key]
+    if cfg.get("ext_dir"):      # a hand-written cfg: the neutral name of chassissim_dir. MLTP folds the two names
+        kwargs["ext_dir"] = cfg["ext_dir"]
     if run_mode(cfg) == "qss":
         for key in NLP_ONLY:
             kwargs.pop(key, None)

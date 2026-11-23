@@ -812,7 +812,7 @@ class MainWindow(QMainWindow):
     # ---- ChassisSim circuits and cars --------------------------------------
     def _cs_dir(self):
         """The ChassisSim folder: the Advanced field, else the environment. None when neither is set."""
-        return self.chassissim_dir.text().strip() or os.environ.get("CHASSISSIM_DIR") or None
+        return self.chassissim_dir.text().strip() or chassissim.env_dir()
 
     def car_ref(self):
         """'chassissim:<absolute path>' of the selected car, None for the 4EM car."""
@@ -1004,7 +1004,7 @@ class MainWindow(QMainWindow):
         path = os.path.abspath(path if path.lower().endswith(".car") else path + ".car")
         if os.path.exists(path):
             return self._append_log(f"[error] The file {path} exists. Choose a new name.\n")
-        if any(car_edit.in_chassissim(path, cs) for cs in (self._cs_dir(), os.environ.get("CHASSISSIM_DIR"))):
+        if any(car_edit.in_chassissim(path, cs) for cs in (self._cs_dir(), os.environ.get("EXT_SIM_DIR"), os.environ.get("CHASSISSIM_DIR"))):
             return self._append_log("[error] Do not save into the ChassisSim folders. Choose another folder.\n")
         try:
             ce.save(path, self._cs_dir())

@@ -32,6 +32,7 @@ from functions.casadi_opts import fn_opts
 from functions.context import Ctx
 from functions.importfile import result_stem, circuit_slug
 from functions.ladder import SEEDS, MA57_PRE_ALLOC, qss_profile, seed_m7
+from functions import chassissim
 from userOpts import userOpts, setup_knobs, knob_tag, provenance_record
 from vehModel_initial import vehModel_initial
 from functions.transcription import (discretise, build_and_solve_nlp,
@@ -51,6 +52,7 @@ def MLTP_initial(circuit="Sturn", vi=60.0, ni=np.nan, save=True,
                  results_dir="Results", seed="const", **useropts_kwargs):
     if seed not in SEEDS:
         raise ValueError(f"seed must be one of {SEEDS}, got {seed!r}")
+    circuit, useropts_kwargs = chassissim.alias(circuit), chassissim.alias_kwargs(useropts_kwargs)   # ext: spelling
     t0 = time.time()
     elapsed = {}
 

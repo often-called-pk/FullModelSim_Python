@@ -30,6 +30,7 @@ import casadi as ca
 
 from functions.casadi_opts import fn_opts
 from functions.context import Ctx
+from functions import chassissim
 from functions.importfile import load_solution, result_stem
 from functions.mesh import solution_knots, mesh_opts_record
 from functions.warmstart import (nlp_record, get_field, is_full_result, nlp_structure,
@@ -100,6 +101,7 @@ def optimise_design(param_specs, tag, circuit="Sturn", vi=60.0, ni=np.nan,
     the dict without lam_g0 and lam_x0."""
     if build_only and warm_start is None:       # a cold start would solve the 7-state init with IPOPT
         raise ValueError("build_only needs a full result as warm_start")
+    circuit, useropts_kwargs = chassissim.alias(circuit), chassissim.alias_kwargs(useropts_kwargs)   # ext: spelling
     t0 = time.time()
     elapsed = {}
     ctx = Ctx()

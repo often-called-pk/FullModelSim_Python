@@ -19,7 +19,7 @@ import numpy as np
 import scipy.io as sio
 from types import SimpleNamespace
 
-from functions.chassissim import PREFIX
+from functions.chassissim import PREFIX, alias
 
 try:                                                    # scipy layout differs by version
     from scipy.io.matlab import mat_struct
@@ -106,6 +106,7 @@ def n_tag(n_bounds):
 
 def circuit_slug(circuit):
     """Name part of a file stem: "cs_<name>" for "chassissim:<name>", else the circuit unchanged."""
+    circuit = alias(circuit)        # safety net: an entry that did not fold the ext: spelling
     if circuit.startswith(PREFIX):
         return "cs_" + re.sub(r"\W+", "_", circuit[len(PREFIX):]).strip("_")
     return circuit
