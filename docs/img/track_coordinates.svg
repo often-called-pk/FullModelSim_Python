@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420" width="700" height="420" font-family="Helvetica, Arial, sans-serif" font-size="14">
+  <title>Track coordinates: arc length s, lateral offset n, heading error eps, curvature kappa</title>
+  <defs>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1d4ed8"/></marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#92400e"/></marker>
+  </defs>
+  <rect x="0" y="0" width="700" height="420" fill="#ffffff" stroke="#d1d5db"/>
+  <!-- Left turn. Centre of the turn (120, 380). The car drives from the bottom right to the top left. -->
+  <path d="M 380 380 A 260 260 0 0 0 120 120" fill="none" stroke="#9ca3af" stroke-width="2" stroke-dasharray="6 5"/>
+  <path d="M 460 380 A 340 340 0 0 0 120 40" fill="none" stroke="#9ca3af" stroke-width="2" stroke-dasharray="6 5"/>
+  <path d="M 420 380 A 300 300 0 0 0 120 80" fill="none" stroke="#1f2937" stroke-width="2.5"/>
+  <circle cx="120" cy="380" r="4" fill="#6b7280"/>
+  <text x="70" y="404" fill="#374151">centre of the turn</text>
+  <text x="300" y="404" fill="#6b7280">inner edge</text>
+  <text x="470" y="374" fill="#6b7280">outer edge</text>
+  <text x="430" y="352" fill="#1f2937">centreline</text>
+  <!-- radius to P at 45 degrees: P = (332.1, 167.9) -->
+  <line x1="120" y1="380" x2="332.1" y2="167.9" stroke="#6b7280" stroke-width="1.2" stroke-dasharray="4 4"/>
+  <text x="146" y="340" fill="#374151" transform="rotate(-45 146 340)">R = 1 / kappa</text>
+  <circle cx="332.1" cy="167.9" r="5" fill="#1f2937"/>
+  <text x="342" y="163" fill="#1f2937" font-weight="bold">P</text>
+  <!-- track direction at P -->
+  <line x1="332.1" y1="167.9" x2="290" y2="125.8" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ab)"/>
+  <text x="300" y="112" fill="#1d4ed8">track direction</text>
+  <!-- offset n, to the left of travel: car centre C = P + 90 px towards the centre of the turn = (268.5, 231.5) -->
+  <line x1="332.1" y1="167.9" x2="284" y2="216" stroke="#b91c1c" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="318" y="206" fill="#b91c1c" font-weight="bold">n</text>
+  <g transform="translate(268.5 231.5) rotate(210)">
+    <rect x="-22" y="-10" width="44" height="20" rx="5" fill="#fde68a" stroke="#92400e" stroke-width="1.5"/>
+  </g>
+  <!-- car heading: 15 degrees left of the track direction -->
+  <line x1="268.5" y1="231.5" x2="207.9" y2="196.5" stroke="#92400e" stroke-width="2" marker-end="url(#ao)"/>
+  <line x1="268.5" y1="231.5" x2="219" y2="182" stroke="#1d4ed8" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <path d="M 233.1 196.1 A 50 50 0 0 0 225.2 206.5" fill="none" stroke="#111827" stroke-width="1.4"/>
+  <text x="196" y="222" fill="#111827" font-weight="bold">eps</text>
+  <text x="128" y="190" fill="#92400e">car heading</text>
+  <!-- legend -->
+  <rect x="450" y="30" width="235" height="182" rx="8" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="463" y="55" font-weight="bold" fill="#111827">Where the car is</text>
+  <text x="463" y="80" fill="#111827">P: centreline point at s</text>
+  <text x="463" y="102" fill="#111827">s: distance along the centreline</text>
+  <text x="463" y="124" fill="#111827">n: sideways offset (left +)</text>
+  <text x="463" y="146" fill="#111827">eps: heading error, the angle</text>
+  <text x="463" y="166" fill="#111827">from track direction to car</text>
+  <text x="463" y="188" fill="#111827">kappa = 1 / R (left turn +)</text>
+</svg>
