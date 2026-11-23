@@ -17,39 +17,48 @@ Decode facts this plan rests on (O = read in the binary, I = inferred):
 - [x] cid 571 on: brake input rate bound -1 / T (cid 572) in the application direction, release unchanged, tighter bound kept. 572 checks. 571 decode `brake.ramp_on`. QSS ignores the ramp.
 - [x] One real solve with a binding T (GP3 on Sturn, T = 2 s, cold, MUMPS): 16.313 s against 16.150 s, fastest brake application -0.495 1/s at the -0.5 bound (the base reaches -1.22 1/s). Committed 8cadb01.
 
-## Lane K1: type byte, geometry modes, gates
+## Lane K1: type byte, geometry modes, gates (done, 2a722ef)
 
 Files: functions/chassissim.py.
 
-- [ ] load_car keeps the tag-10 type byte: `hardpoints.<corner>_type`. Decode cid 53 `geom.mode_f`, 61 `geom.mode_r` (int), 142 / 144 `geom.datum_rh_f` / `_r` (m), 69 `susp.live_axle`.
-- [ ] check_car gate per axle, (type, points, mode): front (0, 6, 0 or 1), (1, 4, 0 or 1); rear the same plus (2, 6, 1) with cid 69 = 1. Anything else raises one ValueError naming the cid, the type and the mode (modes 2 and 3, type 2 in mode 0 or at the front, cid 69 without a type-2 rear, types 3-9). Replaces the 6-point refusal.
-- [ ] Missing fields: a mode-1 axle needs cid 54 / 62 and the datum ride height; a mode-0 axle needs the hardpoints and the datum ride height.
-- [ ] Checks: every shipped car decodes; WRX and V8 pass the gate; the 27 type-0 cars unchanged in load_car output apart from the new fields.
+- [x] load_car keeps the tag-10 type byte: `hardpoints.<corner>_type`. Decode cid 53 `geom.mode_f`, 61 `geom.mode_r` (int), 142 / 144 `geom.datum_rh_f` / `_r` (m), 69 `susp.live_axle`.
+- [x] check_car gate per axle, (type, points, mode): front (0, 6, 0 or 1), (1, 4, 0 or 1); rear the same plus (2, 6, 1) with cid 69 = 1. Anything else raises one ValueError naming the cid, the type and the mode (modes 2 and 3, type 2 in mode 0 or at the front, cid 69 without a type-2 rear, types 3-9). Replaces the 6-point refusal.
+- [x] Missing fields: a mode-1 axle needs cid 54 / 62 and the datum ride height; a mode-0 axle needs the hardpoints and the datum ride height.
+- [x] Checks: every shipped car decodes; WRX and V8 pass the gate; the 27 type-0 cars unchanged in load_car output apart from the new fields.
 
-## Lane K2: kinematics by the ChassisSim rules
+## Lane K2: kinematics by the ChassisSim rules (done, 2a722ef)
 
 Files: functions/chassissim.py (axle_kinematics, suspension_curves), vehModel_cs.py (camber per corner), functions/ggv.py (QSS camber and roll centre).
 
-- [ ] Front-view block by the loader rule (inner pairs cut at the axle plane, outer z on the arm plane). ponytail: float64; ChassisSim rounds to float32 (below 0.01 mm).
-- [ ] Mode 0: ground at z = 0 of the hardpoint frame. The curves stay indexed by our wheel travel w (static = 0, bump positive); the geometry is solved at w + (datum ride height - static ride height of the axle). Remove the cid 55 back-out, the plausibility check and the cid 54 fallback. Keep the no-solution error.
-- [ ] Strut (type 1): the lower ball joint swings on the lower-arm circle, the top mount is fixed, the upright follows the strut axis, the contact patch is rigid to the upright. Instant centre and camber as decoded. K1 from the strut axis.
-- [ ] Mode 1: rc_h(w) = cid 54 / 62 + (static - datum ride height) - w, camber curve 0, K1 0 on a mode-1 front.
-- [ ] Live axle: rear camber = static +- d from the road-frame hub heights of the model (wheel states), no body roll, no kinematic curve; QSS the same from the steady tyre deflections.
-- [ ] Checks: the stored front-view heights where they hold (7 cars exact, WRX 0.03 / 0.17 mm), GP3 log medians, the strut and live-axle laws on hand cases, mode-1 slope -1, snapshot of the 4EM NLP unchanged, every ChassisSim QSS pin that moves listed with old and new values.
+- [x] Front-view block by the loader rule (inner pairs cut at the axle plane, outer z on the arm plane). ponytail: float64; ChassisSim rounds to float32 (below 0.01 mm).
+- [x] Mode 0: ground at z = 0 of the hardpoint frame. The curves stay indexed by our wheel travel w (static = 0, bump positive); the geometry is solved at w + (datum ride height - static ride height of the axle). Remove the cid 55 back-out, the plausibility check and the cid 54 fallback. Keep the no-solution error.
+- [x] Strut (type 1): the lower ball joint swings on the lower-arm circle, the top mount is fixed, the upright follows the strut axis, the contact patch is rigid to the upright. Instant centre and camber as decoded. K1 from the strut axis.
+- [x] Mode 1: rc_h(w) = cid 54 / 62 + (static - datum ride height) - w, camber curve 0, K1 0 on a mode-1 front.
+- [x] Live axle: rear camber = static +- d from the road-frame hub heights of the model (wheel states), no body roll, no kinematic curve; QSS the same from the steady tyre deflections.
+- [x] Checks: the stored front-view heights where they hold (7 cars exact, WRX 0.03 / 0.17 mm), GP3 log medians, the strut and live-axle laws on hand cases, mode-1 slope -1, snapshot of the 4EM NLP unchanged, every ChassisSim QSS pin that moves listed with old and new values.
 
-## Lane K3: anti-dive / anti-squat (pitch-moment arm)
+## Lane K3: anti-dive / anti-squat (pitch-moment arm) (done, 2a722ef)
 
 Files: vehModel_cs.py. Decode [O] (FUN_14012a600, equations of motion of the time march): Fx = signed tyre longitudinal force, drive positive, brake negative. The pitch moment of the axle tyre forces uses the arm (h_cg - h_axle) instead of h_cg: pitch accel = (Fx_front_sum (h_cg - h_f) + Fx_rear_sum (h_cg - h_r)) / I_y. h_f = cid 56 when the front force sum > 0 (drive), else cid 55 (brake, coast); h_r = cid 64 / 63 likewise. Positive h = anti (less pitch). The vertical jacking force (cids 800-807) is off in every shipped car: not built. The QSS and the apex search do not use the heights: QSS unchanged.
 
-- [ ] Pitch arm per axle reduced by the side-view height, NLP only. The switch on the force sign is a smooth blend (SX smooth), scale named in a ponytail note.
-- [ ] ponytail: mode 0 adds a small ride-height shift to h (divisor not decoded); skipped, add when decoded. Left copies (59, 60, 67, 68) only behind gates no shipped car sets: not read.
-- [ ] Checks: hand values of the moment on a synthetic car (drive, brake, coast); all four heights 0 builds the graph of today; snapshot of the 4EM NLP unchanged; the GP3 pitch under braking smaller than today.
+- [x] Pitch arm per axle reduced by the side-view height, NLP only. The switch on the force sign is a smooth blend (SX smooth), scale named in a ponytail note.
+- [x] ponytail: mode 0 adds a small ride-height shift to h (divisor not decoded); skipped, add when decoded. Left copies (59, 60, 67, 68) only behind gates no shipped car sets: not read.
+- [x] Checks: hand values of the moment on a synthetic car (drive, brake, coast); all four heights 0 builds the graph of today; snapshot of the 4EM NLP unchanged; the GP3 pitch under braking smaller than today.
 
-## Lane V: validation (Opus, one solve at a time, memory check before each)
+## Lane S: how a ChassisSim car starts its lap (done, 4e72e89)
 
-- [ ] QSS laps of every car that builds (GP3, GT3, F2, WRX, V8, the two mode-1 demo cars, others), old vs new.
-- [ ] Real solves: GP3 Eastern Creek fixed line (re-pin, overlay corr ay, RMS speed, stbi against the log), WRX and V8 on Sturn and at Eastern Creek. Overlays of the WRX and V8 wait for the owner runs (CS2c-CSRUN).
+Added 2026-11-23. K3 audit found the free start: the car took the matlab box (vi 60 m/s, wheel speeds free); the stored GP3 Eastern Creek solve started its front wheels at 1.55 x rolling speed. MATLAB and the 4EM default do the same (all four wheels on their upper limit, 226.9 rad/s). Owner rulings: fix before lane V; the flying lap by default for a car on a ChassisSim circuit.
 
-## Lane D: docs (Opus)
+- [x] userOpts.resolve_start_state: start_state None -> 'periodic' for a car on a ChassisSim circuit that joins at the line (K_JOIN_MAX 1e-3 1/m, 15 of 16 circuits), else 'matlab'; explicit periodic on a circuit that does not join raises.
+- [x] Car on the matlab start: wheel speeds at vi / R within OPT_e; warning on a curved start. The 4EM car keeps the MATLAB box (parity gate).
+- [x] Flying-lap QSS march (ggv.march_lap: again from the end speed, 0.01 m/s, at most 3) in MLTP_screen, screen_sweep, screen_batch and the qss23 seed.
+- [x] GUI start combo entry auto; result_paths through the same resolver; the restore after a car fixed in the fix wave.
 
-- [ ] CLAUDE.md ChassisSim paragraphs (roll-centre reading, modes, strut, live axle, anti-dive, ramp), the test list, the moved numbers. README only where a user step changes.
+## Lane V: validation (done, 2026-11-23)
+
+- [x] QSS laps of every car that builds (GP3, GT3, F2, WRX, V8, the two mode-1 demo cars, others), old vs new.
+- [x] Real solves (cold, MUMPS, qss23, fixed line +-0.05 m, flying lap): GP3 Eastern Creek 75.374 s, 376 iterations (ChassisSim lap 1 76.720 s, -1.75 %, corr ay 0.995, RMS speed 2.51 m/s, stbi median -8.60 % against -8.83 %); the same with the fixed start 75.835 s; WRX 109.039 s; V8 88.815 s; GT3 Adelaide 75.382 s (77.580 s, -2.83 %); F2 Adelaide 64.526 s (72.060 s, -10.5 %). vx(0) = vx(N); front wheels start at rolling speed, rear wheels with 2-4 % drive slip. Overlays of the WRX and V8 wait for the owner runs (CS2c-CSRUN).
+
+## Lane D: docs (done)
+
+- [x] CLAUDE.md ChassisSim paragraphs (roll-centre reading, modes, strut, live axle, anti-dive, ramp), the test list, the moved numbers. README only where a user step changes.

@@ -259,7 +259,7 @@ The Advanced tab has the group "Run, model and start":
 - Run: `nlp` (the solve) or `qss` (a QSS lap estimate in about 1 s, with no IPOPT and no plots).
   The QSS lap is not an optimum.
 - Physics: `matlab` (default) or `corrected`.
-- Start state: `matlab` (default), `rolling` or `periodic`.
+- Start state: `auto` (default), `matlab`, `rolling` or `periodic`. With `auto`, a ChassisSim car on a ChassisSim circuit starts with the flying lap (`periodic`). Every other run uses `matlab`.
 - Homotopy: three solves with the tyre friction scaled by 1.2, 1.1 and 1.0. When you select 4
   Motors, the GUI ticks this box.
 - More options (JSON): a JSON object with the keys `n_bounds`, `ladder`, `ipopt_overrides`,
@@ -329,7 +329,7 @@ than the NLP slope. Its ATD Off cost is 17 times too small.
 | `ATD` | `'On'`: ideal torque vectoring, no loss | `'Off'`: +2.06% / +2.95%. `atd_tbr=2`: +0.15% / +0.17% | NLP solves |
 | `n_bounds` (half-width) | None: 4 m on every circuit | -0.2025 / -1.861 s per m | NLP |
 | `vi` (start speed) | 60 m/s, box 59 to 61 m/s | -0.0114 / -0.0700 s per m/s | NLP |
-| `start_state` | `'matlab'`: free wheel speeds at s = 0 | `'rolling'`: +0.045 s / +0.285 s. `'periodic'`: BCN +0.467 s | NLP solves |
+| `start_state` | None: `'periodic'` for a ChassisSim car on a ChassisSim circuit, else `'matlab'` (free wheel speeds at s = 0 on the 4EM car) | `'rolling'`: +0.045 s / +0.285 s. `'periodic'`: BCN +0.467 s | NLP solves |
 | `Tmax` (motor torque) | 602 Nm | -3.39e-3 / -6.71e-3 s per Nm | NLP |
 | `Pmax` (motor power) | 456 kW | -4.78e-7 / -1.30e-5 s per W | NLP |
 | `Tbrake_max` | 4000 Nm | -1.40e-4 / -3.73e-4 s per Nm | NLP |
