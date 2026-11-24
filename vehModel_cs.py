@@ -114,11 +114,53 @@ def _curve(x, y, ext=0.0, n=200):
     return lambda v: f(_clamp(v, lo, hi, w))
 
 
-def _surf(tab, e=5e-4):
+CAMBER_FLOOR, W_CAMBER = 0.5, 3e-3
+CAMBER_CAP_MARGIN = 0.05    # the cap of the camber factor sits this far above the largest table value
+
+
+def _softplus(z):
+    """log(1 + exp(z)) for a float, an ndarray or a casadi value. It does not overflow for large |z|."""
+    if isinstance(z, (ca.SX, ca.MX, ca.DM)):
+        return 0.5 * (z + ca.fabs(z)) + ca.log1p(ca.exp(-ca.fabs(z)))
+    return 0.5 * (z + np.abs(z)) + np.log1p(np.exp(-np.abs(z)))
+
+
+def camber_factor(coef, c, y_max):
+    """Return the Fy camber factor at the camber c [rad]. c is an SX, a float or an ndarray.
+    coef holds the polynomial of fit_camber, highest power first. y_max is the largest value of table 5.
+    The factor is the polynomial p(c), kept between the floor 0.5 and the cap y_max + CAMBER_CAP_MARGIN.
+    The camber has no clamp at the table ends, as in ChassisSim.
+    The cap is not in ChassisSim. A degree 4 fit grows without limit past its table, and the cap stops that.
+    Both limits are smooth (softplus, width W_CAMBER). A limit at the distance d moves the value by about
+    W exp(-d / W). That is below 1e-6 for d >= 0.025.
+    The floor acts inside a table whose values come near 0.5. One shipped table starts at 0.5, and its polynomial
+    goes down to 0.493. There the floor lifts the factor by up to 0.007.
+    The NLP and the QSS share this function."""
+    p = 0.0 * c
+    for a in coef:
+        p = p * c + float(a)
+    g = CAMBER_FLOOR + W_CAMBER * _softplus((p - CAMBER_FLOOR) / W_CAMBER)
+    cap = float(y_max) + CAMBER_CAP_MARGIN
+    return cap - W_CAMBER * _softplus((cap - g) / W_CAMBER)
+
+
+def _surf(tab, e=5e-4, collapse=False):
     """Return f(a, b) for a car map {x, z, data}: a on the x axis, b on the z axis. Both are clamped to the grid.
-    e is the clamp width of both axes, or a pair (ex, ez) with one width per axis."""
+    e is the clamp width of both axes, or a pair (ex, ez) with one width per axis.
+    collapse: an axis with one distinct value collapses to the mean over that axis. Without it, casadi raises
+    for such an axis."""
     x, z = np.asarray(tab["x"], float), np.asarray(tab["z"], float)
     ex, ez = e if isinstance(e, tuple) else (e, e)
+    dat = np.asarray(tab["data"], float)
+    if collapse and (np.unique(x).size < 2 or np.unique(z).size < 2):
+        if np.unique(x).size < 2 and np.unique(z).size < 2:
+            m = float(dat.mean())
+            return lambda a, b: m + 0.0 * a
+        if np.unique(x).size < 2:
+            cv = _curve(z, dat.mean(axis=0))
+            return lambda a, b: cv(b)
+        cv = _curve(x, dat.mean(axis=1))
+        return lambda a, b: cv(a)
     f = ca.interpolant("surf", "bspline", [x, z], np.asarray(tab["data"], float).ravel(order="F"))
     return lambda a, b: f(ca.vertcat(_clamp(a, x[0], x[-1], ex), _clamp(b, z[0], z[-1], ez)))
 
@@ -356,10 +398,34 @@ def hybrid_params(cs, split):
             0.0 if h.e_free is None else float(h.e_free))
 
 
+AXLE = {"f": "front", "r": "rear"}
+
+
+def _mr3_static(su, a):
+    """Return the third motion ratio of axle a at static. It raises when the ratio is absent or not above 0."""
+    mr = getattr(su, f"mr_third_{a}", None)
+    mr3 = float(np.atleast_1d(mr)[0]) if mr is not None else 0.0
+    if not mr3 > 0:
+        raise ValueError(f"Axle {AXLE[a]}: the third motion ratio (cid {29 if a == 'f' else 30}) is absent or not "
+                         "above 0. The third element needs a ratio above 0.")
+    return mr3
+
+
 def _static_defl(su, vp, c, what):
     """Return (d, mr0): the static compression d of the spring of corner c at the damper [m], F0 / (mr0 k) - preload,
-    and the motion ratio mr0 at static. what names the gap in the error message."""
+    and the motion ratio mr0 at static. what names the gap in the error message.
+    With a zero corner rate and a third spring on the axle, the third spring carries the axle load: the static heave
+    h_s = F_axle / (mr3 k3) - preload3 gives d = mr0 h_s / mr3."""
     sp = getattr(su, f"spring_{c}")
+    s3 = getattr(su, f"spring_third_{c[0]}") or {}
+    if bool(sp["rate"]) != bool(getattr(su, f"spring_{c[0]}{'r' if c[1] == 'l' else 'l'}")["rate"]):
+        raise ValueError(f"Axle {AXLE[c[0]]}: one corner spring has no rate. The model needs both corner rates 0 "
+                         "(the third spring carries the axle) or both above 0.")
+    if not sp["rate"] and s3.get("rate"):      # a zero corner spring: the third spring carries the axle load
+        mr3 = _mr3_static(su, c[0])
+        mr0 = float(np.atleast_1d(getattr(su, f"mr_{c}"))[0])
+        h_s = (getattr(vp, f"m_c_{c[0]}l") + getattr(vp, f"m_c_{c[0]}r")) * vp.g / (mr3 * s3["rate"]) - s3["preload"]
+        return mr0 * h_s / mr3, mr0
     if not sp["rate"]:
         raise ValueError(f"The spring of corner {c} has no rate. The static deflection for the {what} needs one.")
     mr0 = float(np.atleast_1d(getattr(su, f"mr_{c}"))[0])
@@ -437,9 +503,12 @@ def _rubber(cs, c, vp=None):
     return lambda xs, xsdot=None: mr(xs) * law(comp(xs))
 
 
-def _damper_curve(dm, who):
-    """Return F(v): the damper force [N] at the damper velocity v [m/s]. The table is that of the car record dm."""
+def _damper_curve(dm, who, zero_ok=False):
+    """Return F(v): the damper force [N] at the damper velocity v [m/s]. The table is that of the car record dm.
+    zero_ok: an empty table gives zero force (the axle damper is the third one), else it raises."""
     v, bump, reb = np.asarray(dm["velocity"], float), np.asarray(dm["bump"], float), np.asarray(dm["rebound"], float)
+    if not (np.any(bump) or np.any(reb)) and zero_ok:
+        return lambda v: 0.0 * v
     if v.size < 2 or not (np.any(bump) or np.any(reb)):
         raise ValueError(f"The damper of {who} has no table. The car model needs one.")
     if v[0] != 0 or np.any(np.diff(v) <= 0):
@@ -454,9 +523,11 @@ def third_element(cs, a, vp=None):
     1.198 times the mean rear damper travel, and 1.198 is 1 / the rear corner ratio of 0.8347.
     spring(h) is the force of the third spring and the third bump rubber [N]. damper(u) is the damper force at the
     heave rate u, or None without a table. The wheels share the force by virtual work: each gets 0.5 F mr(w).
-    The spring acts on the heave from static (the corner springs keep the static corner load).
+    The spring force counts from static: the model adds the static corner load to each corner.
     The rubber gap follows the rule of rubber_gap. Flag 1 is the gap from static.
-    Flag 0 is the gap minus the static heave (the static wheel travel of the corner springs).
+    Flag 0 is the gap minus the static heave. The static heave comes from the static wheel travel of _static_defl.
+    With corner rates above 0, the corner springs give that travel. With both corner rates 0, the third spring
+    carries the axle, and the travel uses the third rate and the third preload.
     A gap of 0 or at least 0.5 m means no rubber. An axle without spring rate, rubber and damper table gives None."""
     su, who = cs.susp, "front" if a == "f" else "rear"
     rate = float((getattr(su, f"spring_third_{a}") or {}).get("rate", 0.0))
@@ -479,7 +550,7 @@ def third_element(cs, a, vp=None):
             gap -= sm(0.5 * (d0[0] + d0[1]))
         base = _rubber_force(rub)
         law = lambda h: base(W_RUBBER * _sp((h - gap) / W_RUBBER))
-    # ponytail: the third spring acts on the heave from static. Its preload and x / y table are unused, and the corners keep F0.
+    # ponytail: the third spring force counts from static, and its x / y table is unused. Only _static_defl reads the preload.
     spring = lambda h: rate * h + (law(h) if law else 0.0)
     return sm, mr, spring, (_damper_curve(dm, f"the {who} third element") if live_d else None)
 
@@ -589,10 +660,14 @@ def vehModel_cs(ctx):
         spring = (F0 / mr0 + sp["rate"] * sm(xs[c])) * mr(xs[c])
         rubber = _rubber(cs, c, vp)(xs[c], xsdot[c])
         dm = getattr(cs.susp, f"damper_{c}")
+        th_d = getattr(cs.susp, f"damper_third_{c[0]}", None)       # a live third damper takes the axle damping
+        zero_ok = th_d is not None and bool(np.any(th_d["bump"]) or np.any(th_d["rebound"]))
         key = (np.asarray(dm["velocity"], float).tobytes(), np.asarray(dm["bump"], float).tobytes(),
-               np.asarray(dm["rebound"], float).tobytes())
+               np.asarray(dm["rebound"], float).tobytes(), zero_ok)
         if key not in dampers:
-            dampers[key] = _damper_curve(dm, f"corner {c}")
+            if zero_ok and not (np.any(dm["bump"]) or np.any(dm["rebound"])):
+                _mr3_static(cs.susp, c[0])      # the third damper acts through this ratio
+            dampers[key] = _damper_curve(dm, f"corner {c}", zero_ok)
         fd = mr(xs[c]) * dampers[key](mr(xs[c]) * xsdot[c])
         fzs[c] = spring + fd + rubber
     for a, (c1, c2) in (("f", ("fl", "fr")), ("r", ("rl", "rr"))):     # third element: a heave force shared by the two wheels
@@ -698,9 +773,9 @@ def vehModel_cs(ctx):
             dyn = T["camber"] + poly_sx(kc.camber, xs[c], kc.lo, kc.hi) + (phi if c[1] == "l" else -phi)
         if c[0] == "f" and curves.k1:    # camber from steer: delta > 0 is a left turn, whose outer (right) wheel gains negative camber
             dyn = dyn + curves.k1 * delta * (1.0 if c[1] == "r" else -1.0)
-        cam = _curve(T["camber_x"], T["camber_y"])(dyn)
+        cam = camber_factor(T["camber_poly"], dyn, T["camber_ymax"])
         dcam[c] = dyn
-        t4 = _surf({"x": T["fx_camber_x"], "z": T["fx_camber_load"], "data": T["fx_camber"]}, (5e-4, 5.0))(dyn, fze)   # Fx peak / Fy peak
+        t4 = _surf({"x": T["fx_camber_x"], "z": T["fx_camber_load"], "data": T["fx_camber"]}, (5e-4, 5.0), True)(dyn, fze)   # Fx peak / Fy peak
         sa_n, ss_n = sa[c] / T["peak_slip_angle"], sx[c] / T["peak_slip_ratio"]
         sn = ca.sqrt(sa_n ** 2 + ss_n ** 2 + 1e-6)
         hl, hu = _slip_curve(T, LAT_CAP), _slip_curve(T)      # hu has no cap: Fx, and the stability index

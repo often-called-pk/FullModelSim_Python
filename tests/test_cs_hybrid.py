@@ -951,9 +951,9 @@ def vendor_qss(cs_dir):
     f2 = sorted(models.glob("Formula 2/*/*.car"))
     ok("GP3, GT3 and Formula 2 car files found by folder globs", bool(gp3) and bool(gt3) and bool(f2))
     base = float(qss(gp3[0], circ="Eastern Creek", install=cs_dir).data.lap_time)
-    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 73.68216264679694),
-                                    ("GT3", gt3[0], "Adelaide", 73.44164142852439),
-                                    ("Formula 2", f2[0], "Adelaide", 59.398953979608464)):
+    for label, path, circ, want in (("GP3", gp3[0], "Eastern Creek", 73.71639144080545),
+                                    ("GT3", gt3[0], "Adelaide", 73.44162422025643),
+                                    ("Formula 2", f2[0], "Adelaide", 59.41744573557378)):
         lap = float(qss(path, circ=circ, install=cs_dir).data.lap_time) if label != "GP3" else base
         ok(f"{label} flying-lap QSS lap (march starts at the end speed) at {circ}: {lap!r} (tol 1e-9)",
            abs(lap - want) < 1e-9)

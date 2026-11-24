@@ -656,7 +656,7 @@ else:
     mat_v, _ = results.result_paths(hv._active_rc)
     lap_v = results.parse_summary(mat_v)["lap_time_s"]
     ok(f"vendor: GP3 car at Eastern Creek, GUI qss cfg, a flying lap (QSS march starts at the end speed) "
-       f"to 73.68216264679694 s: lap {lap_v!r} s", code_v == 0 and abs(lap_v - 73.68216264679694) < 1e-9)
+       f"to 73.71639144080545 s: lap {lap_v!r} s", code_v == 0 and abs(lap_v - 73.71639144080545) < 1e-9)
     ok("vendor: the written file equals result_paths(rc)",
        os.path.isfile(mat_v) and os.listdir(os.path.dirname(mat_v)) == [os.path.basename(mat_v)])
 

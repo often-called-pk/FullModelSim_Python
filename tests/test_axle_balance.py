@@ -180,8 +180,7 @@ else:
     if not cs_dir or not os.path.isdir(cs_dir):
         print("SKIP: CHASSISSIM_DIR not set or not a folder")
     else:
-        car_path = os.path.join(os.path.dirname(cs_dir.rstrip("/\\")), "Models", "GP3 2013",
-                                "Eastern Creek, AU", "def_GP3 2013.car")
+        car_path = _bootstrap.vendor_car(cs_dir)       # the GP3 2013 base car, picked by content
         ok("GP3 2013 Eastern Creek car file found", os.path.isfile(car_path))
         # The car build is cold (ladder qss23): the seed is the QSS point, not the stored optimum.
         # Presence and finite checks always run; the formula and the preconditions run only when the

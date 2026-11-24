@@ -449,8 +449,9 @@ ok(f"F2-like: rear third rubber, flag 0, gap 27 mm (cid 12), builds (nx {CTX_T6.
    CTX_T6.m23.nx == 23 and V.third_element(CTX_T6.cs, "r", CTX_T6.vp) is not None
    and CTX_T6.cs.susp.gap_flag_third_r == 0 and abs(CTX_T6.cs.susp.gap_third_r - 0.027) < 1e-12)
 hit, msg = refusal(build, write_car("flag0_rate0.car", {204: 0, 205: 0, 206: 0, 207: 0,
+                                                       1: (1, 0.02, 0.0, np.array([0.0, 0.05]), np.array([0.0, 500.0])),
                                                        2: (1, 0.02, 0.0, np.array([0.0, 0.05]), np.array([0.0, 500.0]))}))
-ok(f"flag 0 with a zero spring rate (fl) raises ValueError naming the rate: {msg!r}",
+ok(f"flag 0 with zero front spring rates (no third spring) raises ValueError naming the rate: {msg!r}",
    hit and "has no rate" in msg and "corner fl" in msg)
 
 
@@ -705,14 +706,15 @@ def vendor(cs_dir):
     err = float(np.max(np.abs(ld - wt) / wt))
     ok(f"GT3 static loads equal the corner weights within 0.5 %: max {100 * err:.4f} %", err < 0.005)
 
-    # The F3 front geometry solves. The NLP build stops at the front left damper (no table in the file), and the
-    # QSS at the front left spring (no rate), before the third element is read.
-    hit, msg = refusal(build, str(f3), circuit="Adelaide", chassis_dir=cs_dir)
-    ok(f"F3 NLP build raises ValueError naming the front left damper table: {msg[:60]!r}",
-       hit and msg == "The damper of corner fl has no table. The car model needs one.")
-    hit_q, msg_q = refusal(quiet_screen, str(f3), cs_dir)
-    ok(f"F3 QSS raises ValueError naming the front left spring rate: {msg_q[:60]!r}",
-       hit_q and msg_q.startswith("The spring of corner fl has no rate"))
+    # The F3 builds: its front left corner has no damper table (the third damper carries the axle) and its front
+    # spring rate is 0 (the third spring carries the axle load, R2 and R5). The QSS lap is pinned at Eastern Creek.
+    ctx_f3 = build(str(f3), circuit="Adelaide", chassis_dir=cs_dir)
+    ok(f"F3 NLP build (ride height 25 mm) builds: nx {ctx_f3.m23.nx} and nu {ctx_f3.m23.nu}",
+       ctx_f3.m23.nx == 23 and ctx_f3.m23.nu == 3)
+    lap_f3 = float(quiet(MLTP_screen, car=f"chassissim:{f3}", circuit="chassissim:Eastern Creek",
+                         chassissim_dir=cs_dir, physics="corrected", save=False, verbose=False).data.lap_time)
+    ok(f"F3 flying-lap QSS lap at Eastern Creek {lap_f3!r} s, pin 78.33515086422601 s, tol 1e-6",
+       abs(lap_f3 - 78.33515086422601) < 1e-6)
 
 
 def vendor_hysteresis(cs_dir):

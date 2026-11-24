@@ -329,6 +329,24 @@ def _f(f, i):
     return f[i] if isinstance(f, tuple) else (f if i == 0 else 1.0)
 
 
+def fit_camber(x, y):
+    """Return the polynomial coefficients (highest power first, x in rad) of the Fy camber factor table.
+    ChassisSim fits degrees 0 to 4. Here the lowest degree whose sum of squares is within 1e-10 sum(y^2) of the
+    best fit wins. A degree d needs more than d distinct x. A flat or one-point table gives the mean (degree 0)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    if x.size == 0 or x.shape != y.shape or not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+        raise ValueError("The Fy camber table (table 5) of a tyre needs as many finite x values as y values.")
+    n = np.unique(x).size
+    fits = []
+    for d in range(min(5, n)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            c = np.polyfit(x, y, d)
+        fits.append((float(np.sum((np.polyval(c, x) - y) ** 2)), c))
+    tol = min(f[0] for f in fits) + 1e-10 * float(np.sum(y ** 2))
+    return next(c for sse, c in fits if sse <= tol)
+
+
 def _tyre_decode(v):
     """Decode a tyre record (tag 13) into a dict in SI. The load table is read at the background temperature of
     the tyre (scalar 6, K), the temperature of a tyre that is up to temperature."""
@@ -348,7 +366,8 @@ def _tyre_decode(v):
         "load": tb[3][:d1], "fy_peak": np.array([np.interp(t, z, r) for r in grid]),
         "slip_x": tb[0][:d3], "slip_y": tb[0][d3:],
         "fx_camber_x": t4[:d4] * DEG, "fx_camber_load": t4[d4:d4 + n4], "fx_camber": t4[d4 + n4:].reshape(d4, n4),
-        "camber_x": tb[5][:d6] * DEG, "camber_y": tb[5][d6:],
+        "camber_x": tb[5][:d6] * DEG, "camber_y": tb[5][d6:], "camber_poly": fit_camber(tb[5][:d6] * DEG, tb[5][d6:]),
+        "camber_ymax": float(np.max(tb[5][d6:])),
         "kz": float(np.interp(sc[5] * 1e-3, tb[10][:d5], tb[10][d5:])),
     }
 
@@ -469,7 +488,8 @@ def load_car(path, chassissim_dir=None):
     The result has the groups mass, geom, tyre, aero, susp, engine, hybrid, refused, diff, brake, hardpoints, env
     and stability. hybrid holds the records of the hybrid layer. refused holds the flags of features that
     power_refusals and aero_refusals refuse.
-    Each group is a SimpleNamespace. A field that the file lacks is None. The result also holds
+    Each group is a SimpleNamespace. A field that the file lacks is None. A rubber gap flag that the file lacks
+    is 0. The result also holds
     path (absolute) and sha8 (the first 8 hex digits of the sha256 of the file bytes).
     Angles are in rad and lengths in m. Every engine-speed axis is in rad/s (the torque curve, the engine-brake
     table and the hybrid deploy maps). The torque is in N m.
@@ -518,6 +538,9 @@ def load_car(path, chassissim_dir=None):
             if t == 10:                             # the type byte of a hardpoint block
                 setattr(groups[g], f"{a}_type", int(v[0]))
     su = groups["susp"]
+    for n in _GAPS:                 # ChassisSim reads an absent gap flag as 0 (the gap is less the static compression)
+        if getattr(su, f"gap_flag_{n}") is None:
+            setattr(su, f"gap_flag_{n}", 0)
     for cid, a in ((638, "f"), (639, "r")):
         if getattr(su, f"hyst_flag_third_{a}") not in (None, 0):
             raise ValueError(f"The car file {path} sets a third-spring hysteresis flag (cid {cid}). "
@@ -706,6 +729,13 @@ def _hardpoint_gate(cs):
                          f"The car model needs a live axle with 6 points on both rear corners.")
 
 
+def _third_live(su, a):
+    """True when axle a has a third spring rate above 0 or a third damper table with a force."""
+    dm = getattr(su, f"damper_third_{a}", None)
+    return (bool((getattr(su, f"spring_third_{a}", None) or {}).get("rate"))
+            or (dm is not None and bool(np.any(dm["bump"]) or np.any(dm["rebound"]))))
+
+
 def check_car(cs):
     """Raise one ValueError that lists every field the car model or the QSS reads and the car file lacks.
     An aero map correction, a DRS value or a speed table counts only when its enable is 1."""
@@ -718,7 +748,8 @@ def check_car(cs):
                                *(f"rc_datum0_{ax}r" for ax in "fr" if getattr(cs.geom, f"mode_{ax}") == 1))),
             ("hardpoints", cs.hardpoints, ("front_l", "rear_l")),
             ("susp", cs.susp, (*(f"{p}_{c}" for p in ("spring", "mr", "gap", "damper") for c in C),
-                               "arb_f", "arb_r", "mr_arb_fr", "mr_arb_rr", "spring_third_f", "spring_third_r")),
+                               "arb_f", "arb_r", "mr_arb_fr", "mr_arb_rr", "spring_third_f", "spring_third_r",
+                               *(f"mr_third_{ax}" for ax in "fr" if _third_live(cs.susp, ax)))),
             ("aero", cs.aero, ("cla", "cda", "cla_map", "cda_map", "balance_map")),
             ("engine", cs.engine, ("efficiency", "torque_curve", "rpm_idle", "rpm_limit", "gears")),
             ("diff", cs.diff, ("rear_type",)),
@@ -731,14 +762,11 @@ def check_car(cs):
         need["diff.front_type"] = cs.diff.front_type
         if (cs.diff.front_type or 0) >= 4:      # ChassisSim clamps the front type at 4, so a higher type reads the map
             need["diff.front_map"] = cs.diff.front_map
-    for c in C:                     # the rubber and its flag matter only when the corner has a gap
+    for c in C:                     # the rubber matters only when the corner has a gap
         if getattr(cs.susp, f"gap_{c}") not in (None, 0):
-            need.update({f"susp.{p}_{c}": getattr(cs.susp, f"{p}_{c}") for p in ("gap_flag", "rubber")})
+            need[f"susp.rubber_{c}"] = getattr(cs.susp, f"rubber_{c}")
             if getattr(cs.susp, f"hyst_flag_{c}") == 1:
                 need[f"susp.hyst_{c}"] = getattr(cs.susp, f"hyst_{c}")
-    for a in "fr":                  # a live third rubber needs its flag
-        if 0 < (getattr(cs.susp, f"gap_third_{a}") or 0) < 0.5 and getattr(cs.susp, f"rubber_third_{a}") is not None:
-            need[f"susp.gap_flag_third_{a}"] = getattr(cs.susp, f"gap_flag_third_{a}")
     a = cs.aero
     if a.drs_336 == 1:
         need.update({f"aero.drs_{c}": getattr(a, f"drs_{c}") for c in range(337, 342)})

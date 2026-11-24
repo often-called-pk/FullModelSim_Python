@@ -487,30 +487,30 @@ def build_envelope(ctx, v_grid=None, load_model="vehModel", n_v=40):
 # ============================================================================
 def _camber_tables(cs, T):
     """Return (camf, t4f): the camber factor T5(camber) and the Fx camber factor T4(camber, load) of the NLP.
-    Both NLP functions are sampled once per tyre on fine grids and then read by linear interpolation (error about
-    1e-5). The samples are kept on the car record, so a setup sweep pays the cost once."""
+    T5 is camber_factor of the NLP, called directly. T4 is sampled once per tyre on a fine grid and then read by
+    linear interpolation (error about 1e-5). The samples are kept on the car record, so a setup sweep pays the cost
+    once."""
     # ponytail: keyed by id(T). It goes stale if a tyre dict is replaced in place. userOpts reloads the car per call.
+    from vehModel_cs import camber_factor
     cache = cs.__dict__.setdefault("_qss_camber", {})
     if id(T) not in cache:
         import casadi as ca
         from scipy.interpolate import RegularGridInterpolator
-        from vehModel_cs import _curve, _surf
-        cx, gx, gz = (np.asarray(T[k], float) for k in ("camber_x", "fx_camber_x", "fx_camber_load"))
-        c5 = np.linspace(cx[0] - 0.05, cx[-1] + 0.05, 2001)          # covers the clamp at the table ends
+        from vehModel_cs import _surf
+        gx, gz = (np.asarray(T[k], float) for k in ("fx_camber_x", "fx_camber_load"))
         c4 = np.linspace(gx[0] - 0.01, gx[-1] + 0.01, 401)
         l4 = np.linspace(gz[0] - 50.0, gz[-1] + 50.0, 4 * gz.size + 1)
         a, b = ca.SX.sym("a"), ca.SX.sym("b")
-        f5 = ca.Function("t5", [a], [_curve(cx, T["camber_y"])(a)]).map(c5.size)
-        f4 = ca.Function("t4", [a, b], [_surf({"x": gx, "z": gz, "data": T["fx_camber"]}, (5e-4, 5.0))(a, b)])
+        f4 = ca.Function("t4", [a, b], [_surf({"x": gx, "z": gz, "data": T["fx_camber"]}, (5e-4, 5.0), True)(a, b)])
         A, B = np.meshgrid(c4, l4, indexing="ij")
         v4 = np.asarray(f4.map(A.size)(A.reshape(1, -1), B.reshape(1, -1))).reshape(A.shape)
         g4 = RegularGridInterpolator((c4, l4), v4)
-        cache[id(T)] = (c5, np.asarray(f5(c5.reshape(1, -1))).ravel(), g4)
-    c5, v5, g4 = cache[id(T)]
+        cache[id(T)] = g4
+    g4 = cache[id(T)]
     def t4f(c, z):
         c, z = np.broadcast_arrays(np.clip(c, g4.grid[0][0], g4.grid[0][-1]), np.clip(z, g4.grid[1][0], g4.grid[1][-1]))
         return g4(np.stack([c, z], axis=-1)).reshape(c.shape)
-    return (lambda c: np.interp(c, c5, v5)), t4f
+    return (lambda c: camber_factor(T["camber_poly"], np.asarray(c, float), T["camber_ymax"])), t4f
 
 
 def _apex_factor(cs, ty, ay_max, apex_state, axle, Fz_f, Fz_r, hv_f, hv_r, v, M, sh_f, sh_r, vp):

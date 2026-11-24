@@ -527,7 +527,7 @@ ok(f"h(1e-3) = fn'(0) within 1 % ({h1:.5f} vs {slope0:.5f})", abs(h1 / slope0 - 
 # 2. load floor: mu_x = Fp T5 T4 / fze and T4 = 1 (flat grid). The readback divides out T5 at the dynamic camber of
 #    the rear left (read from the model output), so fze = Fp(fz) T5 / mu_x.
 #    fz = 0 gives the floor (finite); at fz = 20 kN fze equals fz within 0.1 % (the load table reaches 25 kN).
-t5 = lambda dyn: float(PchipInterpolator(rl["camber_x"], rl["camber_y"])(dyn))
+t5 = lambda dyn: float(V.camber_factor(rl["camber_poly"], dyn, rl["camber_ymax"]))     # the polynomial camber factor of the model
 dyn_of = lambda xx: float(ca.Function("D", [m.x, m.u, m.pv], [m.dynamic_camber_rl]).call([xx / m.x_s, np.zeros(m.nu), 0.0])[0])
 x = static_x(ctx, 30.0)
 x[21] = 0.0                                                    # zt_rl = 0: fz = 0
@@ -750,7 +750,7 @@ ok(f"cs_seed_inputs drive = (M a + c0 + c2 v^2) / u_s from prof env: {ua[0, 0]:.
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
     print("[vehmodel_cs] vendor GP3 2013 Eastern Creek")
-    car_path = Path(cs_dir).parent / "Models" / "GP3 2013" / "Eastern Creek, AU" / "def_GP3 2013.car"
+    car_path = Path(_bootstrap.vendor_car(cs_dir))       # the GP3 2013 base car, picked by content
     ok("GP3 2013 Eastern Creek car file found", car_path.is_file())
     c = build(str(car_path), circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir)
     ok("GP3 builds: nx 23 and nu 3", c.m23.nx == 23 and c.m23.nu == 3)

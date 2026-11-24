@@ -531,7 +531,7 @@ print(f"{PASS} checks passed (synthetic)")
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
     print("[cs_diff] vendor GP3 2013 Eastern Creek")
-    car_path = Path(cs_dir).parent / "Models" / "GP3 2013" / "Eastern Creek, AU" / "def_GP3 2013.car"
+    car_path = Path(_bootstrap.vendor_car(cs_dir))       # the GP3 2013 base car, picked by content
     ok("GP3 2013 Eastern Creek car file found", car_path.is_file())
     ctx = build(car_path, chassis_dir=cs_dir, circuit="Eastern Creek")
     ok(f"GP3 rear differential type is 4 (read {ctx.cs.diff.rear_type})", ctx.cs.diff.rear_type == 4.0)

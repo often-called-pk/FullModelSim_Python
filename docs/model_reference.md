@@ -1730,7 +1730,8 @@ The tyre uses the tables of the file, not the Magic Formula.
 - **Peak force.** $F_p = F'(F_{z,e}) \cdot \mathrm{grip} \cdot g_t$. $F'$ is the table of the peak lateral force against load, at the background temperature of the tyre. "grip" is the base grip of the circuit, and $g_t$ is the grip scale of the tyre. The model has no tyre temperature.
 - **Normalised slip.** The model divides each slip by the peak value of the tyre: $\alpha_n = \alpha / \alpha_{pk}$ and $\lambda_n = \lambda / \lambda_{pk}$. The combined slip is $s_n = \sqrt{\alpha_n^2 + \lambda_n^2 + 10^{-6}}$.
 - **Slip curve.** $f_n$ is the normalised force curve of the file, made odd and monotone, and held constant past $s_n$ = 4. Let $h(v) = f_n(v)/v$. The lateral curve $h_l$ clips $f_n$ at 0.9, so the lateral force stays below 0.9 of the lateral capacity.
-- **Camber.** $c_\gamma$ is the camber factor of the lateral peak (table 5). $t_4(\gamma, F_z)$ is the ratio of the longitudinal peak to the lateral peak (table 4).
+- **Camber.** $c_\gamma$ is the camber factor of the lateral peak (table 5). The model evaluates it as the external program does. At load, it fits a polynomial $p(\gamma)$ of degree 0 to 4 to the table. It takes the degree with the least squared error, and the lower degree in a tie. The factor is $p(\gamma)$ with a smooth floor at 0.5 and a smooth cap at the table maximum plus 0.05. So the factor continues past the table ends. A table with one camber value gives a constant.
+- **Peak ratio.** $t_4(\gamma, F_z)$ is the ratio of the longitudinal peak to the lateral peak (table 4), interpolated in the table.
 - **Forces:**
 
 $$
@@ -1781,6 +1782,7 @@ $$
 where $d$ is the width of the loop, never negative, so the rubber cannot give energy. In compression and at rest the loading curve applies.
 
 - **Third element.** An axle can hold a third spring, rubber and damper on the heave. With the mean wheel travel $w_m = \tfrac12 (x_{s,l} + x_{s,r})$, the heave is $h = s_{m3}(w_m)$ with the third motion ratio. The third force is $F_3 = k_3 h + \mathrm{rubber}_3(h) + D_3(m_{r3}(w_m)\, \dot w_m)$, and each wheel gets $\tfrac12 F_3\, m_{r3}(w_m)$. The third spring acts from static, so the corner springs keep the static load.
+- **Third spring alone.** If both corner springs of an axle have rate 0, the third spring carries the axle. Its static heave is $h_s = (m_{c,l} + m_{c,r})\, g / (m_{r3,0}\, k_3) - \mathrm{preload}_3$. An empty corner damper table then gives zero force, because the third damper damps the axle. One zero corner rate beside a non-zero one stops the program with a `ValueError`. So does a third motion ratio (cid 29 or 30) that is absent or not above 0.
 - **Anti-roll bar.** With the bar ratios $m_l$ and $m_r$ of the two sides, $F_{bar} = \tfrac12 k\, (m_l x_{s,l} - m_r x_{s,r})$. The left wheel gets $+m_l F_{bar}$ and the right wheel $-m_r F_{bar}$. This is half the force of the built-in bar of section 3.7, as the external program defines it.
 - **Roll centre and jacking.** The jacking forces and roll moments follow section 3.9, with the roll-centre height of the axle geometry at the mean wheel travel of the axle.
 - **Anti-dive and anti-squat.** The side-view heights $h_b$ (brake, cids 55 and 63) and $h_d$ (drive, cids 56 and 64) shorten the pitch arm of the longitudinal forces:
@@ -1911,7 +1913,7 @@ $$
 \mathrm{stbi} = 100\, \frac{(l_f C_f - l_r C_r) - (l_f^2 C_f + l_r^2 C_r)/V}{C\, (l_f + l_r)},
 $$
 
-where $C_f$ and $C_r$ are the axle cornering stiffnesses and $C = C_f + C_r$ (with a small floor). The stiffness is the slope of the tyre curve without the 0.9 cap, at an operating point clipped at the start of the capped plateau. For a GP3-class car, the median is -8.60 %, against -8.83 % in the external simulator's log. If the car has a live stability map (cids 655 and 656), the QSS estimate multiplies its apex speeds by the map.
+where $C_f$ and $C_r$ are the axle cornering stiffnesses and $C = C_f + C_r$ (with a small floor). The stiffness is the slope of the tyre curve without the 0.9 cap, at an operating point clipped at the start of the capped plateau. For a GP3-class car, the median is -8.24 %, against -8.83 % in the external simulator's log. If the car has a live stability map (cids 655 and 656), the QSS estimate multiplies its apex speeds by the map.
 
 #### 10.4.10 Atmospheric factor
 
@@ -1959,15 +1961,15 @@ The loader reads these records. "Used in" names the subsection of 10.4. The left
 | 5, 6 | third spring front, rear | N/m | heave spring | 10.4.3 |
 | 7 to 10 | rubber gap FR, FL, RR, RL | m | bump rubber gap at the damper, 0 for no rubber | 10.4.3 |
 | 11, 12 | third rubber gap front, rear | m | 0, or 0.5 m and more, for no rubber | 10.4.3 |
-| 204 to 207 | gap flag FR, FL, RR, RL | 0 or 1 | how the gap counts | 10.4.3 |
-| 208, 209 | third gap flag front, rear | 0 or 1 | how the third gap counts | 10.4.3 |
+| 204 to 207 | gap flag FR, FL, RR, RL | 0 or 1, absent counts as 0 | how the gap counts | 10.4.3 |
+| 208, 209 | third gap flag front, rear | 0 or 1, absent counts as 0 | how the third gap counts | 10.4.3 |
 | 13 to 16 | bump rubber FR, FL, RR, RL | N/m, or a table | rubber law | 10.4.3 |
 | 17, 18 | third rubber front, rear | N/m, or a table | third rubber law | 10.4.3 |
 | 19, 21 | anti-roll bar front, rear | N/m | bar rate | 10.4.3 |
 | 23 to 26 | motion ratio FR, FL, RR, RL | polynomial | damper travel per wheel travel | 10.4.3 |
 | 27, 170, 28, 171 | bar motion ratio FR, FL, RR, RL | polynomial (first term) | bar ratio of each wheel | 10.4.3 |
 | 29, 30 | third motion ratio front, rear | polynomial | heave per mean wheel travel | 10.4.3 |
-| 31 to 34 | damper FR, FL, RR, RL | m/s, N | bump and rebound tables | 10.4.3 |
+| 31 to 34 | damper FR, FL, RR, RL | m/s, N | bump and rebound tables. An empty table gives zero force when the axle has a live third damper. | 10.4.3 |
 | 35, 36 | third damper front, rear | m/s, N | heave damper | 10.4.3 |
 | 74 to 77 | bump steer FR, FL, RR, RL | m, rad | toe against wheel travel | 10.4.1 |
 | 657 to 660 | hysteresis flag FR, FL, RR, RL | 0 or 1 | rubber hysteresis on | 10.4.3 |
@@ -1990,7 +1992,7 @@ The loader reads these records. "Used in" names the subsection of 10.4. The left
 | table 0 | - | normalised slip curve | 10.4.1 |
 | table 3 | N, K | peak lateral force against load and temperature | 10.4.1 |
 | table 4 | deg, N | ratio of the longitudinal peak to the lateral peak | 10.4.1 |
-| table 5 | deg | lateral camber factor | 10.4.1 |
+| table 5 | deg | lateral camber factor, fitted as a polynomial | 10.4.1 |
 | table 10 | kPa, N/m | vertical rate against pressure | 10.4.1 |
 
 **Aerodynamics**
@@ -2072,11 +2074,11 @@ A file that lacks a record that the model reads stops the program with one messa
 
 ### 10.6 Validation against the external simulator
 
-Each external car was solved on a line held within 5 cm of the circuit line (`n_bounds=(-0.05, 0.05)`), cold, with MUMPS and the flying-lap start. The reference is the first lap of the external simulator's own log for the same car and circuit.
+Each external car was solved on a line held within 5 cm of the circuit line (`n_bounds=(-0.05, 0.05)`), cold, with MUMPS and the flying-lap start. The reference is the first lap of the external simulator's own log for the same car and circuit. The GP3-class row uses the camber fit of section 10.4.1. The other two rows come from the model before it.
 
 | Car class and circuit | Model lap | External lap | Difference | Other measures |
 |---|---|---|---|---|
-| GP3-class single-seater, Eastern Creek | 75.374 s (376 iterations) | 76.720 s | -1.75 % | correlation of $a_y$ 0.995, of steer 0.966, RMS speed error 2.51 m/s |
+| GP3-class single-seater, Eastern Creek | 75.188 s (384 iterations) | 76.720 s | -2.00 % | correlation of $a_y$ 0.996, of steer 0.966, RMS speed error 2.50 m/s |
 | GT3-class car, Adelaide | 75.382 s (122 iterations) | 77.580 s | -2.83 % | correlation of $a_y$ 0.991, RMS speed error 2.48 m/s |
 | F2-class single-seater, Adelaide | 64.526 s (409 iterations) | 72.060 s | -10.5 % | correlation of $a_y$ 0.960 |
 
@@ -2084,8 +2086,8 @@ Notes:
 
 - The model is faster, because it is an optimal control. The external simulator uses only 0.80 of the tyre capacity at its apexes. A transient search with a driver model and road bumps sets its apex speed.
 - The external simulator runs the F2-class car far below its tyre capacity on the road profile of Adelaide. So that row is not a test of the model.
-- Local optima differ by about 0.14 s: a periodic solve of the GP3-class car from an earlier seed reached 75.233 s.
-- The same GP3-class solve with the MATLAB start box (60 m/s, wheels at rolling speed) took 698 iterations to 75.835 s. It is 0.461 s slower, because the flying lap starts at 67.9 m/s.
+- Cold solves can end on local optima about 0.2 s apart. Before the camber fit, two solves of the GP3-class car reached 75.374 s and 75.233 s. The camber fit alone makes the QSS lap 34 ms slower. So the change from 75.374 s to 75.188 s is likely mostly a different optimum.
+- Before the camber fit, the same GP3-class solve took 698 iterations to 75.835 s with the MATLAB start box. That box holds 60 m/s, with the wheels at rolling speed. It is 0.461 s slower, because the flying lap starts at 67.9 m/s.
 - At Eastern Creek, a four-wheel-drive saloon with struts took 545 iterations to 109.039 s. A V8 touring car with a live rear axle took 262 iterations to 88.815 s. Their reference laps are not yet available.
 
 ## 11. Result files

@@ -401,16 +401,16 @@ def vendor(cs_dir):
     c_gp3 = quiet(MLTP_screen, car=f"chassissim:{gp3[0]}", circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir,
                   physics="corrected", save=False, verbose=False)
     lap_gp3 = float(c_gp3.data.lap_time)
-    ok(f"GP3 no band and flying-lap QSS lap (march starts at the end speed) to 73.68216264679694 s: "
+    ok(f"GP3 no band and flying-lap QSS lap (march starts at the end speed) to 73.71639144080545 s: "
        f"{lap_gp3!r} s",
-       c_gp3.envelope.info["shift_bands"] == [] and abs(lap_gp3 - 73.68216264679694) < 1e-6)
+       c_gp3.envelope.info["shift_bands"] == [] and abs(lap_gp3 - 73.71639144080545) < 1e-6)
     f2 = sorted(glob.glob(os.path.join(models, "Formula 2", "*", "*.car")))
     ok("F2 car found by glob", len(f2) == 1)
     c_f2 = quiet(MLTP_screen, car=f"chassissim:{f2[0]}", **kw)
     lap_f2 = float(c_f2.data.lap_time)
-    ok(f"F2 no band and flying-lap QSS lap (march starts at the end speed) to 59.398953979608464 s: "
+    ok(f"F2 no band and flying-lap QSS lap (march starts at the end speed) to 59.41744573557378 s: "
        f"{lap_f2!r} s",
-       c_f2.envelope.info["shift_bands"] == [] and abs(lap_f2 - 59.398953979608464) < 1e-6)
+       c_f2.envelope.info["shift_bands"] == [] and abs(lap_f2 - 59.41744573557378) < 1e-6)
 
 
 CS = os.environ.get("CHASSISSIM_DIR")

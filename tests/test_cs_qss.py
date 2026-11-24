@@ -495,7 +495,7 @@ ok(f"4EM Sturn QSS lap equals 18.74393 s to 1e-5 s: {sturn:.6f} s", abs(sturn - 
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs_dir):
     print("[cs_qss] vendor GP3 2013 Eastern Creek")
-    car_path = Path(cs_dir).parent / "Models" / "GP3 2013" / "Eastern Creek, AU" / "def_GP3 2013.car"
+    car_path = Path(_bootstrap.vendor_car(cs_dir))       # the GP3 2013 base car, picked by content
     ok("GP3 2013 Eastern Creek car file found", car_path.is_file())
     c = quiet(MLTP_screen, car=f"chassissim:{car_path}", circuit="chassissim:Eastern Creek", chassissim_dir=cs_dir,
               physics="corrected", save=False, verbose=False)
@@ -526,12 +526,14 @@ def vendor(cs_dir):
     strut = pick(lambda c: c.hardpoints.front_l_type == 1, "a strut car (front type byte 1)")
     live = pick(lambda c: c.susp.live_axle == 1 and c.hardpoints.rear_r_type == 2 and c.hardpoints.rear_l_type == 2,
                 "a live-axle car (cid 69 = 1, rear type byte 2)")
-    mode1 = pick(lambda c: c.geom.mode_f == 1 and c.geom.mode_r == 1 and builds(c.path),
-                 "a mode-1 car whose QSS builds (both axle modes 1)")
+    mode1 = pick(lambda c: c.geom.mode_f == 1 and c.geom.mode_r == 1 and builds(c.path) and all(
+                 np.unique(t[k]).size >= 2 for t in (c.tyre.fl, c.tyre.fr, c.tyre.rl, c.tyre.rr)
+                 for k in ("camber_x", "fx_camber_x")),
+                 "a mode-1 car whose QSS builds with two or more camber points on every tyre table")
     for label, path, pin, why in (
-            ("strut car", strut, 106.17590670033012, "builds now: MacPherson struts (type 1) on both axles"),
-            ("live-axle car", live, 86.90817625719671, "builds now: rear live axle (type 2, cid 69 = 1)"),
-            ("mode-1 car", mode1, 82.80907922650854, "builds now: mode-1 roll centres on both axles")):
+            ("strut car", strut, 106.19322212836927, "builds now: MacPherson struts (type 1) on both axles"),
+            ("live-axle car", live, 86.90939692648801, "builds now: rear live axle (type 2, cid 69 = 1)"),
+            ("mode-1 car", mode1, 82.81056085360748, "builds now: mode-1 roll centres on both axles")):
         lap = lap_at(path)
         ok(f"{label} flying-lap QSS lap (march starts at the end speed) at Eastern Creek {lap!r} s, pin {pin}, "
            f"tol 1e-6 ({why})", abs(lap - pin) < 1e-6)

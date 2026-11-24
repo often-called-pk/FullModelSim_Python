@@ -9,7 +9,7 @@ vehModel and MLTP (fake IPOPT, no solve). Checks:
   3. the atmospheric factor of Atmos_Cond.ini: the hand value, the file name rule, the defaults, the errors,
   4. the knob (setup tag, data['car_atmos']), the NLP graph (factor 1.0 changes nothing) and the brake ramp
      bound (571 = 1 with 572 = 0.2: the lower rate bound of the brake on N rows is -1 / 0.2),
-  5. the shipped car files (SKIP without CHASSISSIM_DIR): 29 load and 2 refuse, the factor is 1.0 for each.
+  5. the shipped car files (SKIP without CHASSISSIM_DIR): all 31 load and pass the checks, the factor is 1.0 for each.
 Nothing is written into the vendor folders.
 
     python tests/test_cs_power.py
@@ -518,11 +518,9 @@ def vendor(cs_dir):
             loaded += 1
         except ValueError:
             refused += 1
-    # Formula Renault 2L lacks the gap flags of the rear corners (cids 206, 207), default_car lacks the third
-    # gap flag (cid 208); both refuse in check_car. The WRX (struts) loads since K1.
-    ok(f"29 shipped car files load and 2 refuse (Formula Renault 2L: no rear gap flags; default_car: no third "
-       f"gap flag; the WRX loads) ({loaded} load, {refused} refuse)",
-       loaded == 29 and refused == 2)
+    # Absent gap flags read as 0 (R3), so every shipped car loads and passes the checks.
+    ok(f"all 31 shipped car files load and pass the checks ({loaded} load, {refused} refuse)",
+       loaded == 31 and refused == 0)
     ok("the atmospheric factor is 1.0 for every car that loads", bool(factors) and all(f == 1.0 for f in factors))
 
 

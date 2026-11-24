@@ -590,10 +590,11 @@ for label, sx in (("brake", -0.3), ("drive", 0.2), ("coast", 0.0)):
 ok(f"pitch term: the three states agree with the hand sum (worst rel {worst_pitch:.1e})", worst_pitch <= 1e-6)
 m_e = ctx_e.m23
 ZERO_HASH = hashlib.sha256(ca.Function("dx", [m_z.x, m_z.u, m_z.pv], [m_z.dx]).serialize().encode()).hexdigest()[:16]
-# The graph of this car before K3 (the vehModel_cs of the K2 tree, with no pitch arm term). Measured with that copy.
+# The graph of this car before K3 (the vehModel_cs of the K2 tree, with no pitch arm term) had hash 4294c55506b61a2c.
+# The camber polynomial (lane F, 2026-11-23) changes the camber node, so the pin is the graph with it.
 # casadi serialises the graph; a different casadi build may print another hash.
-PRE_K3_HASH = "4294c55506b61a2c"
-ok(f"a car with all side-view heights 0 builds the graph of the car before K3 (hash {ZERO_HASH})",
+PRE_K3_HASH = "f78762db2a761203"
+ok(f"a car with all side-view heights 0 builds the pinned graph (camber polynomial, hash {ZERO_HASH})",
    ZERO_HASH == PRE_K3_HASH)
 t_z = tanh_count(ca.Function("dx", [m_z.x, m_z.u, m_z.pv], [m_z.dx]))
 t_h = tanh_count(ca.Function("dx", [m_h.x, m_h.u, m_h.pv], [m_h.dx]))
@@ -784,7 +785,7 @@ print(f"[cs_kinematics] synthetic: {PASS} checks passed")
 
 
 print("[cs_kinematics] vendor: GP3 2013 (Eastern Creek), GT3, strut car, live-axle car, mode-1 car, stored heights")
-GP3_CAR = os.path.join(MODELS, "GP3 2013", "Eastern Creek, AU", "def_GP3 2013.car")
+GP3_CAR = _bootstrap.vendor_car(CS_DIR) if CS_DIR else ""       # the GP3 2013 base car, picked by content
 GP3_LOG = os.path.join(MODELS, "GP3 2013", "Eastern Creek, AU", "gp3_baseline_easterncreek.ld")
 if not CS_DIR or not os.path.isfile(GP3_CAR) or not os.path.isfile(GP3_LOG):
     print("  SKIP: CHASSISSIM_DIR unset or the GP3 2013 files are missing")
@@ -815,8 +816,10 @@ def qss_builds(path):
 STRUT = only(lambda c: c.hardpoints.front_l_type == 1, "a strut car (front type byte 1)")
 LIVE = only(lambda c: c.susp.live_axle == 1 and c.hardpoints.rear_r_type == 2 and c.hardpoints.rear_l_type == 2,
             "a live-axle car (cid 69 = 1, rear type byte 2)")
-MODE1 = only(lambda c: c.geom.mode_f == 1 and c.geom.mode_r == 1 and qss_builds(c.path),
-             "a mode-1 car whose QSS builds (both axle modes 1)")
+MODE1 = only(lambda c: c.geom.mode_f == 1 and c.geom.mode_r == 1 and qss_builds(c.path) and all(
+                  np.unique(t[k]).size >= 2 for t in (c.tyre.fl, c.tyre.fr, c.tyre.rl, c.tyre.rr)
+                  for k in ("camber_x", "fx_camber_x")),
+             "a mode-1 car whose QSS builds with two or more camber points on every tyre table")
 
 
 def mm(v):
@@ -873,9 +876,9 @@ ok(f"GP3 log median RC front {mm(base_med['front']):+.3f} mm (-1.91, 0.02 mm), g
    abs(mm(base_med["front"]) + 1.91) < 0.02 and abs(mm(base_med["front"])) < 4.0)
 ok(f"GP3 log median RC rear {mm(base_med['rear']):+.3f} mm (+2.50, 0.02 mm), gate 4 mm",
    abs(mm(base_med["rear"]) - 2.50) < 0.02 and abs(mm(base_med["rear"])) < 4.0)
-for tag, car_f, log_f in (("17 mm", "rideheight17mm_GP3 2013.car", "gp3_rideheight17mm_easterncreek.ld"),
-                          ("20 mm", "rideheight20mm_GP3 2013.car", "gp3_rideheight20mm_easterncreek.ld")):
-    med = rc_medians(os.path.join(os.path.dirname(GP3_CAR), car_f), os.path.join(os.path.dirname(GP3_CAR), log_f))
+for tag, car_f, log_f in (("17 mm", "4b2861dc", "gp3_rideheight17mm_easterncreek.ld"),      # car files by sha8
+                          ("20 mm", "9cf342bb", "gp3_rideheight20mm_easterncreek.ld")):
+    med = rc_medians(_bootstrap.vendor_car(CS_DIR, car_f), os.path.join(os.path.dirname(GP3_CAR), log_f))
     ok(f"GP3 ride height {tag}: front median {mm(med['front']):+.3f} mm within 0.1 mm of the default "
        f"({mm(base_med['front']):+.3f})", abs(mm(med["front"]) - mm(base_med["front"])) < 0.1)
 

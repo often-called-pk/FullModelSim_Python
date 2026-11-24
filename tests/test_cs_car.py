@@ -494,7 +494,7 @@ for physics in PHYSICS:
 
 # ---- vendor -----------------------------------------------------------------------------------------
 def vendor(cs):
-    car_path = cs.parent / "Models" / "GP3 2013" / "Eastern Creek, AU" / "def_GP3 2013.car"
+    car_path = Path(_bootstrap.vendor_car(cs))       # the GP3 2013 base car, picked by content
     print("[cs_car] vendor GP3 2013 Eastern Creek")
     ok("GP3 2013 Eastern Creek car file found", car_path.is_file())
     c = load_car(str(car_path))

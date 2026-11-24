@@ -32,7 +32,7 @@ import functions.transcription as T
 import vehModel_cs as V
 from functions import carfile
 from functions.chassissim import load_car
-from functions.ggv import _V_FLOOR, build_envelope_cs, march
+from functions.ggv import _V_FLOOR, build_envelope_cs, march, march_lap
 from MLTP import MLTP
 from MLTP_screen import MLTP_screen
 from scipy.interpolate import PchipInterpolator
@@ -297,7 +297,7 @@ def hand_fns(T_, cap):
     """Return (F'(Fz) function, camber factor function, normalised slip-curve function) as casadi Functions."""
     z = ca.SX.sym("z")
     fp = ca.Function("fp", [z], [V._curve(T_["load"], T_["fy_peak"])(z)])
-    cm = ca.Function("cm", [z], [V._curve(T_["camber_x"], T_["camber_y"])(z)])
+    cm = ca.Function("cm", [z], [V.camber_factor(T_["camber_poly"], z, T_["camber_ymax"])])
     hu = ca.Function("hu", [z], [V._slip_curve(T_, cap)(z)])
     return fp, cm, hu
 
@@ -468,8 +468,10 @@ ok(f"map of 0.9, base apex at the speed cap {env_b.v_cap:.2f} m/s: the apex spee
    bool(np.all(mb_f["v_apex"] == env_b.v_cap)) and bool(np.array_equal(m9_f["v_apex"], mb_f["v_apex"])))
 scr = quiet(MLTP_screen, circuit=f"chassissim:{CIRC}", car=f"chassissim:{os.path.join(TMP.name, 'on_09.car')}",
             chassissim_dir=INSTALL, physics="corrected", save=True, results_dir=os.path.join(TMP.name, "qss"), verbose=False)
-ok(f"MLTP_screen on the map of 0.9 car saves a file, lap {scr.data.lap_time:.9f} s equal to the march lap",
-   os.path.isfile(scr.out_path) and scr.data.lap_time == m9["lap_time"] and "apex_factor" not in scr.data.envelope)
+m9_lap = march_lap(env_09, s_b, k_b, 60.0, scr.periodic)       # the march of MLTP_screen: a flying lap when periodic
+ok(f"MLTP_screen on the map of 0.9 car saves a file, lap {scr.data.lap_time:.9f} s equal to the march_lap lap "
+   f"(periodic {scr.periodic})",
+   os.path.isfile(scr.out_path) and scr.data.lap_time == m9_lap["lap_time"] and "apex_factor" not in scr.data.envelope)
 BAD_AXES = (np.array([50.0, 0.0, -50.0]), np.array([10.0, 30.0, 60.0]), np.full(9, 0.9))
 try:
     load_car(write_car("bad_axis.car", over={655: (6, 1), 656: (9, BAD_AXES)}))

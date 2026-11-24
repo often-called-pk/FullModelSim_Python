@@ -681,8 +681,8 @@ else:
     mat_v, _ = results.result_paths(hv._active_rc)
     lap_v = results.parse_summary(mat_v)["lap_time_s"]
     ok(f"vendor: GUI qss run of GP3 with the FR spring at +20 % is a flying lap (QSS march starts at the end "
-       f"speed) to 73.68957958084104 s: lap {lap_v!r} s",
-       code_v == 0 and abs(lap_v - 73.68957958084104) < 1e-9, lap_v)
+       f"speed) to 73.72043831553353 s: lap {lap_v!r} s",
+       code_v == 0 and abs(lap_v - 73.72043831553353) < 1e-9, lap_v)
     ok("vendor: the run uses the edited file, not the source",
        cfg_vd.get("car", "").startswith(chassissim.PREFIX + CARS) and sha(src) == h0)
     ok("vendor: the source file sha256 is unchanged", sha(src) == h0)

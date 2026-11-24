@@ -335,14 +335,14 @@ hit, msg = refusal(setup_sweep, [("brkB", 0.0, 1.0)], n_samples=4, circuit=CHASS
 ok("setup_sweep with a car base raises ValueError", hit and "does not support a ChassisSim car" in msg)
 
 print("[cs_wiring] 2. stems and knobs")
-CAR_ID = "/home/x/Cars/def_GP3 2013.car#0a1b2c3d"
+CAR_ID = "/home/x/Cars/my_GP3 2013.car#0a1b2c3d"
 ok("4EM Sturn default stem unchanged", result_stem("Sturn", "Static_ATDOn_EM4Off") == "Sturn_Static_ATDOn_EM4Off")
 ok("4EM stem with car='4em' and physics corrected unchanged",
    result_stem("Sturn", "Static_ATDOn_EM4Off", physics="corrected", car="4em")
    == "Sturn_Static_ATDOn_EM4Off_physCorrected")
 ok("car stem: _car_<slug> after the tyre set, before _physCorrected",
    result_stem("chassissim:Eastern Creek", "Static_ATDOff_EM4Off", tyre_set="CopyB", physics="corrected", car=CAR_ID)
-   == "cs_Eastern_Creek_Static_ATDOff_EM4Off_CopyB_car_def_GP3_2013_physCorrected")
+   == "cs_Eastern_Creek_Static_ATDOff_EM4Off_CopyB_car_my_GP3_2013_physCorrected")
 ok("no car: no car_file knob", "car_file" not in setup_knobs({"car": None}))
 
 A = os.path.join(TMP.name, "knob_a.car")

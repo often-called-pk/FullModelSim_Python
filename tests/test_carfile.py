@@ -289,7 +289,7 @@ def vendor(cs):
     files = (sorted(glob.glob(os.path.join(cs, "*.car")))
              + sorted(glob.glob(os.path.join(cs, "help", "**", "*.car"), recursive=True))
              + sorted(glob.glob(os.path.join(models, "**", "*.car"), recursive=True))
-             + [str(parent / "ChassisSim_v3_41def_carfile.car")])
+             + sorted(glob.glob(os.path.join(parent, "*.car"))))       # one car file sits beside the install folder
     print("[carfile] vendor files")
     ok("31 shipped car files found", len(files) == 31)
 
@@ -305,17 +305,19 @@ def vendor(cs):
     ok("29 of the 31 files end with the end pair", n_end == 29)
 
     print("[carfile] vendor GP3 2013 Eastern Creek variants")
-    gp3 = models / "GP3 2013" / "Eastern Creek, AU"
-    DEF = "def_GP3 2013.car"
-    R17 = "rideheight17mm_GP3 2013.car"
-    R20 = "rideheight20mm_GP3 2013.car"
-    T0 = "rideheight17mm_toe0_GP3 2013.car"
-    T66 = "rideheight17mm_toe0.66_GP3 2013.car"
-    FD33 = "rideheight17mm_toe0.33_frontdamper20000_GP3 2013.car"
-    FD66 = "rideheight17mm_toe0.66_frontdamper20000_GP3 2013.car"
+    # The seven GP3 2013 files, named by the first 8 hex digits of their sha256 (no vendor file name in the repo).
+    # DEF: the base car. R17, R20: ride height 17 and 20 mm. T0, T66: 17 mm with toe 0 and 0.66.
+    # FD33, FD66: the two front damper variants.
+    DEF = _bootstrap.GP3_SHA8
+    R17 = "4b2861dc"
+    R20 = "9cf342bb"
+    T0 = "2bfdc036"
+    T66 = "09af9984"
+    FD33 = "27d5f8bc"
+    FD66 = "1c81abd9"
 
     def load(name):
-        return decode(str(gp3 / name))
+        return decode(_bootstrap.vendor_car(cs, name))
 
     def val(name, cid):
         return [x for _, c, x in load(name) if c == cid][0]
@@ -331,7 +333,7 @@ def vendor(cs):
     # The stored value is within 1e-3 of the number in the name. The file stores mm.
     ok("ride height cids 117, 118 read 17 (17mm) and 20 (20mm)",
        all(abs(val(f, c) - n) < 1e-3 for c in (117, 118) for f, n in ((R17, 17.0), (R20, 20.0))))
-    ok("base 17mm vs def_GP3 2013: differ beyond 1e-6 relative in cids {117, 118} only",
+    ok("base 17mm vs the base car: differ beyond 1e-6 relative in cids {117, 118} only",
        differing(R17, DEF) == {117, 118})
 
     ok("toe 0 and toe 0.66 vs base: differ beyond 1e-6 relative in cids {80, 81} only",
@@ -350,7 +352,7 @@ def vendor(cs):
     ok("front damper 0.33 vs base: differ beyond 1e-6 relative in the exact cids",
        differing(FD33, R17) == {1, 2, 3, 4, 31, 32, 811, 812, 813, 814, 815, 816, 819, 820, 821, 823,
                                 825, 826, 827, 828, 829, 830, 831})
-    ok("front damper 0.66 vs def_GP3 2013: differ beyond 1e-6 relative in the exact cids",
+    ok("front damper 0.66 vs the base car: differ beyond 1e-6 relative in the exact cids",
        differing(FD66, DEF) == {1, 2, 3, 4, 811, 812, 813, 814, 815, 816, 819, 820, 821, 823, 827, 828,
                                 829, 830, 831})
 

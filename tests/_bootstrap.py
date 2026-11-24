@@ -48,3 +48,21 @@ if "FULLMODELSIM_DOCUMENTS" not in os.environ:
     _docs = tempfile.mkdtemp(prefix="fms_documents_")
     os.environ["FULLMODELSIM_DOCUMENTS"] = _docs
     atexit.register(shutil.rmtree, _docs, True)
+
+
+GP3_SHA8 = "5da29437"       # the GP3 2013 base car of the vendor Models folder, named by its content
+
+
+def vendor_car(cs_dir, sha8=GP3_SHA8):
+    """Return the path of the car file under the parent of cs_dir whose sha256 starts with sha8, or "".
+    The tests select a vendor car by its content, so no vendor file name is in the repo."""
+    import hashlib
+    from pathlib import Path
+    for p in sorted(Path(cs_dir).resolve().parent.rglob("*.car")):
+        h = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest().startswith(sha8):
+            return str(p)
+    return ""
