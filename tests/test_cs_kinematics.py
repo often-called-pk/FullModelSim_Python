@@ -18,9 +18,9 @@ into the vendor folders.
     CHASSISSIM_DIR="<ChassisSim_v3_41 folder>" python tests/test_cs_kinematics.py
 """
 import _bootstrap  # repo root -> sys.path[0] and cwd (see tests/_bootstrap.py)
+import collections
 import contextlib
 import glob
-import hashlib
 import io
 import os
 import sys
@@ -589,13 +589,34 @@ for label, sx in (("brake", -0.3), ("drive", 0.2), ("coast", 0.0)):
        f"({dth_h - dth_z:+.6e} vs {hand:+.6e} rad/s^2, rel {rel:.1e})", rel <= 1e-6)
 ok(f"pitch term: the three states agree with the hand sum (worst rel {worst_pitch:.1e})", worst_pitch <= 1e-6)
 m_e = ctx_e.m23
-ZERO_HASH = hashlib.sha256(ca.Function("dx", [m_z.x, m_z.u, m_z.pv], [m_z.dx]).serialize().encode()).hexdigest()[:16]
-# The graph of this car before K3 (the vehModel_cs of the K2 tree, with no pitch arm term) had hash 4294c55506b61a2c.
-# The camber polynomial (lane F, 2026-11-23) changes the camber node, so the pin is the graph with it.
-# casadi serialises the graph; a different casadi build may print another hash.
-PRE_K3_HASH = "f78762db2a761203"
-ok(f"a car with all side-view heights 0 builds the pinned graph (camber polynomial, hash {ZERO_HASH})",
-   ZERO_HASH == PRE_K3_HASH)
+# With all side-view heights 0 the pitch arm term adds nothing. No pinned graph hash: the float bits of the geometry
+# fit differ between BLAS kernels, so a value hash differs between platforms. Two checks inside one run instead.
+# 1. Structure: equal heights other than 0 add one subtraction to the pitch arm of each corner, and nothing else.
+fn_e = ca.Function("e", [m_e.x, m_e.u, m_e.pv], [m_e.dx, m_e.sf, m_e.fx_fl, m_e.fx_fr, m_e.fx_rl, m_e.fx_rr])
+ops_z, ops_e = (collections.Counter(f.instruction_id(i) for i in range(f.n_instructions())) for f in (fn_zero, fn_e))
+d_ops = {k: ops_e[k] - ops_z[k] for k in set(ops_e) | set(ops_z) if ops_e[k] != ops_z[k] and k != ca.OP_CONST}
+ok(f"heights 0 leave no arm node: equal heights add 4 subtractions and no other operation (added {d_ops})",
+   d_ops == {ca.OP_SUB: 4})
+# 2. Numbers: at random states the graph with heights 0 is the graph with equal heights less the hand arm term.
+rng_k3 = np.random.default_rng(3)
+worst_row, worst_arm = 0.0, 0.0
+for _ in range(20):
+    x = state(ctx_z, vx=rng_k3.uniform(20.0, 70.0), vy=rng_k3.uniform(-1.0, 1.0), sx=rng_k3.uniform(-0.1, 0.1),
+              zs=rng_k3.uniform(-5e-3, 5e-3), theta=rng_k3.uniform(-5e-3, 5e-3), phi=rng_k3.uniform(-5e-3, 5e-3))
+    x[2] = rng_k3.uniform(-0.3, 0.3)
+    u = rng_k3.uniform(-0.2, 0.2, m_z.nu)
+    u[-1] = 0.0                              # no steer: m.fx_* is the tyre-frame force, and the arm takes the car-frame one
+    oe = [np.asarray(o, float).ravel() for o in fn_e(x / m_e.x_s, u, 0.0)]
+    oz = [np.asarray(o, float).ravel() for o in fn_zero(x / m_z.x_s, u, 0.0)]
+    hand = ((oe[2][0] + oe[3][0]) * 0.05 + (oe[4][0] + oe[5][0]) * 0.18) * oe[1][0] / Iy
+    rest = np.delete(np.arange(23), 12)
+    worst_row = max(worst_row, float(np.max(np.abs(oe[0][rest] - oz[0][rest]) / np.maximum(np.abs(oz[0][rest]), 1.0))))
+    dth_e, dth_z = oe[0][12] * m_e.x_s[12], oz[0][12] * m_z.x_s[12]
+    worst_arm = max(worst_arm, abs(dth_e - hand - dth_z) / max(abs(dth_z), abs(hand), 1.0))
+ok(f"heights 0, 20 random states: every row but dthetadot equals the equal-heights car (worst rel {worst_row:.1e})",
+   worst_row <= 1e-12)
+ok(f"heights 0, 20 random states: dthetadot is the equal-heights value less sum fx h sf / I_y (worst rel {worst_arm:.1e})",
+   worst_arm <= 1e-12)
 t_z = tanh_count(ca.Function("dx", [m_z.x, m_z.u, m_z.pv], [m_z.dx]))
 t_h = tanh_count(ca.Function("dx", [m_h.x, m_h.u, m_h.pv], [m_h.dx]))
 t_e = tanh_count(ca.Function("dx", [m_e.x, m_e.u, m_e.pv], [m_e.dx]))
